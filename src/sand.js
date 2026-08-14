@@ -202,7 +202,7 @@ export class Sand {
       const s = this.vx[i] * this.vx[i] + this.vy[i] * this.vy[i];
       if (s > maxV2) maxV2 = s;
     }
-    const travel = cfg.substepTravel * this.cellSize;
+    const travel = cfg.substepTravel * this.diameter;
     const needed = Math.ceil((Math.sqrt(maxV2) * dtFrame) / travel);
     const substeps = clamp(needed || 1, 1, cfg.maxSubsteps);
     const dt = dtFrame / substeps;
@@ -223,9 +223,12 @@ export class Sand {
     for (let s = 0; s < substeps; s++) {
       this.integrate(dt, gx, gy);
       this.grid.build(this.x, this.y, n);
+      // Walls first, separation last. The other way round, the clamp snaps two
+      // vertically stacked grains onto the same floor point and undoes the
+      // separation that just pushed them apart, welding them together.
       for (let it = 0; it < iterations; it++) {
-        this.solve(cellOrder, gdx, gdy);
         this.applyWalls();
+        this.solve(cellOrder, gdx, gdy);
       }
       this.deriveVelocity(dt);
     }
@@ -270,6 +273,7 @@ export class Sand {
     const DS = D * cfg.shadeRadius;
     const DS2 = DS * DS;
     const half = cfg.stiffness * 0.5;
+    const maxSep = cfg.maxSeparation * D;
     const muS = cfg.muS, muK = cfg.muK;
     // A grain has up to six contacts and each one resolves in sequence, so full
     // strength friction over-corrects and jitters. Under-relax it.
@@ -307,13 +311,25 @@ export class Sand {
               const dx = x[j] - xi;
               const dy = y[j] - yi;
               const d2 = dx * dx + dy * dy;
-              if (d2 >= DS2 || d2 < 1e-12) continue;
+              if (d2 >= DS2) continue;
               pairs++;
 
-              const d = Math.sqrt(d2);
-              const inv = 1 / d;
-              const nx = dx * inv;
-              const ny = dy * inv;
+              let d, nx, ny;
+              if (d2 > 1e-8) {
+                d = Math.sqrt(d2);
+                const inv = 1 / d;
+                nx = dx * inv;
+                ny = dy * inv;
+              } else {
+                // Coincident grains have no contact normal. Skipping them (the
+                // obvious guard) welds the pair together permanently, so pick a
+                // direction from the index instead — deterministic, and the
+                // golden angle keeps it from favouring one axis.
+                const a = i * 2.3999632;
+                d = 0;
+                nx = Math.cos(a);
+                ny = Math.sin(a);
+              }
 
               // Shading: neighbour count, how much of the load sits on the
               // anti-gravity side, and the brightest neighbour up there. The
@@ -330,7 +346,7 @@ export class Sand {
 
               if (d2 >= D2) continue;
               const overlap = D - d;
-              const sep = overlap * half;
+              const sep = (overlap < maxSep ? overlap : maxSep) * half;
               xi -= nx * sep;
               yi -= ny * sep;
               x[j] += nx * sep;
@@ -409,7 +425,7 @@ export class Sand {
     const x = this.x, y = this.y, px = this.px, py = this.py;
     const vx = this.vx, vy = this.vy, contacts = this.contacts;
     const invDt = 1 / dt;
-    const ceiling = (cfg.speedCeiling * this.cellSize) / dt;
+    const ceiling = (cfg.speedCeiling * this.diameter) / dt;
     const ceiling2 = ceiling * ceiling;
     const sleep2 = cfg.sleepSpeed * cfg.sleepSpeed;
     const sleepContacts = cfg.sleepContacts;

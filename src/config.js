@@ -28,11 +28,17 @@ export const CONFIG = {
     // Gravity magnitude = gravityScale * viewport diagonal (px/s^2).
     gravityScale: 3.0,
     iterations: 2,
-    maxSubsteps: 5,
-    // Allowed travel per substep as a fraction of a grid cell.
-    substepTravel: 0.55,
-    // Hard velocity ceiling as a fraction of cell/dt, so nothing tunnels.
-    speedCeiling: 0.9,
+    maxSubsteps: 6,
+    // All three are fractions of a grain *diameter* — not of a grid cell. A
+    // grain that moves further than about half its own width in one substep
+    // ends up deep inside its neighbour, and the solver then flings the pair
+    // apart hard enough to boil the whole bed.
+    substepTravel: 0.42,
+    speedCeiling: 0.45,
+    // Ceiling on a single separation correction. Deep overlaps (a splash
+    // landing, grains squeezed into a corner) then unwind over a few substeps
+    // instead of detonating.
+    maxSeparation: 0.25,
     stiffness: 1.0,
     // Coulomb-ish contact friction. muS is the static cone, muK the sliding
     // coefficient; both scale with penetration depth (a pressure proxy).
