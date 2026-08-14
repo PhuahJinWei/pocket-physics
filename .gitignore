@@ -1,0 +1,23 @@
+# OS
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
+.claude/
+*.swp
+
+# Python (local static server)
+__pycache__/
+*.pyc
+
+# Node (not used yet, but keeps stray installs out)
+node_modules/
+npm-debug.log*
+
+# Logs / scratch
+*.log
+tmp/

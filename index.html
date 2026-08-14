@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#03060d">
+<meta name="description" content="Tilt-driven glowing sand: thousands of simulated grains that pour, pile and splash as you tip your phone.">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Silt — tilt sand</title>
+<link rel="stylesheet" href="styles/app.css">
+</head>
+<body>
+<canvas id="stage"></canvas>
+
+<div id="ui">
+  <div id="vignette"></div>
+  <div id="hint"></div>
+  <div id="stats"></div>
+
+  <div id="gate">
+    <button id="gate-button" type="button">Enable tilt</button>
+    <p id="gate-note"></p>
+  </div>
+
+  <div id="stick" aria-hidden="true"><div id="knob"></div></div>
+  <div id="fatal"></div>
+</div>
+
+<script type="module" src="src/main.js"></script>
+</body>
+</html>
