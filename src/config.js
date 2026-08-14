@@ -5,7 +5,7 @@ export const CONFIG = {
   bed: {
     // Fraction of the viewport the settled bed should cover. Grain count is
     // derived from this so the look stays constant across screen sizes.
-    fill: 0.34,
+    fill: 0.38,
     // 2D random-close-packing density, used to convert area -> grain count.
     packing: 0.82,
     maxFill: 0.55,
@@ -27,8 +27,15 @@ export const CONFIG = {
   sim: {
     // Gravity magnitude = gravityScale * viewport diagonal (px/s^2).
     gravityScale: 3.0,
-    iterations: 2,
-    maxSubsteps: 6,
+    // Total relaxation sweeps per frame, split across substeps: a settled bed
+    // spends them all on convergence (which is what lets the deepest, most
+    // compressed layers decompress), while a bed in flight spends them on
+    // substeps instead. Frame cost stays roughly flat either way.
+    solveBudget: 5,
+    maxIterations: 5,
+    // Worth being generous: the speed ceiling below scales with 1/dt, so the
+    // substep cap is also the cap on how dramatic a splash can get.
+    maxSubsteps: 8,
     // All three are fractions of a grain *diameter* — not of a grid cell. A
     // grain that moves further than about half its own width in one substep
     // ends up deep inside its neighbour, and the solver then flings the pair
@@ -43,16 +50,33 @@ export const CONFIG = {
     // Coulomb-ish contact friction. muS is the static cone, muK the sliding
     // coefficient; both scale with penetration depth (a pressure proxy).
     // Raise for a steeper, stickier pile; lower and the bed behaves like water.
-    muS: 1.1,
-    muK: 0.55,
+    muS: 3.0,
+    muK: 1.2,
     // Under-relaxation for the friction correction, since a grain's contacts
     // are resolved one after another rather than simultaneously.
-    frictionRelax: 0.35,
-    damping: 0.995,
+    frictionRelax: 0.55,
+    // Floor on the penetration-as-normal-force proxy, as a fraction of a grain
+    // diameter. Governs how much grip near-unloaded surface grains get, and so
+    // most of the angle of repose.
+    frictionPressureFloor: 0.15,
+    // Dissipation, both per second so the substep count cannot change the feel.
+    // A fixed per-substep factor gets this exactly backwards: a settled bed runs
+    // one substep and so would be damped least, and it slowly heats up.
+    // Granular energy is lost at contacts, so most of the drag is charged per
+    // contact — the bulk goes quiet while airborne grains stay lively.
+    airDrag: 0.25,
+    contactDrag: 1.4,
+    maxDragContacts: 10,
     wallFriction: 0.5,
-    // Grains with this many neighbours moving slower than sleepSpeed stop
-    // completely, which is what gives a pile a stable angle of repose.
-    sleepSpeed: 4.0,
+    // A grain with at least sleepContacts neighbours, drifting slower than
+    // sleepSpeed (in grain diameters per second, so it scales with the screen),
+    // is snapped to a full stop. This is what holds an angle of repose and what
+    // stops the last sub-pixel of solver jitter from shimmering across the bed.
+    // Requiring several contacts keeps surface grains awake, so avalanche
+    // fronts still flow instead of freezing mid-slide.
+    // This is the single strongest control over the angle of repose: too low and
+    // the pile creeps until its surface lies flat against gravity like a liquid.
+    sleepSpeed: 8.0,
     sleepContacts: 4,
     // Neighbour search radius for shading, as a multiple of grain diameter.
     shadeRadius: 1.15,
@@ -62,7 +86,7 @@ export const CONFIG = {
     // Lower = light dies faster with depth = a darker, deeper-looking bed.
     lightTransmit: 0.93,
     lightSmoothing: 18,
-    splashSpeed: 0.55,
+    splashSpeed: 1.4,
   },
 
   render: {

@@ -44,7 +44,7 @@ export class Sand {
     this.inner = { x0: 0, y0: 0, x1: 1, y1: 1 };
     this.speedNorm = 400;
     this.substeps = 1;
-    this.iterations = CONFIG.sim.iterations;
+    this.iterations = CONFIG.sim.solveBudget;
     this.solvedPairs = 0;
   }
 
@@ -194,9 +194,9 @@ export class Sand {
     if (n === 0) return;
     const cfg = CONFIG.sim;
 
-    // Pick a substep count that keeps the fastest grain inside one grid cell,
-    // so the 3x3 neighbour scan can never miss a collision. A settled bed runs
-    // at one substep; only a violent shake pays for more.
+    // Pick a substep count that keeps the fastest grain's travel well under its
+    // own diameter, so no pair is ever discovered already deeply interpenetrated.
+    // A settled bed runs at one substep; only a violent shake pays for more.
     let maxV2 = 0;
     for (let i = 0; i < n; i++) {
       const s = this.vx[i] * this.vx[i] + this.vy[i] * this.vy[i];
@@ -213,23 +213,22 @@ export class Sand {
     const gdx = gx / gmag;
     const gdy = gy / gmag;
 
-    // Substeps do more for convergence than extra iterations do, so once the
-    // bed is moving fast enough to need several substeps, one sweep each is
-    // both cheaper and stiffer than two.
-    const iterations = substeps >= 3 ? 1 : cfg.iterations;
+    // Spend a fixed sweep budget: substeps first (they do more for a moving bed
+    // than iterations do), whatever is left on iterations.
+    const iterations = clamp(Math.round(cfg.solveBudget / substeps), 1, cfg.maxIterations);
     this.iterations = iterations;
 
     this.solvedPairs = 0;
     for (let s = 0; s < substeps; s++) {
       this.integrate(dt, gx, gy);
       this.grid.build(this.x, this.y, n);
-      // Walls first, separation last. The other way round, the clamp snaps two
-      // vertically stacked grains onto the same floor point and undoes the
-      // separation that just pushed them apart, welding them together.
+      // Walls before the sweep so it relaxes against legal positions, and again
+      // after so nothing is left hanging below the floor.
       for (let it = 0; it < iterations; it++) {
         this.applyWalls();
         this.solve(cellOrder, gdx, gdy);
       }
+      this.applyWalls();
       this.deriveVelocity(dt);
     }
     this.updateShading(dtFrame);
@@ -237,7 +236,7 @@ export class Sand {
 
   integrate(dt, gx, gy) {
     const n = this.n;
-    const damp = CONFIG.sim.damping;
+    const damp = Math.exp(-CONFIG.sim.airDrag * dt);
     const x = this.x, y = this.y, px = this.px, py = this.py;
     const vx = this.vx, vy = this.vy;
     const dvx = gx * dt;
@@ -275,6 +274,7 @@ export class Sand {
     const half = cfg.stiffness * 0.5;
     const maxSep = cfg.maxSeparation * D;
     const muS = cfg.muS, muK = cfg.muK;
+    const pressFloor = cfg.frictionPressureFloor * D;
     // A grain has up to six contacts and each one resolves in sequence, so full
     // strength friction over-corrects and jitters. Under-relax it.
     const relax = cfg.frictionRelax;
@@ -363,9 +363,14 @@ export class Sand {
               const t2 = tx * tx + ty * ty;
               if (t2 > 1e-10) {
                 const tl = Math.sqrt(t2);
-                const k = (tl < muS * overlap
+                // Penetration depth stands in for normal force. Lightly loaded
+                // surface grains barely penetrate at all, though, so without a
+                // floor they get almost no friction and the pile surface runs
+                // like water however high muS is set.
+                const press = overlap > pressFloor ? overlap : pressFloor;
+                const k = (tl < muS * press
                   ? 0.5
-                  : Math.min((muK * overlap) / tl, 1) * 0.5) * relax;
+                  : Math.min((muK * press) / tl, 1) * 0.5) * relax;
                 const fx = tx * k;
                 const fy = ty * k;
                 xi -= fx;
@@ -427,17 +432,28 @@ export class Sand {
     const invDt = 1 / dt;
     const ceiling = (cfg.speedCeiling * this.diameter) / dt;
     const ceiling2 = ceiling * ceiling;
-    const sleep2 = cfg.sleepSpeed * cfg.sleepSpeed;
+    const sleepSpeed = cfg.sleepSpeed * this.diameter;
+    const sleep2 = sleepSpeed * sleepSpeed;
     const sleepContacts = cfg.sleepContacts;
+
+    // Contact drag as a small lookup: `contacts` is a tiny integer, so this
+    // avoids an exp() per grain per substep.
+    const maxC = cfg.maxDragContacts;
+    const drag = this._dragTable || (this._dragTable = new Float32Array(maxC + 1));
+    for (let c = 0; c <= maxC; c++) drag[c] = Math.exp(-cfg.contactDrag * c * dt);
 
     for (let i = 0; i < n; i++) {
       let sx = (x[i] - px[i]) * invDt;
       let sy = (y[i] - py[i]) * invDt;
+      const c = contacts[i];
+      const k = drag[c < maxC ? c : maxC];
+      sx *= k;
+      sy *= k;
       const s2 = sx * sx + sy * sy;
       if (s2 > ceiling2) {
-        const k = ceiling / Math.sqrt(s2);
-        sx *= k;
-        sy *= k;
+        const k2 = ceiling / Math.sqrt(s2);
+        sx *= k2;
+        sy *= k2;
       } else if (s2 < sleep2 && contacts[i] >= sleepContacts) {
         // Stiction: without this, a pile creeps downhill forever and slowly
         // flattens instead of holding an angle of repose.

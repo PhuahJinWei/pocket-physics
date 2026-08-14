@@ -1,6 +1,11 @@
 // Multi-touch / mouse pushing. Tracks live pointers in CSS sim coordinates and
 // hands the sim one poke per pointer per frame, including the pointer's own
 // velocity so dragging sweeps grains along.
+//
+// Presses are captured on the canvas but moves and releases are tracked on the
+// window: a release that lands outside the canvas (or gets swallowed by a system
+// gesture on a phone) would otherwise leave a phantom finger shoving the bed
+// forever.
 
 export class PokeInput {
   constructor(canvas) {
@@ -9,10 +14,14 @@ export class PokeInput {
     this.onFirstTouch = null;
 
     canvas.addEventListener('pointerdown', (e) => this.down(e));
-    canvas.addEventListener('pointermove', (e) => this.move(e));
-    canvas.addEventListener('pointerup', (e) => this.up(e));
-    canvas.addEventListener('pointercancel', (e) => this.up(e));
-    canvas.addEventListener('pointerleave', (e) => this.up(e));
+    window.addEventListener('pointermove', (e) => this.move(e));
+    window.addEventListener('pointerup', (e) => this.up(e));
+    window.addEventListener('pointercancel', (e) => this.up(e));
+    // A drag interrupted mid-flight still has to release the pointer.
+    window.addEventListener('blur', () => this.pointers.clear());
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) this.pointers.clear();
+    });
     // Belt and braces alongside touch-action:none in CSS.
     canvas.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false });
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -24,9 +33,8 @@ export class PokeInput {
   }
 
   down(event) {
-    this.canvas.setPointerCapture?.(event.pointerId);
     const p = this.locate(event);
-    this.pointers.set(event.pointerId, { x: p.x, y: p.y, dx: 0, dy: 0, fresh: true });
+    this.pointers.set(event.pointerId, { x: p.x, y: p.y, dx: 0, dy: 0 });
     if (this.onFirstTouch) this.onFirstTouch();
   }
 
@@ -57,7 +65,6 @@ export class PokeInput {
       // Decay so a held-still finger keeps pushing but stops dragging.
       entry.dx *= 0.6;
       entry.dy *= 0.6;
-      entry.fresh = false;
     }
   }
 }
