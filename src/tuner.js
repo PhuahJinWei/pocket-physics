@@ -19,8 +19,13 @@ export class Tuner {
     this._fpsFrames = 0;
   }
 
-  /** Called once per frame with the measured work time and the real delta. */
-  sample(workMs, dt) {
+  /**
+   * Called once per frame with the measured work time and the real delta.
+   * `eligible` marks frames where the sim actually did work — idle frames
+   * (dormant bed) still feed the fps display but never the quality decision,
+   * and they flush the sample window so stale numbers don't linger.
+   */
+  sample(workMs, dt, eligible = true) {
     this.frameMs += (workMs - this.frameMs) * 0.1;
     this._fpsAccum += dt;
     this._fpsFrames++;
@@ -31,6 +36,11 @@ export class Tuner {
     }
 
     if (this._cooldown > 0) this._cooldown -= dt;
+    if (!eligible) {
+      this._accum = 0;
+      this._frames = 0;
+      return false;
+    }
     this._accum += workMs;
     this._frames++;
 

@@ -1,12 +1,17 @@
 // WebGL point-sprite renderer. One interleaved buffer, two draw calls per
 // frame (halo then beads). Prefers a WebGL2 context but the shaders are ES 1.00
 // so a WebGL1 fallback is identical in output.
+//
+// Grains are packed back-to-front (a 32-bucket counting sort on z), so nearer
+// beads paint over deeper ones and no depth buffer is needed — point sprites
+// with blending and a depth buffer fight over the alpha edges anyway.
 
 import { CONFIG } from './config.js';
 import { VERTEX_SHADER, FRAGMENT_SHADER } from './shaders.js';
 
-const FLOATS_PER_GRAIN = 6; // x, y, light, speed, sizeJitter, hueJitter
+const FLOATS_PER_GRAIN = 7; // x, y, z, light, speed, sizeJitter, hueJitter
 const STRIDE = FLOATS_PER_GRAIN * 4;
+const BUCKETS = 32;
 
 export class Renderer {
   /**
@@ -19,9 +24,15 @@ export class Renderer {
     this.canvas = canvas;
     this.capacity = capacity;
     this.cpu = new Float32Array(capacity * FLOATS_PER_GRAIN);
+    this.bucketOf = new Uint8Array(capacity);
+    this.drawOrder = new Int32Array(capacity);
+    this.bucketStart = new Int32Array(BUCKETS + 1);
     this.width = 1;
     this.height = 1;
     this.dpr = 1;
+    // Parallax offset for the projection eye, in CSS px; set from the tilt.
+    this.eyeX = 0;
+    this.eyeY = 0;
     this.contextLost = false;
 
     const opts = {
@@ -68,6 +79,10 @@ export class Renderer {
       viewport: gl.getUniformLocation(this.program, 'uViewport'),
       pointSize: gl.getUniformLocation(this.program, 'uPointSize'),
       speedBoost: gl.getUniformLocation(this.program, 'uSpeedBoost'),
+      focal: gl.getUniformLocation(this.program, 'uFocal'),
+      eye: gl.getUniformLocation(this.program, 'uEye'),
+      depthRange: gl.getUniformLocation(this.program, 'uDepthRange'),
+      depthDim: gl.getUniformLocation(this.program, 'uDepthDim'),
       deep: gl.getUniformLocation(this.program, 'uDeep'),
       mid: gl.getUniformLocation(this.program, 'uMid'),
       ice: gl.getUniformLocation(this.program, 'uIce'),
@@ -82,9 +97,9 @@ export class Renderer {
     for (const loc of Object.values(this.attrib)) {
       if (loc >= 0) gl.enableVertexAttribArray(loc);
     }
-    gl.vertexAttribPointer(this.attrib.pos, 2, gl.FLOAT, false, STRIDE, 0);
-    gl.vertexAttribPointer(this.attrib.shade, 2, gl.FLOAT, false, STRIDE, 8);
-    gl.vertexAttribPointer(this.attrib.jitter, 2, gl.FLOAT, false, STRIDE, 16);
+    gl.vertexAttribPointer(this.attrib.pos, 3, gl.FLOAT, false, STRIDE, 0);
+    gl.vertexAttribPointer(this.attrib.shade, 2, gl.FLOAT, false, STRIDE, 12);
+    gl.vertexAttribPointer(this.attrib.jitter, 2, gl.FLOAT, false, STRIDE, 20);
 
     const bg = CONFIG.render.background;
     gl.clearColor(bg[0], bg[1], bg[2], 1);
@@ -119,20 +134,40 @@ export class Renderer {
     const n = sand.n;
     if (n === 0) return;
 
-    // Pack in the grid's gravity-sorted order: deepest grains first, so the
-    // lit surface layer lands on top without needing a depth buffer.
+    // Counting sort by z bucket, deepest first, so the pack order is
+    // back-to-front for the bead pass.
+    const { bucketOf, drawOrder, bucketStart } = this;
+    const zScale = BUCKETS / Math.max(sand.depth, 1e-3);
+    const zArr = sand.z;
+    bucketStart.fill(0);
+    for (let i = 0; i < n; i++) {
+      let b = (zArr[i] * zScale) | 0;
+      if (b < 0) b = 0; else if (b >= BUCKETS) b = BUCKETS - 1;
+      bucketOf[i] = b;
+      bucketStart[b + 1]++;
+    }
+    // Prefix from the deep end: bucket 31 packs first.
+    let acc = 0;
+    for (let b = BUCKETS - 1; b >= 0; b--) {
+      const c = bucketStart[b + 1];
+      bucketStart[b + 1] = acc;
+      acc += c;
+    }
+    // bucketStart[b+1] now holds the running start for bucket b; place items.
+    for (let i = 0; i < n; i++) drawOrder[bucketStart[bucketOf[i] + 1]++] = i;
+
     const cpu = this.cpu;
-    const order = sand.grid.order;
     const { x, y, light, speed01, sizeJitter, hueJitter } = sand;
     for (let k = 0; k < n; k++) {
-      const i = order[k];
+      const i = drawOrder[k];
       const o = k * FLOATS_PER_GRAIN;
       cpu[o] = x[i];
       cpu[o + 1] = y[i];
-      cpu[o + 2] = light[i];
-      cpu[o + 3] = speed01[i];
-      cpu[o + 4] = sizeJitter[i];
-      cpu[o + 5] = hueJitter[i];
+      cpu[o + 2] = zArr[i];
+      cpu[o + 3] = light[i];
+      cpu[o + 4] = speed01[i];
+      cpu[o + 5] = sizeJitter[i];
+      cpu[o + 6] = hueJitter[i];
     }
 
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
@@ -146,6 +181,10 @@ export class Renderer {
     const px = sand.diameter * this.dpr;
     gl.uniform2f(this.uniform.viewport, this.width, this.height);
     gl.uniform1f(this.uniform.speedBoost, 0.35);
+    gl.uniform1f(this.uniform.focal, CONFIG.render.focal * Math.min(this.width, this.height));
+    gl.uniform2f(this.uniform.eye, this.width * 0.5 + this.eyeX, this.height * 0.5 + this.eyeY);
+    gl.uniform1f(this.uniform.depthRange, sand.depth);
+    gl.uniform1f(this.uniform.depthDim, CONFIG.render.depthDim);
 
     // Halo pass: additive, premultiplied.
     gl.blendFunc(gl.ONE, gl.ONE);
@@ -154,7 +193,7 @@ export class Renderer {
     gl.uniform1f(this.uniform.pointSize, px * CONFIG.render.glowSize);
     gl.drawArrays(gl.POINTS, 0, n);
 
-    // Bead pass: straight alpha over the halo.
+    // Bead pass: straight alpha over the halo, back-to-front.
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.uniform1f(this.uniform.mode, 1);
     gl.uniform1f(this.uniform.pointSize, px * CONFIG.render.beadSize);

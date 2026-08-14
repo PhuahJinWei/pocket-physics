@@ -221,90 +221,122 @@ html, body {
 
 const CONFIG = {
   bed: {
-    // Fraction of the viewport the settled bed should cover. Grain count is
-    // derived from this so the look stays constant across screen sizes.
-    fill: 0.38,
-    // 2D random-close-packing density, used to convert area -> grain count.
-    packing: 0.82,
-    maxFill: 0.55,
-    minGrains: 500,
+    // Fraction of the screen height the settled bed should fill (front view).
+    // Grain count is derived from this so the look is constant across devices.
+    fill: 0.34,
+    // Depth of the box behind the glass, in grain diameters. This is the Z the
+    // screen is a window into; deeper looks better but costs grains cubically.
+    depthLayers: 4.0,
+    // 3D random-close-packing density, converts bed volume -> grain count.
+    packing: 0.64,
+    minGrains: 400,
     maxGrains: 60000,
   },
 
   grain: {
-    // radius = min(viewport) / divisor, clamped. Keeps grains ~1/75 of the
-    // short edge, which is roughly what the reference video shows.
-    divisor: 150,
-    minRadius: 2.0,
-    maxRadius: 5.0,
+    // radius = min(viewport) / divisor, clamped. 3D needs chunkier grains than
+    // 2D did: count scales with 1/r^3, so halving the radius is 8x the grains.
+    divisor: 80,
+    minRadius: 3.2,
+    maxRadius: 9.5,
     // Spatial-hash cell size as a multiple of grain diameter. Must be >= the
-    // shading radius or the 3x3 neighbour scan misses contacts.
+    // shading radius or the 3x3x3 neighbour scan misses contacts.
     cellMul: 1.25,
   },
 
   sim: {
-    // Gravity magnitude = gravityScale * viewport diagonal (px/s^2).
-    gravityScale: 3.0,
+    // Gravity magnitude = gravityScale * viewport diagonal (px/s^2). A real
+    // phone screen is ~50 px/cm, so true gravity would be ~50000 px/s^2 —
+    // far below that reads as "falling through honey". This is the knob for
+    // how brisk and alive the sand feels.
+    gravityScale: 4.5,
     // Total relaxation sweeps per frame, split across substeps: a settled bed
     // spends them all on convergence (which is what lets the deepest, most
     // compressed layers decompress), while a bed in flight spends them on
     // substeps instead. Frame cost stays roughly flat either way.
-    solveBudget: 5,
-    maxIterations: 5,
-    // Worth being generous: the speed ceiling below scales with 1/dt, so the
-    // substep cap is also the cap on how dramatic a splash can get.
-    maxSubsteps: 8,
-    // All three are fractions of a grain *diameter* — not of a grid cell. A
-    // grain that moves further than about half its own width in one substep
-    // ends up deep inside its neighbour, and the solver then flings the pair
-    // apart hard enough to boil the whole bed.
-    substepTravel: 0.42,
-    speedCeiling: 0.45,
+    solveBudget: 8,
+    maxIterations: 8,
+    // Also the cap on how fast anything may move: max speed is roughly
+    // substepTravel * maxSubsteps * diameter * 60/s. Too low and splashes and
+    // free fall visibly hit a terminal-velocity ceiling.
+    maxSubsteps: 12,
+    // Both are fractions of a grain *diameter* — not of a grid cell. A grain
+    // that moves further than about half its own width in one substep ends up
+    // deep inside its neighbour, and the solver then flings the pair apart
+    // hard enough to boil the whole bed.
+    substepTravel: 0.45,
+    speedCeiling: 0.5,
     // Ceiling on a single separation correction. Deep overlaps (a splash
     // landing, grains squeezed into a corner) then unwind over a few substeps
     // instead of detonating.
-    maxSeparation: 0.25,
+    maxSeparation: 0.45,
     stiffness: 1.0,
     // Coulomb-ish contact friction. muS is the static cone, muK the sliding
     // coefficient; both scale with penetration depth (a pressure proxy).
-    // Raise for a steeper, stickier pile; lower and the bed behaves like water.
-    muS: 3.0,
-    muK: 1.2,
+    // Keep these moderate: piles get their permanence from sleep, not from
+    // friction — overdoing friction makes the bed feel like wet clay.
+    // Strong enough that the loaded bed floor jams solid instead of creeping
+    // sideways under the pile's weight forever. Responsiveness to tilt comes
+    // from the wake dynamics, not from weak friction.
+    muS: 2.0,
+    muK: 0.85,
     // Under-relaxation for the friction correction, since a grain's contacts
     // are resolved one after another rather than simultaneously.
-    frictionRelax: 0.55,
+    frictionRelax: 0.75,
     // Floor on the penetration-as-normal-force proxy, as a fraction of a grain
-    // diameter. Governs how much grip near-unloaded surface grains get, and so
-    // most of the angle of repose.
-    frictionPressureFloor: 0.15,
-    // Dissipation, both per second so the substep count cannot change the feel.
-    // A fixed per-substep factor gets this exactly backwards: a settled bed runs
-    // one substep and so would be damped least, and it slowly heats up.
+    // diameter, so near-unloaded surface grains get some grip too.
+    frictionPressureFloor: 0.05,
+    // Dissipation, per second so the substep count cannot change the feel.
     // Granular energy is lost at contacts, so most of the drag is charged per
     // contact — the bulk goes quiet while airborne grains stay lively.
-    airDrag: 0.25,
-    contactDrag: 1.4,
-    maxDragContacts: 10,
-    wallFriction: 0.5,
-    // A grain with at least sleepContacts neighbours, drifting slower than
-    // sleepSpeed (in grain diameters per second, so it scales with the screen),
-    // is snapped to a full stop. This is what holds an angle of repose and what
-    // stops the last sub-pixel of solver jitter from shimmering across the bed.
-    // Requiring several contacts keeps surface grains awake, so avalanche
-    // fronts still flow instead of freezing mid-slide.
-    // This is the single strongest control over the angle of repose: too low and
-    // the pile creeps until its surface lies flat against gravity like a liquid.
-    sleepSpeed: 8.0,
+    airDrag: 0.15,
+    contactDrag: 0.55,
+    maxDragContacts: 12,
+    // Rolling resistance: extra per-second drag on grains moving slower than
+    // rollingBelow (multiples of the sleep speed). Real grains are angular and
+    // stop rolling almost immediately; perfect spheres would trundle around
+    // trading momentum forever, each one keeping its neighbours' sleep debt
+    // from ever maturing. Leaves anything faster than a crawl untouched.
+    rollingDrag: 7.0,
+    rollingBelow: 1.6,
+    wallFriction: 0.45,
+    // Sleep, the hysteretic kind. A grain drifting slower than sleepSpeed (in
+    // grain diameters per second) with at least sleepContacts neighbours goes
+    // fully dormant: no gravity, no solver corrections, zero motion — which is
+    // both what makes a resting bed pixel-still and what holds a pile's shape.
+    // It wakes when pushed by more than wakePressure (fraction of a diameter,
+    // accumulated over a frame), or when gravity swings by gravityWakeAngle
+    // degrees — that global wake is what lets the whole bed slump at once on a
+    // hard tilt instead of peeling off layer by layer.
+    sleepSpeed: 3.0,
     sleepContacts: 4,
+    // A grain must stay slow for this many consecutive substeps before it may
+    // sleep. Without the delay, a freshly woken bed re-freezes before gravity
+    // has had a single frame to accelerate it — which is exactly the "back
+    // grains wait for the front" stickiness, reintroduced through the back door.
+    sleepDelay: 20,
+    wakePressure: 0.1,
+    // Minimum speed (diameters/s) a grain needs before it can wake sleepers at
+    // all. Resting grains lean into their support by g*dt^2 every substep, and
+    // slow surface trickle re-energises the bed floor in a perpetual simmer —
+    // so only ballistic grains (splash landings, a poured stream) transmit
+    // wakefulness. Everything slower relies on the tilt/poke/splash wakes.
+    wakeSpeed: 25,
+    // Overlap (fraction of a diameter) against a sleeper that wakes it outright.
+    // Catches grains trapped in pockets that froze too small for them. Must sit
+    // well above the bed's equilibrium load-bearing overlap or it wakes the
+    // pile floor in a perpetual storm — check the stats panel's awake count
+    // holds near zero at rest after touching gravity or stiffness.
+    pinchWake: 0.55,
+    gravityWakeAngle: 10,
     // Neighbour search radius for shading, as a multiple of grain diameter.
     shadeRadius: 1.15,
-    // Divisor for the "how buried am I" term; ~1.7 is a full hemisphere.
-    coverNorm: 1.7,
+    // Divisor for the "how buried am I" term (sum of upward contact dots).
+    coverNorm: 2.4,
     // Fraction of a grain's brightness that reaches the grain beneath it.
-    // Lower = light dies faster with depth = a darker, deeper-looking bed.
     lightTransmit: 0.93,
     lightSmoothing: 18,
-    splashSpeed: 1.4,
+    splashSpeed: 1.1,
   },
 
   render: {
@@ -313,6 +345,11 @@ const CONFIG = {
     beadSize: 1.35,
     glowSize: 3.2,
     glowStrength: 0.1,
+    // Perspective: focal length as a multiple of min(viewport w, h). Smaller =
+    // more dramatic depth. Parallax shifts the eye against tilt, in px.
+    focal: 1.4,
+    depthDim: 0.45,
+    parallax: 40,
     background: [0.008, 0.016, 0.035],
     // Deep (buried) -> mid -> ice (surface). Fast grains blow out to white.
     deep: [0.035, 0.11, 0.42],
@@ -324,9 +361,15 @@ const CONFIG = {
     // Gravity direction smoothing, per second.
     tiltSmoothing: 14,
     keySmoothing: 8,
-    // m/s^2 of gravity-excluded acceleration that counts as a shake.
+    // Fixed into-screen gravity bias for keyboard/stick/demo input, so the bed
+    // leans against the back wall and the box reads as 3D on desktop too.
+    zBias: 0.45,
+    // m/s^2 of gravity-excluded acceleration that counts as a shake, and how
+    // long after load before shakes are armed (picking the phone up spikes the
+    // accelerometer hard enough to read as several shakes otherwise).
     shakeThreshold: 13,
     shakeCooldown: 0.35,
+    shakeArmDelay: 1.5,
     // Finger/mouse push.
     pokeRadius: 46,
     pokeStrength: 2600,
@@ -338,28 +381,28 @@ const CONFIG = {
     loMs: 9.5,
     hiMs: 14.5,
     sampleFrames: 45,
-    cooldown: 1.2,
-    step: 0.08,
-    minScale: 0.35,
+    cooldown: 2.5,
+    step: 0.18,
+    minScale: 0.22,
     maxScale: 2.0,
   },
 };
 
 // ---- src/grid.js ----
-// Uniform spatial hash built with a counting sort. Allocation-free after
+// Uniform 3D spatial hash built with a counting sort. Allocation-free after
 // warm-up: build() only touches pre-sized typed arrays.
 //
 // Layout: cellStart[c]..cellStart[c+1] indexes into `order`, which holds grain
-// indices grouped by cell. Cells are row-major over the sim rectangle.
+// indices grouped by cell. Cells are x-major, then y, then z slabs — index
+// (z * rows + y) * cols + x over the shallow sim box.
 
 class Grid {
   constructor(capacity) {
     this.cols = 0;
     this.rows = 0;
+    this.slabs = 0;
     this.cellCount = 0;
     this.cellSize = 1;
-    this.originX = 0;
-    this.originY = 0;
     this.cellStart = new Int32Array(1);
     this.cursor = new Int32Array(1);
     this.cellOrder = new Int32Array(1);
@@ -373,13 +416,12 @@ class Grid {
     this.cellOf = new Int32Array(n);
   }
 
-  configure(x0, y0, width, height, cellSize) {
-    this.originX = x0;
-    this.originY = y0;
+  configure(width, height, depth, cellSize) {
     this.cellSize = cellSize;
     this.cols = Math.max(1, Math.ceil(width / cellSize));
     this.rows = Math.max(1, Math.ceil(height / cellSize));
-    this.cellCount = this.cols * this.rows;
+    this.slabs = Math.max(1, Math.ceil(depth / cellSize));
+    this.cellCount = this.cols * this.rows * this.slabs;
     if (this.cellStart.length < this.cellCount + 1) {
       this.cellStart = new Int32Array(this.cellCount + 1);
       this.cursor = new Int32Array(this.cellCount + 1);
@@ -387,32 +429,34 @@ class Grid {
     }
   }
 
-  build(x, y, n) {
+  build(x, y, z, n) {
     const cols = this.cols;
     const rows = this.rows;
+    const slabs = this.slabs;
+    const layer = cols * rows;
     const cells = this.cellCount;
     const start = this.cellStart;
     const cursor = this.cursor;
     const cellOf = this.cellOf;
     const order = this.order;
     const inv = 1 / this.cellSize;
-    const ox = this.originX;
-    const oy = this.originY;
 
     start.fill(0, 0, cells + 1);
 
     for (let i = 0; i < n; i++) {
-      let cx = ((x[i] - ox) * inv) | 0;
-      let cy = ((y[i] - oy) * inv) | 0;
+      let cx = (x[i] * inv) | 0;
+      let cy = (y[i] * inv) | 0;
+      let cz = (z[i] * inv) | 0;
       if (cx < 0) cx = 0; else if (cx >= cols) cx = cols - 1;
       if (cy < 0) cy = 0; else if (cy >= rows) cy = rows - 1;
-      const c = cy * cols + cx;
+      if (cz < 0) cz = 0; else if (cz >= slabs) cz = slabs - 1;
+      const c = cz * layer + cy * cols + cx;
       cellOf[i] = c;
       start[c + 1]++;
     }
     for (let c = 0; c < cells; c++) start[c + 1] += start[c];
 
-    cursor.set(start);
+    cursor.set(start.subarray(0, cells + 1));
     for (let i = 0; i < n; i++) order[cursor[cellOf[i]]++] = i;
   }
 
@@ -420,27 +464,30 @@ class Grid {
    * Order cells deepest-first along the gravity direction. Resolving contacts
    * from the base of a pile upward lets support propagate in a single sweep,
    * which is what keeps stacks from sinking with only a couple of iterations.
+   * The dominant gravity axis becomes the outermost loop.
    */
-  orderCellsByGravity(gx, gy) {
-    const cols = this.cols;
-    const rows = this.rows;
-    const out = this.cellOrder;
-    const yMajor = Math.abs(gy) >= Math.abs(gx);
-    const yStart = gy >= 0 ? rows - 1 : 0;
-    const yStep = gy >= 0 ? -1 : 1;
-    const xStart = gx >= 0 ? cols - 1 : 0;
-    const xStep = gx >= 0 ? -1 : 1;
+  orderCellsByGravity(gx, gy, gz) {
+    const axes = [
+      { len: this.cols, stride: 1, g: gx },
+      { len: this.rows, stride: this.cols, g: gy },
+      { len: this.slabs, stride: this.cols * this.rows, g: gz },
+    ];
+    axes.sort((a, b) => Math.abs(b.g) - Math.abs(a.g));
+    for (const a of axes) {
+      a.start = a.g >= 0 ? a.len - 1 : 0;
+      a.step = a.g >= 0 ? -1 : 1;
+    }
 
+    const [a0, a1, a2] = axes;
+    const out = this.cellOrder;
     let k = 0;
-    if (yMajor) {
-      for (let a = 0; a < rows; a++) {
-        const base = (yStart + a * yStep) * cols;
-        for (let b = 0; b < cols; b++) out[k++] = base + xStart + b * xStep;
-      }
-    } else {
-      for (let b = 0; b < cols; b++) {
-        const col = xStart + b * xStep;
-        for (let a = 0; a < rows; a++) out[k++] = (yStart + a * yStep) * cols + col;
+    for (let i0 = 0; i0 < a0.len; i0++) {
+      const o0 = (a0.start + i0 * a0.step) * a0.stride;
+      for (let i1 = 0; i1 < a1.len; i1++) {
+        const o1 = o0 + (a1.start + i1 * a1.step) * a1.stride;
+        for (let i2 = 0; i2 < a2.len; i2++) {
+          out[k++] = o1 + (a2.start + i2 * a2.step) * a2.stride;
+        }
       }
     }
     return out;
@@ -483,17 +530,26 @@ function isIOS() {
 }
 
 // ---- src/sand.js ----
-// Granular sand as position-based dynamics over a spatial hash.
+// Granular sand as position-based dynamics in a shallow 3D box, over a uniform
+// spatial hash. The screen is the front glass; the box extends a few grain
+// diameters in Z behind it.
 //
 // Per substep: integrate -> rebuild grid -> relax contacts a few times ->
 // derive velocity from the position change. Contacts do two jobs at once:
 // separation (grains are incompressible) and Coulomb-ish friction (grains have
 // shear strength, which is what produces a pile instead of a puddle).
 //
-// The same neighbour scan also accumulates the shading terms, so the 2.5D look
-// costs almost nothing: `contacts` says how packed a grain is, and `cover`
-// says how much sits above it along the gravity direction. Grains with nothing
-// above them are the lit surface of the bed.
+// Sleep is hysteretic and does the heavy lifting for both stillness and pile
+// permanence. A slow, well-supported grain goes fully dormant: it skips
+// integration, receives no corrections, and acts as an immovable obstacle. It
+// wakes only when pushed hard enough (an avalanche arriving), when gravity
+// swings (the phone tilted), or when poked/splashed. A fully asleep bed costs
+// almost nothing and is pixel-still — no simmering, no stick-slip shimmer.
+//
+// The same neighbour scan also accumulates the shading terms, so the depth
+// look costs almost nothing: `contacts` says how packed a grain is, `cover`
+// how buried it is along gravity, and `litAbove` lets light seep down through
+// the bed one layer per frame.
 
 
 class Sand {
@@ -504,10 +560,13 @@ class Sand {
     const f32 = () => new Float32Array(capacity);
     this.x = f32();
     this.y = f32();
+    this.z = f32();
     this.px = f32();
     this.py = f32();
+    this.pz = f32();
     this.vx = f32();
     this.vy = f32();
+    this.vz = f32();
     this.light = f32();
     this.speed01 = f32();
     this.sizeJitter = f32();
@@ -515,55 +574,112 @@ class Sand {
     this.contacts = new Uint8Array(capacity);
     this.cover = f32();
     this.litAbove = f32();
+    this.sleep = new Uint8Array(capacity);
+    this.wake = new Uint8Array(capacity);
+    this.justWoke = new Uint8Array(capacity);
+    this.sleepDebt = new Uint8Array(capacity); // consecutive slow frames
+    this.pushOn = f32(); // accumulated push against a sleeping grain, per frame
+    // Position at the start of the frame, for the sleep decision. Judged on
+    // net frame displacement — instantaneous velocity would keep every grain
+    // that solver churn jiggles in place awake forever.
+    this.fx = f32();
+    this.fy = f32();
+    this.fz = f32();
 
     this.grid = new Grid(capacity);
     this.random = makeRandom(0x5117);
 
-    this.radius = 3;
-    this.diameter = 6;
-    this.cellSize = 7.5;
+    this.radius = 4;
+    this.diameter = 8;
+    this.cellSize = 10;
+    this.depth = 36;
     this.bounds = { x0: 0, y0: 0, x1: 1, y1: 1 };
-    this.inner = { x0: 0, y0: 0, x1: 1, y1: 1 };
+    this.inner = { x0: 0, y0: 0, z0: 0, x1: 1, y1: 1, z1: 1 };
     this.speedNorm = 400;
+    this.gravityMagnitude = 3000;
     this.substeps = 1;
     this.iterations = CONFIG.sim.solveBudget;
     this.solvedPairs = 0;
+    this.awakeCount = 0;
+
+    // Gravity direction at the last global wake; swinging past the threshold
+    // wakes the whole bed so it slumps as a mass instead of peeling in layers.
+    this._refGx = 0;
+    this._refGy = 1;
+    this._refGz = 0;
+    this._refSet = false;
+    this._wakeCos = Math.cos((CONFIG.sim.gravityWakeAngle * Math.PI) / 180);
+    this._dragTable = null;
   }
 
-  /** Set the sim rectangle and grain size; keeps existing grains in place. */
+  /** Set the box size and grain size; keeps existing grains in place. */
   configure(width, height, radius) {
     this.radius = radius;
     this.diameter = radius * 2;
     this.cellSize = this.diameter * CONFIG.grain.cellMul;
+    this.depth = Math.max(
+      this.diameter * 2,
+      Math.min(CONFIG.bed.depthLayers * this.diameter, Math.min(width, height) * 0.2),
+    );
     this.bounds = { x0: 0, y0: 0, x1: width, y1: height };
     this.inner = {
       x0: radius,
       y0: radius,
+      z0: radius,
       x1: Math.max(radius, width - radius),
       y1: Math.max(radius, height - radius),
+      z1: Math.max(radius, this.depth - radius),
     };
-    this.grid.configure(0, 0, width, height, this.cellSize);
+    this.grid.configure(width, height, this.depth, this.cellSize);
 
     const g = CONFIG.sim.gravityScale * Math.hypot(width, height);
-    this.speedNorm = 0.3 * Math.sqrt(2 * g * height);
     this.gravityMagnitude = g;
+    this.speedNorm = 0.3 * Math.sqrt(2 * g * height);
+
+    // Grain size or box changed under a frozen bed: geometry no longer valid.
+    this.wakeAll();
   }
 
-  /** Grain count that fills `CONFIG.bed.fill` of the viewport when settled. */
+  /** Grain count that fills `CONFIG.bed.fill` of the front view when settled. */
   idealCount(fill = CONFIG.bed.fill) {
     const { x1, y1 } = this.bounds;
-    const area = x1 * y1;
-    const grainArea = (Math.PI * this.radius * this.radius) / CONFIG.bed.packing;
-    const ideal = (fill * area) / grainArea;
+    const grainVol = (4 / 3) * Math.PI * this.radius ** 3;
+    const volume = x1 * (fill * y1) * this.depth;
+    const ideal = (volume * CONFIG.bed.packing) / grainVol;
     const ceiling = Math.min(
       CONFIG.bed.maxGrains,
       this.capacity,
-      (CONFIG.bed.maxFill * area) / grainArea,
+      (x1 * (0.6 * y1) * this.depth * CONFIG.bed.packing) / grainVol,
     );
     return Math.round(clamp(ideal, CONFIG.bed.minGrains, ceiling));
   }
 
-  /** Lay out a settled hexagonal bed at the bottom, so nothing explodes at t=0. */
+  _spawnAt(i, x, y, z) {
+    const rand = this.random;
+    this.x[i] = x;
+    this.y[i] = y;
+    this.z[i] = z;
+    this.px[i] = x;
+    this.py[i] = y;
+    this.pz[i] = z;
+    this.vx[i] = 0;
+    this.vy[i] = 0;
+    this.vz[i] = 0;
+    this.light[i] = 0.5;
+    this.speed01[i] = 0;
+    this.sizeJitter[i] = rand();
+    this.hueJitter[i] = rand();
+    this.contacts[i] = 0;
+    this.cover[i] = 0;
+    this.litAbove[i] = 0;
+    this.sleep[i] = 0;
+    this.wake[i] = 0;
+    this.justWoke[i] = 0;
+    this.sleepDebt[i] = 0;
+    this.pushOn[i] = 0;
+  }
+
+  /** Lay out a settled lattice at the bottom, so nothing explodes at t=0. */
   fill(count) {
     const n = Math.min(count, this.capacity);
     this.n = n;
@@ -571,76 +687,93 @@ class Sand {
 
     const rand = this.random;
     const d = this.diameter;
-    const { x0, y0, x1, y1 } = this.inner;
-    const usable = Math.max(d, x1 - x0);
-    const perRow = Math.max(1, Math.floor(usable / d));
-    // True hex packing: alternate rows offset by half a diameter, rows sqrt(3)/2
-    // apart. Get either wrong and every grain starts overlapped, which the
-    // solver then releases as a bed-wide explosion.
-    const rowStep = d * 0.8660254;
+    const b = this.inner;
+    const perX = Math.max(1, Math.floor((b.x1 - b.x0) / d));
+    const perZ = Math.max(1, Math.floor((b.z1 - b.z0) / (d * 0.9)) + 1);
+    const perLayer = perX * perZ;
+    const rowStep = d * 0.85;
 
     for (let i = 0; i < n; i++) {
-      const row = Math.floor(i / perRow);
-      const col = i % perRow;
-      const stagger = row % 2 ? this.radius : 0;
-      const px = x0 + stagger + col * d + (rand() - 0.5) * this.radius * 0.25;
-      const py = y1 - row * rowStep - (rand() - 0.5) * this.radius * 0.2;
-      this.x[i] = clamp(px, x0, x1);
-      this.y[i] = clamp(py, y0, y1);
-      this.px[i] = this.x[i];
-      this.py[i] = this.y[i];
-      this.vx[i] = 0;
-      this.vy[i] = 0;
-      this.light[i] = 0.2;
-      this.speed01[i] = 0;
-      this.sizeJitter[i] = rand();
-      this.hueJitter[i] = rand();
-      this.contacts[i] = 0;
-      this.cover[i] = 0;
+      const row = Math.floor(i / perLayer);
+      const rem = i % perLayer;
+      const zi = Math.floor(rem / perX);
+      const xi = rem % perX;
+      const stagger = (row + zi) % 2 ? this.radius : 0;
+      const x = clamp(b.x0 + stagger + xi * d + (rand() - 0.5) * this.radius * 0.4, b.x0, b.x1);
+      const y = clamp(this.inner.y1 - row * rowStep - (rand() - 0.5) * this.radius * 0.2, b.y0, b.y1);
+      const z = clamp(b.z0 + zi * d * 0.9 + (rand() - 0.5) * this.radius * 0.4, b.z0, b.z1);
+      this._spawnAt(i, x, y, z);
     }
+    this.awakeCount = n;
+    this._refSet = false;
   }
 
-  /** Grow/shrink the bed without disturbing the grains that stay. */
+  /**
+   * Grow/shrink the bed without disturbing the grains that stay. New grains
+   * appear in a thin layer just above the current bed surface — NOT at the top
+   * of the screen, which reads as the app spontaneously splashing in more sand
+   * every time the quality tuner steps.
+   */
   setCount(count) {
     const target = Math.min(Math.max(count, 0), this.capacity);
     if (target === this.n) return;
     if (target < this.n) {
       this.n = target;
+      this.awakeCount = Math.min(this.awakeCount, target);
       return;
     }
+
+    let bedTop = this.inner.y1;
+    for (let i = 0; i < this.n; i++) if (this.y[i] < bedTop) bedTop = this.y[i];
+
     const rand = this.random;
-    const { x0, x1, y0 } = this.inner;
-    for (let i = this.n; i < target; i++) {
-      this.x[i] = x0 + rand() * (x1 - x0);
-      this.y[i] = y0 + rand() * this.diameter * 3;
-      this.px[i] = this.x[i];
-      this.py[i] = this.y[i];
-      this.vx[i] = 0;
-      this.vy[i] = 0;
-      this.light[i] = 1;
-      this.speed01[i] = 0;
-      this.sizeJitter[i] = rand();
-      this.hueJitter[i] = rand();
-      this.contacts[i] = 0;
-      this.cover[i] = 0;
+    const d = this.diameter;
+    const b = this.inner;
+    const added = target - this.n;
+    const perX = Math.max(1, Math.floor((b.x1 - b.x0) / d));
+    const perZ = Math.max(1, Math.floor((b.z1 - b.z0) / (d * 0.9)) + 1);
+    const perLayer = perX * perZ;
+
+    for (let k = 0; k < added; k++) {
+      const i = this.n + k;
+      const row = Math.floor(k / perLayer);
+      const x = b.x0 + rand() * (b.x1 - b.x0);
+      const y = clamp(bedTop - d - row * d * 0.9, b.y0, b.y1);
+      const z = b.z0 + rand() * (b.z1 - b.z0);
+      this._spawnAt(i, x, y, z);
     }
     this.n = target;
+    this.awakeCount += added;
     this.grid.ensureCapacity(target);
   }
 
   /** Nudge every grain back inside after a viewport change. */
   clampToBounds() {
-    const { x0, y0, x1, y1 } = this.inner;
+    const b = this.inner;
     for (let i = 0; i < this.n; i++) {
-      this.x[i] = clamp(this.x[i], x0, x1);
-      this.y[i] = clamp(this.y[i], y0, y1);
+      this.x[i] = clamp(this.x[i], b.x0, b.x1);
+      this.y[i] = clamp(this.y[i], b.y0, b.y1);
+      this.z[i] = clamp(this.z[i], b.z0, b.z1);
       this.px[i] = this.x[i];
       this.py[i] = this.y[i];
+      this.pz[i] = this.z[i];
     }
+    this.wakeAll();
+  }
+
+  wakeAll() {
+    if (this.n === 0) return;
+    this.sleep.fill(0, 0, this.n);
+    this.wake.fill(0, 0, this.n);
+    // Deliberately NOT setting justWoke: a global wake (tilt, splash, resize)
+    // should mobilise the bed with all its energy, not tiptoe out of sleep.
+    this.sleepDebt.fill(0, 0, this.n);
+    this.awakeCount = this.n;
   }
 
   /** Shake response: throw the bed into the air. */
   splash(strength) {
+    this.wakeAll();
     const rand = this.random;
     const speed = this.speedNorm * CONFIG.sim.splashSpeed * strength;
     for (let i = 0; i < this.n; i++) {
@@ -648,20 +781,28 @@ class Sand {
       const m = speed * (0.35 + rand() * 0.65);
       this.vx[i] += Math.cos(a) * m;
       this.vy[i] += Math.sin(a) * m * 0.8 - m * 0.5;
+      this.vz[i] += (rand() - 0.5) * m * 0.6;
     }
   }
 
-  /** Push grains away from a point, and drag them along with it. */
+  /** Push grains away from a screen point (a cylinder through the depth). */
   poke(cx, cy, dx, dy, dt) {
     const r = CONFIG.input.pokeRadius;
     const r2 = r * r;
+    const wakeR2 = r2 * 2.25;
     const push = CONFIG.input.pokeStrength * dt;
     const dragScale = CONFIG.input.pokeDrag;
-    const x = this.x, y = this.y, vx = this.vx, vy = this.vy;
+    const { x, y, vx, vy, sleep } = this;
+    let woke = 0;
     for (let i = 0; i < this.n; i++) {
       const ox = x[i] - cx;
       const oy = y[i] - cy;
       const d2 = ox * ox + oy * oy;
+      if (d2 > wakeR2) continue;
+      if (sleep[i]) {
+        sleep[i] = 0;
+        woke++;
+      }
       if (d2 > r2) continue;
       const d = Math.sqrt(d2) || 1e-4;
       const falloff = 1 - d / r;
@@ -669,19 +810,51 @@ class Sand {
       vx[i] += ox * k + dx * dragScale * falloff;
       vy[i] += oy * k + dy * dragScale * falloff;
     }
+    this.awakeCount += woke;
   }
 
-  step(dtFrame, gx, gy) {
+  step(dtFrame, gx, gy, gz) {
     const n = this.n;
     if (n === 0) return;
     const cfg = CONFIG.sim;
 
+    // Global wake on a real change of gravity direction. Without this, a
+    // sleeping pile only mobilises where avalanching grains push on it — the
+    // "back grains wait for the front" stickiness. With it, a hard tilt wakes
+    // everything and the bed slumps as one mass.
+    const gmag = Math.hypot(gx, gy, gz) || 1;
+    const gdx = gx / gmag;
+    const gdy = gy / gmag;
+    const gdz = gz / gmag;
+    if (!this._refSet) {
+      this._refGx = gdx;
+      this._refGy = gdy;
+      this._refGz = gdz;
+      this._refSet = true;
+    } else if (gdx * this._refGx + gdy * this._refGy + gdz * this._refGz < this._wakeCos) {
+      this.wakeAll();
+      this._refGx = gdx;
+      this._refGy = gdy;
+      this._refGz = gdz;
+    }
+
+    // Fully dormant bed: nothing to do. This is the common case at rest and
+    // costs ~zero CPU (and therefore battery).
+    if (this.awakeCount === 0) {
+      this.substeps = 0;
+      this.iterations = 0;
+      this.solvedPairs = 0;
+      return;
+    }
+
+    this.pushOn.fill(0, 0, n);
+
     // Pick a substep count that keeps the fastest grain's travel well under its
     // own diameter, so no pair is ever discovered already deeply interpenetrated.
-    // A settled bed runs at one substep; only a violent shake pays for more.
+    // A settled bed runs at one substep; only a splash pays for more.
     let maxV2 = 0;
     for (let i = 0; i < n; i++) {
-      const s = this.vx[i] * this.vx[i] + this.vy[i] * this.vy[i];
+      const s = this.vx[i] * this.vx[i] + this.vy[i] * this.vy[i] + this.vz[i] * this.vz[i];
       if (s > maxV2) maxV2 = s;
     }
     const travel = cfg.substepTravel * this.diameter;
@@ -690,64 +863,94 @@ class Sand {
     const dt = dtFrame / substeps;
     this.substeps = substeps;
 
-    const cellOrder = this.grid.orderCellsByGravity(gx, gy);
-    const gmag = Math.hypot(gx, gy) || 1;
-    const gdx = gx / gmag;
-    const gdy = gy / gmag;
-
     // Spend a fixed sweep budget: substeps first (they do more for a moving bed
     // than iterations do), whatever is left on iterations.
     const iterations = clamp(Math.round(cfg.solveBudget / substeps), 1, cfg.maxIterations);
     this.iterations = iterations;
 
+    const cellOrder = this.grid.orderCellsByGravity(gx, gy, gz);
+
+    // Frame-start snapshot for the sleep decision.
+    this.fx.set(this.x.subarray(0, n));
+    this.fy.set(this.y.subarray(0, n));
+    this.fz.set(this.z.subarray(0, n));
+
     this.solvedPairs = 0;
     for (let s = 0; s < substeps; s++) {
-      this.integrate(dt, gx, gy);
-      this.grid.build(this.x, this.y, n);
+      this.integrate(dt, gx, gy, gz);
+      this.grid.build(this.x, this.y, this.z, n);
       // Walls before the sweep so it relaxes against legal positions, and again
-      // after so nothing is left hanging below the floor.
+      // after so nothing is left hanging outside the box. Wake bookkeeping only
+      // on the final sweep: approach is measured from the substep's start, so
+      // collecting it every iteration would count the same displacement once
+      // per sweep and wake sleepers off pure solver noise.
       for (let it = 0; it < iterations; it++) {
         this.applyWalls();
-        this.solve(cellOrder, gdx, gdy);
+        this.solve(cellOrder, gdx, gdy, gdz, it === iterations - 1);
       }
       this.applyWalls();
       this.deriveVelocity(dt);
     }
+    this.sleepPass(dtFrame);
     this.updateShading(dtFrame);
   }
 
-  integrate(dt, gx, gy) {
+  integrate(dt, gx, gy, gz) {
     const n = this.n;
     const damp = Math.exp(-CONFIG.sim.airDrag * dt);
-    const x = this.x, y = this.y, px = this.px, py = this.py;
-    const vx = this.vx, vy = this.vy;
+    const { x, y, z, px, py, pz, vx, vy, vz, sleep, wake } = this;
     const dvx = gx * dt;
     const dvy = gy * dt;
+    const dvz = gz * dt;
+    const justWoke = this.justWoke;
     for (let i = 0; i < n; i++) {
+      if (sleep[i]) {
+        if (wake[i]) {
+          sleep[i] = 0;
+          wake[i] = 0;
+          // Woken by pressure or pinch: relax positionally but do not convert
+          // the stored compression into a jump (see deriveVelocity).
+          justWoke[i] = 1;
+        } else {
+          // Dormant: hold position exactly. px==x means zero derived velocity.
+          px[i] = x[i];
+          py[i] = y[i];
+          pz[i] = z[i];
+          continue;
+        }
+      }
       const nvx = (vx[i] + dvx) * damp;
       const nvy = (vy[i] + dvy) * damp;
+      const nvz = (vz[i] + dvz) * damp;
       vx[i] = nvx;
       vy[i] = nvy;
+      vz[i] = nvz;
       px[i] = x[i];
       py[i] = y[i];
+      pz[i] = z[i];
       x[i] += nvx * dt;
       y[i] += nvy * dt;
+      z[i] += nvz * dt;
     }
   }
 
   /**
-   * One Gauss-Seidel relaxation sweep. Corrections are applied immediately and
-   * grains are visited deepest-first, so each pair is examined twice per sweep
-   * (once from either side) but only corrected while it actually overlaps.
+   * One Gauss-Seidel relaxation sweep over the 3x3x3 neighbourhood. Corrections
+   * are applied immediately and grains are visited deepest-first along gravity,
+   * so support propagates up through a pile in a single sweep.
+   *
+   * Sleeping grains do not scan and are immovable to those that do: an awake
+   * grain takes the full separation against them, and the push it *would* have
+   * delivered accumulates in pushOn[] — past the wake threshold, the sleeper
+   * joins the avalanche next substep.
    */
-  solve(cellOrder, gdx, gdy) {
+  solve(cellOrder, gdx, gdy, gdz, collectWake) {
     const grid = this.grid;
-    const cols = grid.cols, rows = grid.rows;
+    const cols = grid.cols, rows = grid.rows, slabs = grid.slabs;
+    const layer = cols * rows;
     const cells = grid.cellCount;
     const start = grid.cellStart, order = grid.order;
-    const x = this.x, y = this.y, px = this.px, py = this.py;
-    const contacts = this.contacts, cover = this.cover;
-    const light = this.light, litAbove = this.litAbove;
+    const { x, y, z, px, py, pz, vx, vy, vz, contacts, cover, light, litAbove, sleep, wake, pushOn } = this;
     const cfg = CONFIG.sim;
     const D = this.diameter;
     const D2 = D * D;
@@ -755,110 +958,164 @@ class Sand {
     const DS2 = DS * DS;
     const half = cfg.stiffness * 0.5;
     const maxSep = cfg.maxSeparation * D;
+    const wakeAt = cfg.wakePressure * D;
+    const pinchWake = cfg.pinchWake * D;
+    const wakeSpeed = cfg.wakeSpeed * D;
+    const wakeSpeed2 = wakeSpeed * wakeSpeed;
     const muS = cfg.muS, muK = cfg.muK;
     const pressFloor = cfg.frictionPressureFloor * D;
-    // A grain has up to six contacts and each one resolves in sequence, so full
-    // strength friction over-corrects and jitters. Under-relax it.
+    // A grain has up to twelve contacts and each one resolves in sequence, so
+    // full-strength friction over-corrects and jitters. Under-relax it.
     const relax = cfg.frictionRelax;
     let pairs = 0;
+    let woke = 0;
 
     for (let oc = 0; oc < cells; oc++) {
       const c = cellOrder[oc];
       const s1 = start[c + 1];
       let s = start[c];
       if (s === s1) continue;
-      const cy = (c / cols) | 0;
-      const cx = c - cy * cols;
+      const cz = (c / layer) | 0;
+      const rest = c - cz * layer;
+      const cy = (rest / cols) | 0;
+      const cx = rest - cy * cols;
       const ry0 = cy > 0 ? cy - 1 : 0;
       const ry1 = cy < rows - 1 ? cy + 1 : rows - 1;
       const rx0 = cx > 0 ? cx - 1 : 0;
       const rx1 = cx < cols - 1 ? cx + 1 : cols - 1;
+      const rz0 = cz > 0 ? cz - 1 : 0;
+      const rz1 = cz < slabs - 1 ? cz + 1 : slabs - 1;
 
       for (; s < s1; s++) {
         const i = order[s];
-        let xi = x[i], yi = y[i];
-        const pxi = px[i], pyi = py[i];
+        if (sleep[i]) continue;
+        let xi = x[i], yi = y[i], zi = z[i];
+        const pxi = px[i], pyi = py[i], pzi = pz[i];
+        // Only a grain that is genuinely travelling may wake sleepers. A grain
+        // merely resting on one still free-falls into it by g*dt^2 every
+        // substep before separation undoes it, and that reads as "approach" —
+        // without this gate the entire bed floor gets woken by its own weight,
+        // frame after frame, forever.
+        const canWake = collectWake &&
+          vx[i] * vx[i] + vy[i] * vy[i] + vz[i] * vz[i] > wakeSpeed2;
         let count = 0;
         let cov = 0;
         let lit = 0;
 
-        for (let ry = ry0; ry <= ry1; ry++) {
-          const base = ry * cols;
-          for (let rx = rx0; rx <= rx1; rx++) {
-            const cc = base + rx;
-            const t1 = start[cc + 1];
-            for (let t = start[cc]; t < t1; t++) {
-              const j = order[t];
-              if (j === i) continue;
-              const dx = x[j] - xi;
-              const dy = y[j] - yi;
-              const d2 = dx * dx + dy * dy;
-              if (d2 >= DS2) continue;
-              pairs++;
+        for (let rz = rz0; rz <= rz1; rz++) {
+          const zbase = rz * layer;
+          for (let ry = ry0; ry <= ry1; ry++) {
+            const base = zbase + ry * cols;
+            for (let rx = rx0; rx <= rx1; rx++) {
+              const cc = base + rx;
+              const t1 = start[cc + 1];
+              for (let t = start[cc]; t < t1; t++) {
+                const j = order[t];
+                if (j === i) continue;
+                const dx = x[j] - xi;
+                const dy = y[j] - yi;
+                const dz = z[j] - zi;
+                const d2 = dx * dx + dy * dy + dz * dz;
+                if (d2 >= DS2) continue;
+                pairs++;
 
-              let d, nx, ny;
-              if (d2 > 1e-8) {
-                d = Math.sqrt(d2);
-                const inv = 1 / d;
-                nx = dx * inv;
-                ny = dy * inv;
-              } else {
-                // Coincident grains have no contact normal. Skipping them (the
-                // obvious guard) welds the pair together permanently, so pick a
-                // direction from the index instead — deterministic, and the
-                // golden angle keeps it from favouring one axis.
-                const a = i * 2.3999632;
-                d = 0;
-                nx = Math.cos(a);
-                ny = Math.sin(a);
-              }
+                let d, nx, ny, nz;
+                if (d2 > 1e-8) {
+                  d = Math.sqrt(d2);
+                  const inv = 1 / d;
+                  nx = dx * inv;
+                  ny = dy * inv;
+                  nz = dz * inv;
+                } else {
+                  // Coincident grains have no contact normal. Skipping them
+                  // (the obvious guard) welds the pair together permanently,
+                  // so pick a deterministic direction from the index instead.
+                  const a = i * 2.3999632;
+                  d = 0;
+                  nx = Math.cos(a) * 0.94;
+                  ny = Math.sin(a) * 0.94;
+                  nz = 0.34;
+                }
 
-              // Shading: neighbour count, how much of the load sits on the
-              // anti-gravity side, and the brightest neighbour up there. The
-              // last one lets light seep down through the bed one layer per
-              // frame, which is what produces a depth gradient instead of a
-              // flat dark slab. Reads last frame's light, so order-independent.
-              count++;
-              const above = -(nx * gdx + ny * gdy);
-              if (above > 0) {
-                cov += above;
-                const lj = light[j];
-                if (lj > lit) lit = lj;
-              }
+                // Shading terms, from the scan we are already paying for.
+                count++;
+                const above = -(nx * gdx + ny * gdy + nz * gdz);
+                if (above > 0) {
+                  cov += above;
+                  const lj = light[j];
+                  if (lj > lit) lit = lj;
+                }
 
-              if (d2 >= D2) continue;
-              const overlap = D - d;
-              const sep = (overlap < maxSep ? overlap : maxSep) * half;
-              xi -= nx * sep;
-              yi -= ny * sep;
-              x[j] += nx * sep;
-              y[j] += ny * sep;
+                if (d2 >= D2) continue;
+                const overlap = D - d;
+                const sepBase = overlap < maxSep ? overlap : maxSep;
 
-              // Friction acts on the tangential part of this substep's
-              // relative motion. Inside the static cone it is cancelled
-              // outright; beyond it, sliding is limited by muK * penetration.
-              let tx = (xi - pxi) - (x[j] - px[j]);
-              let ty = (yi - pyi) - (y[j] - py[j]);
-              const dn = tx * nx + ty * ny;
-              tx -= dn * nx;
-              ty -= dn * ny;
-              const t2 = tx * tx + ty * ty;
-              if (t2 > 1e-10) {
-                const tl = Math.sqrt(t2);
-                // Penetration depth stands in for normal force. Lightly loaded
-                // surface grains barely penetrate at all, though, so without a
-                // floor they get almost no friction and the pile surface runs
-                // like water however high muS is set.
-                const press = overlap > pressFloor ? overlap : pressFloor;
-                const k = (tl < muS * press
-                  ? 0.5
-                  : Math.min((muK * press) / tl, 1) * 0.5) * relax;
-                const fx = tx * k;
-                const fy = ty * k;
-                xi -= fx;
-                yi -= fy;
-                x[j] += fx;
-                y[j] += fy;
+                if (sleep[j]) {
+                  // Immovable neighbour: take the whole correction ourselves.
+                  const sep = sepBase * cfg.stiffness;
+                  xi -= nx * sep;
+                  yi -= ny * sep;
+                  zi -= nz * sep;
+                  if (canWake) {
+                    // Wake it only on *approach* — how far we actually moved
+                    // into it this substep. Counting the static overlap instead
+                    // would wake every load-bearing grain every frame just for
+                    // holding the pile up. Signed sum, clamped at zero, so
+                    // back-and-forth churn nets out and only a sustained shove
+                    // (an avalanche arriving) accumulates.
+                    const approach = (xi - pxi) * nx + (yi - pyi) * ny + (zi - pzi) * nz;
+                    let p = pushOn[j] + approach;
+                    if (p < 0) p = 0;
+                    pushOn[j] = p;
+                    // Also wake on deep static overlap: a pocket that froze too
+                    // small leaves its occupant rattling between immovable
+                    // walls forever, visibly sunk into its neighbours.
+                    if ((p > wakeAt || overlap > pinchWake) && !wake[j]) {
+                      wake[j] = 1;
+                      woke++;
+                    }
+                  }
+                } else {
+                  const sep = sepBase * half;
+                  xi -= nx * sep;
+                  yi -= ny * sep;
+                  zi -= nz * sep;
+                  x[j] += nx * sep;
+                  y[j] += ny * sep;
+                  z[j] += nz * sep;
+                }
+
+                // Friction acts on the tangential part of this substep's
+                // relative motion. Inside the static cone it is cancelled
+                // outright; beyond it, sliding is limited by muK * pressure.
+                let tx = (xi - pxi) - (x[j] - px[j]);
+                let ty = (yi - pyi) - (y[j] - py[j]);
+                let tz = (zi - pzi) - (z[j] - pz[j]);
+                const dn = tx * nx + ty * ny + tz * nz;
+                tx -= dn * nx;
+                ty -= dn * ny;
+                tz -= dn * nz;
+                const t2 = tx * tx + ty * ty + tz * tz;
+                if (t2 > 1e-10) {
+                  const tl = Math.sqrt(t2);
+                  // Penetration depth stands in for normal force, with a floor
+                  // so lightly loaded surface grains get some grip too.
+                  const press = overlap > pressFloor ? overlap : pressFloor;
+                  const k = (tl < muS * press
+                    ? 0.5
+                    : Math.min((muK * press) / tl, 1) * 0.5) * relax;
+                  const fx = tx * k;
+                  const fy = ty * k;
+                  const fz = tz * k;
+                  xi -= fx;
+                  yi -= fy;
+                  zi -= fz;
+                  if (!sleep[j]) {
+                    x[j] += fx;
+                    y[j] += fy;
+                    z[j] += fz;
+                  }
+                }
               }
             }
           }
@@ -866,42 +1123,85 @@ class Sand {
 
         x[i] = xi;
         y[i] = yi;
+        z[i] = zi;
         contacts[i] = count > 255 ? 255 : count;
         cover[i] = cov;
         litAbove[i] = lit;
       }
     }
     this.solvedPairs += pairs;
+    this.awakeCount += woke; // woken grains re-enter the sim next integrate
   }
 
   /**
-   * Container walls, enforced after the neighbour sweep rather than inside it.
-   * Done per-grain mid-sweep, every neighbour resolved afterwards shoves floor
-   * grains straight back through the floor, and the leftover position delta
-   * reads as a few hundred px/s that never dissipates — the whole bed simmers.
+   * Box walls (the screen is the z0 glass), as a push-out clamped exactly like
+   * a grain-grain contact rather than a hard snap to the boundary.
    *
-   * Dragging the previous position along with the clamp is what makes the wall
-   * inelastic: the normal velocity derives to exactly zero. Pulling the
-   * tangential delta back toward the previous position is the wall friction.
+   * The hard snap is the tempting version and it fails twice over: it drops two
+   * stacked grains onto the same wall coordinate (welding them into a permanent
+   * 100%-overlap pair), and, run mid-sweep, every neighbour resolved afterwards
+   * shoves wall grains back through the wall, leaving a few hundred px/s of
+   * residue that never dissipates and simmers the whole bed.
+   *
+   * Dragging the previous position along makes the wall inelastic: the normal
+   * velocity derives to exactly zero. Pulling the tangential delta back toward
+   * the previous position is the wall friction.
    */
   applyWalls() {
     const n = this.n;
-    const x = this.x, y = this.y, px = this.px, py = this.py;
+    const { x, y, z, px, py, pz, sleep } = this;
     const b = this.inner;
     const wf = 1 - CONFIG.sim.wallFriction;
+    const maxPush = CONFIG.sim.maxSeparation * this.diameter;
 
     for (let i = 0; i < n; i++) {
-      const xi = x[i];
-      if (xi < b.x0 || xi > b.x1) {
-        x[i] = xi < b.x0 ? b.x0 : b.x1;
+      if (sleep[i]) continue;
+      let pen = b.x0 - x[i];
+      if (pen > 0) {
+        x[i] += pen < maxPush ? pen : maxPush;
         px[i] = x[i];
         y[i] = py[i] + (y[i] - py[i]) * wf;
+        z[i] = pz[i] + (z[i] - pz[i]) * wf;
+      } else {
+        pen = x[i] - b.x1;
+        if (pen > 0) {
+          x[i] -= pen < maxPush ? pen : maxPush;
+          px[i] = x[i];
+          y[i] = py[i] + (y[i] - py[i]) * wf;
+          z[i] = pz[i] + (z[i] - pz[i]) * wf;
+        }
       }
-      const yi = y[i];
-      if (yi < b.y0 || yi > b.y1) {
-        y[i] = yi < b.y0 ? b.y0 : b.y1;
+
+      pen = b.y0 - y[i];
+      if (pen > 0) {
+        y[i] += pen < maxPush ? pen : maxPush;
         py[i] = y[i];
         x[i] = px[i] + (x[i] - px[i]) * wf;
+        z[i] = pz[i] + (z[i] - pz[i]) * wf;
+      } else {
+        pen = y[i] - b.y1;
+        if (pen > 0) {
+          y[i] -= pen < maxPush ? pen : maxPush;
+          py[i] = y[i];
+          x[i] = px[i] + (x[i] - px[i]) * wf;
+          z[i] = pz[i] + (z[i] - pz[i]) * wf;
+        }
+      }
+
+      pen = b.z0 - z[i];
+      if (pen > 0) {
+        z[i] += pen < maxPush ? pen : maxPush;
+        pz[i] = z[i];
+        x[i] = px[i] + (x[i] - px[i]) * wf;
+        y[i] = py[i] + (y[i] - py[i]) * wf;
+      } else {
+        pen = z[i] - b.z1;
+        if (pen > 0) {
+          z[i] -= pen < maxPush ? pen : maxPush;
+          pz[i] = z[i];
+          x[i] = px[i] + (x[i] - px[i]) * wf;
+          y[i] = py[i] + (y[i] - py[i]) * wf;
+        }
       }
     }
   }
@@ -909,50 +1209,130 @@ class Sand {
   deriveVelocity(dt) {
     const n = this.n;
     const cfg = CONFIG.sim;
-    const x = this.x, y = this.y, px = this.px, py = this.py;
-    const vx = this.vx, vy = this.vy, contacts = this.contacts;
+    const { x, y, z, px, py, pz, vx, vy, vz, contacts, sleep, justWoke } = this;
     const invDt = 1 / dt;
     const ceiling = (cfg.speedCeiling * this.diameter) / dt;
     const ceiling2 = ceiling * ceiling;
-    const sleepSpeed = cfg.sleepSpeed * this.diameter;
-    const sleep2 = sleepSpeed * sleepSpeed;
-    const sleepContacts = cfg.sleepContacts;
 
     // Contact drag as a small lookup: `contacts` is a tiny integer, so this
     // avoids an exp() per grain per substep.
     const maxC = cfg.maxDragContacts;
     const drag = this._dragTable || (this._dragTable = new Float32Array(maxC + 1));
     for (let c = 0; c <= maxC; c++) drag[c] = Math.exp(-cfg.contactDrag * c * dt);
+    const rollBelow = cfg.rollingBelow * cfg.sleepSpeed * this.diameter;
+    const rollBelow2 = rollBelow * rollBelow;
+    const rollDamp = Math.exp(-cfg.rollingDrag * dt);
 
     for (let i = 0; i < n; i++) {
-      let sx = (x[i] - px[i]) * invDt;
-      let sy = (y[i] - py[i]) * invDt;
-      const c = contacts[i];
-      const k = drag[c < maxC ? c : maxC];
-      sx *= k;
-      sy *= k;
-      const s2 = sx * sx + sy * sy;
+      if (sleep[i]) {
+        vx[i] = 0;
+        vy[i] = 0;
+        vz[i] = 0;
+        continue;
+      }
+      const cnt = contacts[i];
+      let k = drag[cnt < maxC ? cnt : maxC];
+      // A grain woken by pressure/pinch is decompressing: its position change
+      // this frame is stored solver penetration unwinding, not real motion.
+      // Deriving velocity from it would fire the grain out like a spring and
+      // set off a self-sustaining wake storm through the pile.
+      if (justWoke[i]) k *= 0.05;
+      let sx = (x[i] - px[i]) * invDt * k;
+      let sy = (y[i] - py[i]) * invDt * k;
+      let sz = (z[i] - pz[i]) * invDt * k;
+      const s2 = sx * sx + sy * sy + sz * sz;
       if (s2 > ceiling2) {
         const k2 = ceiling / Math.sqrt(s2);
         sx *= k2;
         sy *= k2;
-      } else if (s2 < sleep2 && contacts[i] >= sleepContacts) {
-        // Stiction: without this, a pile creeps downhill forever and slowly
-        // flattens instead of holding an angle of repose.
-        sx = 0;
-        sy = 0;
+        sz *= k2;
+      } else if (s2 < rollBelow2 && cnt > 0) {
+        // Rolling resistance: real grains are angular and stop trundling almost
+        // immediately; perfect spheres would trade momentum forever.
+        sx *= rollDamp;
+        sy *= rollDamp;
+        sz *= rollDamp;
       }
       vx[i] = sx;
       vy[i] = sy;
+      vz[i] = sz;
     }
+  }
+
+  /**
+   * The sleep decision, once per frame. Judged on NET frame displacement, not
+   * on instantaneous velocity: a grain squeezed between sleeping neighbours is
+   * shoved back and forth by the solver every sweep — its derived velocity
+   * looks fast forever even though it goes nowhere, so a velocity gate would
+   * keep it (and every grain like it) permanently awake. Net displacement
+   * cancels the oscillation and measures actual travel.
+   */
+  sleepPass(dtFrame) {
+    const n = this.n;
+    const cfg = CONFIG.sim;
+    const { x, y, z, fx, fy, fz, px, py, pz, vx, vy, vz, contacts, sleep, sleepDebt, justWoke } = this;
+    const sleepDelay = cfg.sleepDelay;
+    const sleepContacts = cfg.sleepContacts;
+    const enter = cfg.sleepSpeed * this.diameter * dtFrame; // px of net travel
+    const enter2 = enter * enter;
+    // A wall is worth two grains of support: a lone grain on the floor or a
+    // tripod resting against the glass could otherwise never reach the contact
+    // quorum and would stay awake (and faintly restless) forever.
+    const b = this.inner;
+    const eps = 0.05 * this.diameter;
+    const wx0 = b.x0 + eps, wx1 = b.x1 - eps;
+    const wy0 = b.y0 + eps, wy1 = b.y1 - eps;
+    const wz0 = b.z0 + eps, wz1 = b.z1 - eps;
+
+    let awake = 0;
+    for (let i = 0; i < n; i++) {
+      if (sleep[i]) continue;
+      justWoke[i] = 0;
+      const dx = x[i] - fx[i];
+      const dy = y[i] - fy[i];
+      const dz = z[i] - fz[i];
+      const d2 = dx * dx + dy * dy + dz * dz;
+
+      if (d2 < enter2) {
+        let support = contacts[i];
+        if (support < sleepContacts) {
+          const xi = x[i], yi = y[i], zi = z[i];
+          if (xi <= wx0 || xi >= wx1) support += 2;
+          if (yi <= wy0 || yi >= wy1) support += 2;
+          if (zi <= wz0 || zi >= wz1) support += 2;
+        }
+        if (support >= sleepContacts) {
+          // Slow and supported — but only dormant after staying that way for a
+          // stretch. Sleeping on the first slow frame would re-freeze a freshly
+          // woken bed before gravity gets a chance to accelerate it.
+          if (++sleepDebt[i] >= sleepDelay) {
+            sleep[i] = 1;
+            sleepDebt[i] = 0;
+            px[i] = x[i];
+            py[i] = y[i];
+            pz[i] = z[i];
+            vx[i] = 0;
+            vy[i] = 0;
+            vz[i] = 0;
+            continue;
+          }
+          awake++;
+          continue;
+        }
+      }
+      // Decay rather than reset: churn spikes a settling grain past the
+      // threshold on odd frames, and a hard reset would keep the whole surface
+      // layer hovering just short of dormancy forever.
+      if (sleepDebt[i] > 0) sleepDebt[i] -= Math.min(2, sleepDebt[i]);
+      awake++;
+    }
+    this.awakeCount = awake;
   }
 
   updateShading(dt) {
     const n = this.n;
     const cfg = CONFIG.sim;
-    const light = this.light, cover = this.cover, contacts = this.contacts;
-    const litAbove = this.litAbove;
-    const vx = this.vx, vy = this.vy, speed01 = this.speed01;
+    const { light, cover, contacts, litAbove, speed01, sleep, vx, vy, vz } = this;
     const invCover = 1 / cfg.coverNorm;
     const invSpeed = 1 / this.speedNorm;
     const blend = 1 - Math.exp(-cfg.lightSmoothing * dt);
@@ -960,13 +1340,15 @@ class Sand {
 
     for (let i = 0; i < n; i++) {
       const buried = clamp(cover[i] * invCover, 0, 1);
-      const loose = 1 - clamp(contacts[i] / 5, 0, 1);
+      const loose = 1 - clamp(contacts[i] / 6, 0, 1);
       // Lit if nothing is above you, or if you are barely touching anything...
       const exposed = Math.max(1 - buried, loose * 0.95);
       // ...otherwise take what filters down from the grain above you.
       const target = Math.max(exposed, litAbove[i] * transmit);
       light[i] += (target - light[i]) * blend;
-      speed01[i] = clamp(Math.hypot(vx[i], vy[i]) * invSpeed, 0, 1);
+      speed01[i] = sleep[i]
+        ? 0
+        : clamp(Math.hypot(vx[i], vy[i], vz[i]) * invSpeed, 0, 1);
     }
   }
 }
@@ -974,34 +1356,44 @@ class Sand {
 // ---- src/shaders.js ----
 // GLSL ES 1.00 so one shader pair works on both WebGL1 and WebGL2 contexts.
 //
-// Each grain is a single point sprite. The fragment shader reconstructs a fake
-// sphere normal from gl_PointCoord and lights it, which is what turns flat
-// points into beads. Two passes share the program: mode 0 draws a wide dim
-// additive halo, mode 1 draws the alpha-blended bead on top.
+// Each grain is a single point sprite with a 3D position: x/y in CSS px on the
+// glass, z going into the screen. The vertex shader applies a simple pinhole
+// projection around a movable eye point — deeper grains shrink and converge
+// toward the eye, which combined with fog and draw order is what makes the box
+// read as having real depth. The fragment shader reconstructs a fake sphere
+// normal from gl_PointCoord and lights it. Two passes share the program:
+// mode 0 draws a wide dim additive halo, mode 1 the alpha-blended bead on top.
 
 const VERTEX_SHADER = `
 precision highp float;
 
-attribute vec2 aPos;      // sim position, CSS px
+attribute vec3 aPos;      // sim position: x,y CSS px, z depth (0 = glass)
 attribute vec2 aShade;    // x: surface light 0..1, y: normalised speed 0..1
 attribute vec2 aJitter;   // x: size variation, y: tint variation
 
 uniform vec2 uViewport;   // CSS px
 uniform float uPointSize; // device px, already scaled by dpr
 uniform float uSpeedBoost;
+uniform float uFocal;     // focal length in CSS px
+uniform vec2 uEye;        // projection centre in CSS px (parallax lives here)
+uniform float uDepthRange;
 
 varying float vLight;
 varying float vSpeed;
 varying float vTint;
+varying float vDepth;
 
 void main() {
-  vec2 unit = aPos / uViewport;
+  float persp = uFocal / (uFocal + aPos.z);
+  vec2 projected = uEye + (aPos.xy - uEye) * persp;
+  vec2 unit = projected / uViewport;
   gl_Position = vec4(unit.x * 2.0 - 1.0, 1.0 - unit.y * 2.0, 0.0, 1.0);
   float grow = 1.0 + aShade.y * uSpeedBoost;
-  gl_PointSize = uPointSize * (0.88 + 0.24 * aJitter.x) * grow;
+  gl_PointSize = uPointSize * (0.88 + 0.24 * aJitter.x) * grow * persp;
   vLight = aShade.x;
   vSpeed = aShade.y;
   vTint = aJitter.y;
+  vDepth = clamp(aPos.z / uDepthRange, 0.0, 1.0);
 }
 `;
 
@@ -1011,12 +1403,14 @@ precision highp float;
 varying float vLight;
 varying float vSpeed;
 varying float vTint;
+varying float vDepth;
 
 uniform vec3 uDeep;
 uniform vec3 uMid;
 uniform vec3 uIce;
 uniform float uMode;      // 0.0 = glow pass, 1.0 = bead pass
 uniform float uGlow;
+uniform float uDepthDim;  // how much the back of the box falls into shadow
 
 vec3 grainColor() {
   float t = clamp(vLight, 0.0, 1.0);
@@ -1031,12 +1425,14 @@ void main() {
   float r2 = dot(uv, uv);
   if (r2 > 1.0) discard;
   vec3 base = grainColor();
+  float dim = 1.0 - uDepthDim * vDepth;
 
   if (uMode < 0.5) {
     // Soft halo. Premultiplied and additively blended, so bright clusters
     // bloom into each other the way the LCD does on camera.
     float falloff = exp(-r2 * 3.4) - 0.033;
-    float amount = uGlow * max(falloff, 0.0) * (0.35 + 0.65 * clamp(vLight, 0.0, 1.0));
+    float amount = uGlow * max(falloff, 0.0)
+      * (0.35 + 0.65 * clamp(vLight, 0.0, 1.0)) * dim;
     gl_FragColor = vec4(base * amount, amount);
     return;
   }
@@ -1054,6 +1450,7 @@ void main() {
   // Keep the highlight off buried grains, or the bulk turns grey and muddy.
   color += vec3(0.72, 0.86, 1.0) * spec * (0.08 + 0.92 * clamp(vLight, 0.0, 1.0));
   color *= 1.0 - 0.28 * rim;
+  color *= dim;
 
   float alpha = smoothstep(1.0, 0.82, r2);
   gl_FragColor = vec4(color, alpha);
@@ -1064,10 +1461,15 @@ void main() {
 // WebGL point-sprite renderer. One interleaved buffer, two draw calls per
 // frame (halo then beads). Prefers a WebGL2 context but the shaders are ES 1.00
 // so a WebGL1 fallback is identical in output.
+//
+// Grains are packed back-to-front (a 32-bucket counting sort on z), so nearer
+// beads paint over deeper ones and no depth buffer is needed — point sprites
+// with blending and a depth buffer fight over the alpha edges anyway.
 
 
-const FLOATS_PER_GRAIN = 6; // x, y, light, speed, sizeJitter, hueJitter
+const FLOATS_PER_GRAIN = 7; // x, y, z, light, speed, sizeJitter, hueJitter
 const STRIDE = FLOATS_PER_GRAIN * 4;
+const BUCKETS = 32;
 
 class Renderer {
   /**
@@ -1080,9 +1482,15 @@ class Renderer {
     this.canvas = canvas;
     this.capacity = capacity;
     this.cpu = new Float32Array(capacity * FLOATS_PER_GRAIN);
+    this.bucketOf = new Uint8Array(capacity);
+    this.drawOrder = new Int32Array(capacity);
+    this.bucketStart = new Int32Array(BUCKETS + 1);
     this.width = 1;
     this.height = 1;
     this.dpr = 1;
+    // Parallax offset for the projection eye, in CSS px; set from the tilt.
+    this.eyeX = 0;
+    this.eyeY = 0;
     this.contextLost = false;
 
     const opts = {
@@ -1129,6 +1537,10 @@ class Renderer {
       viewport: gl.getUniformLocation(this.program, 'uViewport'),
       pointSize: gl.getUniformLocation(this.program, 'uPointSize'),
       speedBoost: gl.getUniformLocation(this.program, 'uSpeedBoost'),
+      focal: gl.getUniformLocation(this.program, 'uFocal'),
+      eye: gl.getUniformLocation(this.program, 'uEye'),
+      depthRange: gl.getUniformLocation(this.program, 'uDepthRange'),
+      depthDim: gl.getUniformLocation(this.program, 'uDepthDim'),
       deep: gl.getUniformLocation(this.program, 'uDeep'),
       mid: gl.getUniformLocation(this.program, 'uMid'),
       ice: gl.getUniformLocation(this.program, 'uIce'),
@@ -1143,9 +1555,9 @@ class Renderer {
     for (const loc of Object.values(this.attrib)) {
       if (loc >= 0) gl.enableVertexAttribArray(loc);
     }
-    gl.vertexAttribPointer(this.attrib.pos, 2, gl.FLOAT, false, STRIDE, 0);
-    gl.vertexAttribPointer(this.attrib.shade, 2, gl.FLOAT, false, STRIDE, 8);
-    gl.vertexAttribPointer(this.attrib.jitter, 2, gl.FLOAT, false, STRIDE, 16);
+    gl.vertexAttribPointer(this.attrib.pos, 3, gl.FLOAT, false, STRIDE, 0);
+    gl.vertexAttribPointer(this.attrib.shade, 2, gl.FLOAT, false, STRIDE, 12);
+    gl.vertexAttribPointer(this.attrib.jitter, 2, gl.FLOAT, false, STRIDE, 20);
 
     const bg = CONFIG.render.background;
     gl.clearColor(bg[0], bg[1], bg[2], 1);
@@ -1180,20 +1592,40 @@ class Renderer {
     const n = sand.n;
     if (n === 0) return;
 
-    // Pack in the grid's gravity-sorted order: deepest grains first, so the
-    // lit surface layer lands on top without needing a depth buffer.
+    // Counting sort by z bucket, deepest first, so the pack order is
+    // back-to-front for the bead pass.
+    const { bucketOf, drawOrder, bucketStart } = this;
+    const zScale = BUCKETS / Math.max(sand.depth, 1e-3);
+    const zArr = sand.z;
+    bucketStart.fill(0);
+    for (let i = 0; i < n; i++) {
+      let b = (zArr[i] * zScale) | 0;
+      if (b < 0) b = 0; else if (b >= BUCKETS) b = BUCKETS - 1;
+      bucketOf[i] = b;
+      bucketStart[b + 1]++;
+    }
+    // Prefix from the deep end: bucket 31 packs first.
+    let acc = 0;
+    for (let b = BUCKETS - 1; b >= 0; b--) {
+      const c = bucketStart[b + 1];
+      bucketStart[b + 1] = acc;
+      acc += c;
+    }
+    // bucketStart[b+1] now holds the running start for bucket b; place items.
+    for (let i = 0; i < n; i++) drawOrder[bucketStart[bucketOf[i] + 1]++] = i;
+
     const cpu = this.cpu;
-    const order = sand.grid.order;
     const { x, y, light, speed01, sizeJitter, hueJitter } = sand;
     for (let k = 0; k < n; k++) {
-      const i = order[k];
+      const i = drawOrder[k];
       const o = k * FLOATS_PER_GRAIN;
       cpu[o] = x[i];
       cpu[o + 1] = y[i];
-      cpu[o + 2] = light[i];
-      cpu[o + 3] = speed01[i];
-      cpu[o + 4] = sizeJitter[i];
-      cpu[o + 5] = hueJitter[i];
+      cpu[o + 2] = zArr[i];
+      cpu[o + 3] = light[i];
+      cpu[o + 4] = speed01[i];
+      cpu[o + 5] = sizeJitter[i];
+      cpu[o + 6] = hueJitter[i];
     }
 
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
@@ -1207,6 +1639,10 @@ class Renderer {
     const px = sand.diameter * this.dpr;
     gl.uniform2f(this.uniform.viewport, this.width, this.height);
     gl.uniform1f(this.uniform.speedBoost, 0.35);
+    gl.uniform1f(this.uniform.focal, CONFIG.render.focal * Math.min(this.width, this.height));
+    gl.uniform2f(this.uniform.eye, this.width * 0.5 + this.eyeX, this.height * 0.5 + this.eyeY);
+    gl.uniform1f(this.uniform.depthRange, sand.depth);
+    gl.uniform1f(this.uniform.depthDim, CONFIG.render.depthDim);
 
     // Halo pass: additive, premultiplied.
     gl.blendFunc(gl.ONE, gl.ONE);
@@ -1215,7 +1651,7 @@ class Renderer {
     gl.uniform1f(this.uniform.pointSize, px * CONFIG.render.glowSize);
     gl.drawArrays(gl.POINTS, 0, n);
 
-    // Bead pass: straight alpha over the halo.
+    // Bead pass: straight alpha over the halo, back-to-front.
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.uniform1f(this.uniform.mode, 1);
     gl.uniform1f(this.uniform.pointSize, px * CONFIG.render.beadSize);
@@ -1249,31 +1685,36 @@ function compile(gl, type, source) {
 }
 
 // ---- src/gravity.js ----
-// Where "down" is.
+// Where "down" is — now a 3D vector, since the box has depth.
 //
 // Phone: derived from deviceorientation's beta/gamma. That is more portable
 // than accelerationIncludingGravity, whose sign convention differs between
 // iOS and Android. devicemotion is still used, but only for shake detection.
 //
-// Desktop / no sensors: arrow keys, WASD, or the on-screen stick.
+// Desktop / no sensors: arrow keys, WASD, or the on-screen stick, with a fixed
+// into-screen bias so the bed leans against the back wall and reads as 3D.
 //
-// Deriving the in-plane gravity from beta/gamma: the device->earth rotation is
+// Deriving gravity from beta/gamma: the device->earth rotation is
 // Rz(alpha)Rx(beta)Ry(gamma), so earth-down expressed in device axes is
-//   d = Ry(-gamma) Rx(-beta) (0,0,-1) = (sin g cos b, -sin b, -cos g cos b)
-// Device +y points up the screen while CSS +y points down, so in screen space
+//   d = (sin g cos b, -sin b, -cos g cos b)
+// Device +y points up the screen while CSS +y points down, and device +z points
+// out of the screen while box +z points into it, so in box space
 //   gx = sin(gamma) * cos(beta)
 //   gy = sin(beta)
-// Held upright in portrait (beta 90, gamma 0) that is (0, 1): straight down.
-// Flat on a table it is (0, 0) and the sand goes weightless, which is correct.
+//   gz = cos(beta) * cos(gamma)
+// Held upright in portrait (beta 90) that is (0,1,0): straight down the screen.
+// Flat on a table it is (0,0,1): into the screen, so the sand settles against
+// the back wall and spreads out — which is exactly what a real box would do.
 
 
 const DEG = Math.PI / 180;
 
 class GravityInput {
   constructor() {
-    // Smoothed unit-ish vector in CSS space, consumed by the sim.
+    // Smoothed unit-ish vector in box space, consumed by the sim.
     this.gx = 0;
     this.gy = 1;
+    this.gz = CONFIG.input.zBias;
     // Raw sensor readings, surfaced in the stats panel for on-device debugging.
     this.beta = 0;
     this.gamma = 0;
@@ -1281,7 +1722,6 @@ class GravityInput {
     this.shakeMagnitude = 0;
     this.mode = 'keys';
     this.sensorActive = false;
-    this.needsPermission = false;
     this.flipped = false;
     this.lastError = '';
 
@@ -1291,6 +1731,7 @@ class GravityInput {
     this.demo = false;
     this.demoPhase = 0;
 
+    this._age = 0;
     this._shakeCooldown = 0;
     this._hasOrientation = false;
     this._boundOrientation = (e) => this.handleOrientation(e);
@@ -1383,6 +1824,10 @@ class GravityInput {
       if (this.mode === 'keys') this.mode = 'motion';
     }
 
+    // Picking the phone up and putting it down spikes the accelerometer well
+    // past the shake threshold, so shakes stay disarmed for the first moments.
+    if (this._age < CONFIG.input.shakeArmDelay) return;
+
     if (mag > CONFIG.input.shakeThreshold && this._shakeCooldown <= 0) {
       this._shakeCooldown = CONFIG.input.shakeCooldown;
       const strength = clamp(mag / CONFIG.input.shakeThreshold, 1, 3);
@@ -1406,9 +1851,16 @@ class GravityInput {
 
   /** Target direction from tilt, keys, stick, or the demo sway. */
   targetVector() {
+    const zBias = CONFIG.input.zBias;
+
     if (this.demo) {
       // Roughly what a hand does: a lazy roll, never fully on its side.
-      return { x: Math.sin(this.demoPhase) * 0.6, y: Math.cos(this.demoPhase * 0.63) * 0.35 + 0.65 };
+      return normalise(
+        Math.sin(this.demoPhase) * 0.6,
+        Math.cos(this.demoPhase * 0.63) * 0.35 + 0.65,
+        zBias,
+        true,
+      );
     }
 
     let kx = 0;
@@ -1418,20 +1870,19 @@ class GravityInput {
     if (k.has('ArrowRight') || k.has('KeyD')) kx += 1;
     if (k.has('ArrowUp') || k.has('KeyW')) ky -= 1;
     if (k.has('ArrowDown') || k.has('KeyS')) ky += 1;
-    if (kx || ky) {
-      const m = Math.hypot(kx, ky);
-      return { x: kx / m, y: ky / m, keys: true };
-    }
+    if (kx || ky) return normalise(kx, ky, zBias, true);
 
-    if (this.stick.active) return { x: this.stick.x, y: this.stick.y, keys: true };
+    if (this.stick.active) return normalise(this.stick.x, this.stick.y, zBias, true);
 
     if (this.sensorActive && this._hasOrientation) {
       const b = this.beta * DEG;
       const g = this.gamma * DEG;
-      let dx = Math.sin(g) * Math.cos(b);
+      const cb = Math.cos(b);
+      let dx = Math.sin(g) * cb;
       let dy = Math.sin(b);
+      const dz = cb * Math.cos(g); // into the screen; unaffected by rotation
 
-      // Rotate device axes into CSS axes when the screen is not upright.
+      // Rotate device x/y into CSS axes when the screen is not upright.
       const angle = this.screenAngle * DEG;
       if (angle) {
         const c = Math.cos(angle);
@@ -1445,14 +1896,15 @@ class GravityInput {
         dx = -dx;
         dy = -dy;
       }
-      return { x: dx, y: dy };
+      return { x: dx, y: dy, z: dz };
     }
 
-    // No input at all: hold a gentle downward pull.
-    return { x: 0, y: 1, keys: true };
+    // No input at all: rest against the bottom and back wall.
+    return normalise(0, 1, zBias, true);
   }
 
   update(dt) {
+    this._age += dt;
     if (this._shakeCooldown > 0) this._shakeCooldown -= dt;
     this.screenAngle = this.readScreenAngle();
     if (this.demo) this.demoPhase += dt * 0.9;
@@ -1461,6 +1913,7 @@ class GravityInput {
     const rate = target.keys ? CONFIG.input.keySmoothing : CONFIG.input.tiltSmoothing;
     this.gx = approach(this.gx, target.x, rate, dt);
     this.gy = approach(this.gy, target.y, rate, dt);
+    this.gz = approach(this.gz, target.z, rate, dt);
   }
 
   describe() {
@@ -1470,6 +1923,11 @@ class GravityInput {
     if (this.sensorActive) return this._hasOrientation ? 'tilt' : 'motion';
     return 'idle';
   }
+}
+
+function normalise(x, y, z, keys) {
+  const m = Math.hypot(x, y, z) || 1;
+  return { x: x / m, y: y / m, z: z / m, keys };
 }
 
 // ---- src/poke.js ----
@@ -1564,8 +2022,13 @@ class Tuner {
     this._fpsFrames = 0;
   }
 
-  /** Called once per frame with the measured work time and the real delta. */
-  sample(workMs, dt) {
+  /**
+   * Called once per frame with the measured work time and the real delta.
+   * `eligible` marks frames where the sim actually did work — idle frames
+   * (dormant bed) still feed the fps display but never the quality decision,
+   * and they flush the sample window so stale numbers don't linger.
+   */
+  sample(workMs, dt, eligible = true) {
     this.frameMs += (workMs - this.frameMs) * 0.1;
     this._fpsAccum += dt;
     this._fpsFrames++;
@@ -1576,6 +2039,11 @@ class Tuner {
     }
 
     if (this._cooldown > 0) this._cooldown -= dt;
+    if (!eligible) {
+      this._accum = 0;
+      this._frames = 0;
+      return false;
+    }
     this._accum += workMs;
     this._frames++;
 
@@ -1711,11 +2179,13 @@ class Hud {
       ['fps', info.fps.toFixed(0)],
       ['work', info.workMs.toFixed(1) + ' ms'],
       ['grains', String(info.grains)],
+      ['asleep', String(info.asleep)],
       ['radius', info.radius.toFixed(2) + ' px'],
+      ['depth', Math.round(info.depth) + ' px'],
       ['solve', `${info.substeps}×${info.iterations}`],
       ['pairs', formatCount(info.pairs)],
       ['quality', info.scale.toFixed(2) + '×'],
-      ['gravity', `${info.gx.toFixed(2)}, ${info.gy.toFixed(2)}`],
+      ['gravity', `${info.gx.toFixed(2)}, ${info.gy.toFixed(2)}, ${info.gz.toFixed(2)}`],
       ['source', info.source],
       ['beta/gamma', `${info.beta.toFixed(0)}° / ${info.gamma.toFixed(0)}°`],
       ['screen', info.screenAngle + '°' + (info.flipped ? ' flipped' : '')],
@@ -1742,7 +2212,7 @@ function escapeHtml(s) {
 }
 
 // ---- src/main.js ----
-// Wiring: viewport -> sim size, input -> gravity, frame loop, adaptive quality.
+// Wiring: viewport -> box size, input -> gravity, frame loop, adaptive quality.
 
 
 const params = new URLSearchParams(location.search);
@@ -1772,7 +2242,7 @@ if (params.has('stats')) hud.toggleStats(true);
 
 let viewWidth = 0;
 let viewHeight = 0;
-let radius = 3;
+let radius = 4;
 let lastFrame = performance.now();
 let sensorWatchdog = 0;
 let stickForced = params.has('stick');
@@ -1802,10 +2272,10 @@ function grainRadius(width, height) {
   if (forcedRadius) return forcedRadius;
   const g = CONFIG.grain;
   const base = clamp(Math.min(width, height) / g.divisor, g.minRadius, g.maxRadius);
-  // Performance headroom buys *finer* grains, never a deeper bed: count is
-  // always whatever fills CONFIG.bed.fill, so the amount of sand on screen
-  // looks the same on every device.
-  return clamp(base / Math.sqrt(tuner.scale), g.minRadius, g.maxRadius);
+  // Performance headroom buys *finer* grains, never a deeper bed: count always
+  // fills the same volume, so the amount of sand looks constant per device.
+  // Count goes with 1/r^3 in a 3D box, hence the cube root.
+  return clamp(base / Math.cbrt(tuner.scale), g.minRadius, g.maxRadius);
 }
 
 function targetCount() {
@@ -1908,7 +2378,7 @@ window.addEventListener('keydown', (e) => {
     case 'Comma':
     case 'Period': {
       const k = e.code === 'Period' ? 1.15 : 0.87;
-      radius = clamp(radius * k, 1.2, 12);
+      radius = clamp(radius * k, 1.6, 14);
       forcedRadiusOverride = radius;
       sand.configure(viewWidth, viewHeight, radius);
       sand.setCount(targetCount());
@@ -1947,11 +2417,22 @@ function frame(now) {
   gravity.update(dt);
   const magnitude = sand.gravityMagnitude;
   poke.apply(sand, dt);
-  sand.step(dt, gravity.gx * magnitude, gravity.gy * magnitude);
+  sand.step(dt, gravity.gx * magnitude, gravity.gy * magnitude, gravity.gz * magnitude);
+
+  // Parallax: shift the projection eye against the tilt, so tipping the device
+  // lets you peek around the grains — a cheap but convincing depth cue.
+  const P = CONFIG.render.parallax;
+  renderer.eyeX = -gravity.gx * P;
+  renderer.eyeY = -gravity.gy * P;
   renderer.draw(sand);
 
   const workMs = performance.now() - t0;
-  if (tuner.sample(workMs, dt) && !forcedGrains && !forcedRadius) applyQuality();
+
+  // Only let the tuner judge frames where the sim actually worked. A dormant
+  // bed measures ~0 ms; tuning on that would inflate quality, spawn grains,
+  // wake the bed, and oscillate forever.
+  const active = sand.awakeCount > sand.n * 0.1;
+  if (tuner.sample(workMs, dt, active) && !forcedGrains && !forcedRadius) applyQuality();
 
   // If sensors never came alive on a touch device, offer the stick instead.
   if (touch && !gravity.sensorActive && !gravity.demo && sensorWatchdog < 3) {
@@ -1964,13 +2445,16 @@ function frame(now) {
     fps: tuner.fps,
     workMs,
     grains: sand.n,
+    asleep: sand.n - sand.awakeCount,
     radius,
+    depth: sand.depth,
     substeps: sand.substeps,
     iterations: sand.iterations,
     pairs: sand.solvedPairs,
     scale: tuner.scale,
     gx: gravity.gx,
     gy: gravity.gy,
+    gz: gravity.gz,
     source: gravity.describe(),
     beta: gravity.beta,
     gamma: gravity.gamma,

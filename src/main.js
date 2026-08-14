@@ -1,4 +1,4 @@
-// Wiring: viewport -> sim size, input -> gravity, frame loop, adaptive quality.
+// Wiring: viewport -> box size, input -> gravity, frame loop, adaptive quality.
 
 import { CONFIG } from './config.js';
 import { Sand } from './sand.js';
@@ -36,7 +36,7 @@ if (params.has('stats')) hud.toggleStats(true);
 
 let viewWidth = 0;
 let viewHeight = 0;
-let radius = 3;
+let radius = 4;
 let lastFrame = performance.now();
 let sensorWatchdog = 0;
 let stickForced = params.has('stick');
@@ -66,10 +66,10 @@ function grainRadius(width, height) {
   if (forcedRadius) return forcedRadius;
   const g = CONFIG.grain;
   const base = clamp(Math.min(width, height) / g.divisor, g.minRadius, g.maxRadius);
-  // Performance headroom buys *finer* grains, never a deeper bed: count is
-  // always whatever fills CONFIG.bed.fill, so the amount of sand on screen
-  // looks the same on every device.
-  return clamp(base / Math.sqrt(tuner.scale), g.minRadius, g.maxRadius);
+  // Performance headroom buys *finer* grains, never a deeper bed: count always
+  // fills the same volume, so the amount of sand looks constant per device.
+  // Count goes with 1/r^3 in a 3D box, hence the cube root.
+  return clamp(base / Math.cbrt(tuner.scale), g.minRadius, g.maxRadius);
 }
 
 function targetCount() {
@@ -172,7 +172,7 @@ window.addEventListener('keydown', (e) => {
     case 'Comma':
     case 'Period': {
       const k = e.code === 'Period' ? 1.15 : 0.87;
-      radius = clamp(radius * k, 1.2, 12);
+      radius = clamp(radius * k, 1.6, 14);
       forcedRadiusOverride = radius;
       sand.configure(viewWidth, viewHeight, radius);
       sand.setCount(targetCount());
@@ -211,11 +211,22 @@ function frame(now) {
   gravity.update(dt);
   const magnitude = sand.gravityMagnitude;
   poke.apply(sand, dt);
-  sand.step(dt, gravity.gx * magnitude, gravity.gy * magnitude);
+  sand.step(dt, gravity.gx * magnitude, gravity.gy * magnitude, gravity.gz * magnitude);
+
+  // Parallax: shift the projection eye against the tilt, so tipping the device
+  // lets you peek around the grains — a cheap but convincing depth cue.
+  const P = CONFIG.render.parallax;
+  renderer.eyeX = -gravity.gx * P;
+  renderer.eyeY = -gravity.gy * P;
   renderer.draw(sand);
 
   const workMs = performance.now() - t0;
-  if (tuner.sample(workMs, dt) && !forcedGrains && !forcedRadius) applyQuality();
+
+  // Only let the tuner judge frames where the sim actually worked. A dormant
+  // bed measures ~0 ms; tuning on that would inflate quality, spawn grains,
+  // wake the bed, and oscillate forever.
+  const active = sand.awakeCount > sand.n * 0.1;
+  if (tuner.sample(workMs, dt, active) && !forcedGrains && !forcedRadius) applyQuality();
 
   // If sensors never came alive on a touch device, offer the stick instead.
   if (touch && !gravity.sensorActive && !gravity.demo && sensorWatchdog < 3) {
@@ -228,13 +239,16 @@ function frame(now) {
     fps: tuner.fps,
     workMs,
     grains: sand.n,
+    asleep: sand.n - sand.awakeCount,
     radius,
+    depth: sand.depth,
     substeps: sand.substeps,
     iterations: sand.iterations,
     pairs: sand.solvedPairs,
     scale: tuner.scale,
     gx: gravity.gx,
     gy: gravity.gy,
+    gz: gravity.gz,
     source: gravity.describe(),
     beta: gravity.beta,
     gamma: gravity.gamma,

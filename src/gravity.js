@@ -1,19 +1,23 @@
-// Where "down" is.
+// Where "down" is — now a 3D vector, since the box has depth.
 //
 // Phone: derived from deviceorientation's beta/gamma. That is more portable
 // than accelerationIncludingGravity, whose sign convention differs between
 // iOS and Android. devicemotion is still used, but only for shake detection.
 //
-// Desktop / no sensors: arrow keys, WASD, or the on-screen stick.
+// Desktop / no sensors: arrow keys, WASD, or the on-screen stick, with a fixed
+// into-screen bias so the bed leans against the back wall and reads as 3D.
 //
-// Deriving the in-plane gravity from beta/gamma: the device->earth rotation is
+// Deriving gravity from beta/gamma: the device->earth rotation is
 // Rz(alpha)Rx(beta)Ry(gamma), so earth-down expressed in device axes is
-//   d = Ry(-gamma) Rx(-beta) (0,0,-1) = (sin g cos b, -sin b, -cos g cos b)
-// Device +y points up the screen while CSS +y points down, so in screen space
+//   d = (sin g cos b, -sin b, -cos g cos b)
+// Device +y points up the screen while CSS +y points down, and device +z points
+// out of the screen while box +z points into it, so in box space
 //   gx = sin(gamma) * cos(beta)
 //   gy = sin(beta)
-// Held upright in portrait (beta 90, gamma 0) that is (0, 1): straight down.
-// Flat on a table it is (0, 0) and the sand goes weightless, which is correct.
+//   gz = cos(beta) * cos(gamma)
+// Held upright in portrait (beta 90) that is (0,1,0): straight down the screen.
+// Flat on a table it is (0,0,1): into the screen, so the sand settles against
+// the back wall and spreads out — which is exactly what a real box would do.
 
 import { CONFIG } from './config.js';
 import { approach, clamp, isIOS } from './util.js';
@@ -22,9 +26,10 @@ const DEG = Math.PI / 180;
 
 export class GravityInput {
   constructor() {
-    // Smoothed unit-ish vector in CSS space, consumed by the sim.
+    // Smoothed unit-ish vector in box space, consumed by the sim.
     this.gx = 0;
     this.gy = 1;
+    this.gz = CONFIG.input.zBias;
     // Raw sensor readings, surfaced in the stats panel for on-device debugging.
     this.beta = 0;
     this.gamma = 0;
@@ -32,7 +37,6 @@ export class GravityInput {
     this.shakeMagnitude = 0;
     this.mode = 'keys';
     this.sensorActive = false;
-    this.needsPermission = false;
     this.flipped = false;
     this.lastError = '';
 
@@ -42,6 +46,7 @@ export class GravityInput {
     this.demo = false;
     this.demoPhase = 0;
 
+    this._age = 0;
     this._shakeCooldown = 0;
     this._hasOrientation = false;
     this._boundOrientation = (e) => this.handleOrientation(e);
@@ -134,6 +139,10 @@ export class GravityInput {
       if (this.mode === 'keys') this.mode = 'motion';
     }
 
+    // Picking the phone up and putting it down spikes the accelerometer well
+    // past the shake threshold, so shakes stay disarmed for the first moments.
+    if (this._age < CONFIG.input.shakeArmDelay) return;
+
     if (mag > CONFIG.input.shakeThreshold && this._shakeCooldown <= 0) {
       this._shakeCooldown = CONFIG.input.shakeCooldown;
       const strength = clamp(mag / CONFIG.input.shakeThreshold, 1, 3);
@@ -157,9 +166,16 @@ export class GravityInput {
 
   /** Target direction from tilt, keys, stick, or the demo sway. */
   targetVector() {
+    const zBias = CONFIG.input.zBias;
+
     if (this.demo) {
       // Roughly what a hand does: a lazy roll, never fully on its side.
-      return { x: Math.sin(this.demoPhase) * 0.6, y: Math.cos(this.demoPhase * 0.63) * 0.35 + 0.65 };
+      return normalise(
+        Math.sin(this.demoPhase) * 0.6,
+        Math.cos(this.demoPhase * 0.63) * 0.35 + 0.65,
+        zBias,
+        true,
+      );
     }
 
     let kx = 0;
@@ -169,20 +185,19 @@ export class GravityInput {
     if (k.has('ArrowRight') || k.has('KeyD')) kx += 1;
     if (k.has('ArrowUp') || k.has('KeyW')) ky -= 1;
     if (k.has('ArrowDown') || k.has('KeyS')) ky += 1;
-    if (kx || ky) {
-      const m = Math.hypot(kx, ky);
-      return { x: kx / m, y: ky / m, keys: true };
-    }
+    if (kx || ky) return normalise(kx, ky, zBias, true);
 
-    if (this.stick.active) return { x: this.stick.x, y: this.stick.y, keys: true };
+    if (this.stick.active) return normalise(this.stick.x, this.stick.y, zBias, true);
 
     if (this.sensorActive && this._hasOrientation) {
       const b = this.beta * DEG;
       const g = this.gamma * DEG;
-      let dx = Math.sin(g) * Math.cos(b);
+      const cb = Math.cos(b);
+      let dx = Math.sin(g) * cb;
       let dy = Math.sin(b);
+      const dz = cb * Math.cos(g); // into the screen; unaffected by rotation
 
-      // Rotate device axes into CSS axes when the screen is not upright.
+      // Rotate device x/y into CSS axes when the screen is not upright.
       const angle = this.screenAngle * DEG;
       if (angle) {
         const c = Math.cos(angle);
@@ -196,14 +211,15 @@ export class GravityInput {
         dx = -dx;
         dy = -dy;
       }
-      return { x: dx, y: dy };
+      return { x: dx, y: dy, z: dz };
     }
 
-    // No input at all: hold a gentle downward pull.
-    return { x: 0, y: 1, keys: true };
+    // No input at all: rest against the bottom and back wall.
+    return normalise(0, 1, zBias, true);
   }
 
   update(dt) {
+    this._age += dt;
     if (this._shakeCooldown > 0) this._shakeCooldown -= dt;
     this.screenAngle = this.readScreenAngle();
     if (this.demo) this.demoPhase += dt * 0.9;
@@ -212,6 +228,7 @@ export class GravityInput {
     const rate = target.keys ? CONFIG.input.keySmoothing : CONFIG.input.tiltSmoothing;
     this.gx = approach(this.gx, target.x, rate, dt);
     this.gy = approach(this.gy, target.y, rate, dt);
+    this.gz = approach(this.gz, target.z, rate, dt);
   }
 
   describe() {
@@ -221,4 +238,9 @@ export class GravityInput {
     if (this.sensorActive) return this._hasOrientation ? 'tilt' : 'motion';
     return 'idle';
   }
+}
+
+function normalise(x, y, z, keys) {
+  const m = Math.hypot(x, y, z) || 1;
+  return { x: x / m, y: y / m, z: z / m, keys };
 }
