@@ -1,8 +1,6 @@
 // DOM overlay: the hint line, the stats panel, the tilt-permission prompt, and
 // the virtual tilt stick shown when no sensors are available.
 
-import { clamp } from './util.js';
-
 export class Hud {
   constructor(root) {
     this.root = root;
@@ -140,8 +138,4 @@ function formatCount(n) {
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
-}
-
-export function clampStick(v) {
-  return clamp(v, -1, 1);
 }

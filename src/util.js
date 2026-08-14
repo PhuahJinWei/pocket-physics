@@ -10,10 +10,6 @@ export function approach(current, target, rate, dt) {
   return current + (target - current) * (1 - Math.exp(-rate * dt));
 }
 
-export function lerp(a, b, t) {
-  return a + (b - a) * t;
-}
-
 /** Deterministic 32-bit PRNG so a given seed always lays out the same bed. */
 export function makeRandom(seed) {
   let s = seed >>> 0 || 1;

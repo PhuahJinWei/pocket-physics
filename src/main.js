@@ -149,6 +149,9 @@ poke.onFirstTouch = () => {
 window.addEventListener('keydown', (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   gravity.setKey(e.code, true);
+  // Before the switch: the movement keys fall through to `default` and would
+  // otherwise never get here.
+  if (e.code.startsWith('Arrow') || e.code === 'Space') e.preventDefault();
   switch (e.code) {
     case 'Space': sand.splash(1.4); break;
     case 'KeyR': reset(); break;
@@ -175,9 +178,8 @@ window.addEventListener('keydown', (e) => {
       sand.setCount(targetCount());
       break;
     }
-    default: return;
+    default: break;
   }
-  if (e.code.startsWith('Arrow') || e.code === 'Space') e.preventDefault();
 }, { passive: false });
 
 window.addEventListener('keyup', (e) => gravity.setKey(e.code, false));
