@@ -161,7 +161,8 @@ export class Renderer {
     this.sandCompositeAttrib = { corner: gl.getAttribLocation(this.sandCompositeProgram, 'aCorner') };
     this.sandCompositeUniform = uniforms(gl, this.sandCompositeProgram, [
       'uField', 'uTexel', 'uDpr', 'uDeep', 'uMid', 'uLit', 'uSurface', 'uSoft', 'uDither', 'uDitherPx',
-      'uRelief', 'uForm', 'uPale', 'uPatchScale', 'uPatchAmp', 'uGrainPx', 'uGrainAmp', 'uFog', 'uDepthDim',
+      'uRelief', 'uForm', 'uFormRadius', 'uEdgeRadius', 'uEdgeSmooth',
+      'uPale', 'uPatchScale', 'uPatchAmp', 'uFog', 'uDepthDim', 'uFogStart',
     ]);
 
     this.speckBuffer = gl.createBuffer();
@@ -174,7 +175,8 @@ export class Renderer {
     };
     this.speckUniform = uniforms(gl, this.speckProgram, [
       'uViewport', 'uFocal', 'uEye', 'uPointSize', 'uDepthRange',
-      'uDeep', 'uMid', 'uLit', 'uAlpha', 'uDepthFade', 'uFog', 'uDepthDim', 'uGlint', 'uGlintRate', 'uTime',
+      'uDeep', 'uMid', 'uLit', 'uAlpha', 'uDepthFade', 'uFog', 'uDepthDim', 'uFogStart',
+      'uSpeckRelief', 'uSpeckRound', 'uGlint', 'uGlintRate', 'uTime',
       'uField', 'uInvCanvas', 'uSurface', 'uAirLight',
     ]);
   }
@@ -411,16 +413,25 @@ export class Renderer {
     const n = Math.min(sand.n, this.capacity);
     const per = this.speckCountFor(sand.radius);
     this.specksPerGrain = per;
-    const total = n * per;
-    if (this.speckCpu.length < total * FLOATS_PER_SPECK) {
-      this.speckCpu = new Float32Array(Math.ceil(total * FLOATS_PER_SPECK * 1.5));
+    // Sand in flight is drawn by its specks alone, so it gets more of them —
+    // a splash wants to read as spray, and a handful of specks spread over a
+    // whole grain is a puff rather than a scatter of grains. Only genuinely
+    // airborne grains pay for it, and there are a few dozen of those against
+    // thousands in the bed, so the extra costs nothing measurable.
+    const perAir = Math.min(s.speckMax, Math.round(per * s.speckAirMul));
+    const cap = n * per + Math.min(n, 512) * (perAir - per);
+    if (this.speckCpu.length < cap * FLOATS_PER_SPECK) {
+      this.speckCpu = new Float32Array(Math.ceil(cap * FLOATS_PER_SPECK * 1.5));
     }
+    const limit = (this.speckCpu.length / FLOATS_PER_SPECK) | 0;
     const cpu = this.speckCpu;
     const table = this.speckTable;
     const spread = s.speckSpread;
     const airSpread = s.speckAirSpread;
+    const airSize = s.speckAirSize;
     const { x, y, z, light, speed01, airborne, rad, hueJitter } = sand;
     let o = 0;
+    let count = 0;
     for (let i = 0; i < n; i++) {
       const xi = x[i];
       const yi = y[i];
@@ -433,23 +444,32 @@ export class Renderer {
       // they spread to its true size — the clump has to be as big as the sand
       // it stands for or a splash turns into dust.
       const reach = rad[i] * (spread + (airSpread - spread) * ai);
+      const size = 1 + (airSize - 1) * ai;
+      const flying = ai > 0.02;
+      const cnt = flying ? perAir : per;
+      if (count + cnt > limit) break;
       let t = ((hueJitter[i] * SPECK_SEEDS) | 0) * (s.speckMax * SPECK_FIELDS);
-      for (let k = 0; k < per; k++) {
+      for (let k = 0; k < cnt; k++) {
+        // The specks past the bed's own count fade in with `airborne` instead
+        // of appearing the instant a grain loses its last contact — a jump in
+        // COUNT cannot be blended, but a size of zero draws nothing.
+        const extra = k < per ? 1 : Math.min(1, ai * 4);
         cpu[o] = xi + table[t] * reach;
         cpu[o + 1] = yi + table[t + 1] * reach;
         cpu[o + 2] = zi;
         cpu[o + 3] = li;
         cpu[o + 4] = table[t + 2];
-        cpu[o + 5] = table[t + 3];
+        cpu[o + 5] = table[t + 3] * size * extra;
         cpu[o + 6] = table[t + 4];
         cpu[o + 7] = si;
         cpu[o + 8] = ai;
         o += FLOATS_PER_SPECK;
         t += SPECK_FIELDS;
+        count++;
       }
     }
-    this.speckCount = total;
-    return total;
+    this.speckCount = count;
+    return count;
   }
 
   drawSand(sand, focal) {
@@ -539,10 +559,12 @@ export class Renderer {
     gl.uniform1f(cu.uPale, s.pale);
     gl.uniform1f(cu.uPatchScale, s.patchScale);
     gl.uniform1f(cu.uPatchAmp, s.patchAmp);
-    gl.uniform1f(cu.uGrainPx, s.grainPx);
-    gl.uniform1f(cu.uGrainAmp, s.grainAmp);
+    gl.uniform1f(cu.uFormRadius, s.formRadius);
+    gl.uniform1f(cu.uEdgeRadius, s.edgeRadius);
+    gl.uniform1f(cu.uEdgeSmooth, s.edgeSmooth);
     gl.uniform3fv(cu.uFog, r.fog);
     gl.uniform1f(cu.uDepthDim, r.depthDim);
+    gl.uniform1f(cu.uFogStart, r.fogStart);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.disableVertexAttribArray(this.sandCompositeAttrib.corner);
 
@@ -583,6 +605,9 @@ export class Renderer {
     gl.uniform1f(su.uDepthFade, s.speckDepthFade);
     gl.uniform3fv(su.uFog, r.fog);
     gl.uniform1f(su.uDepthDim, r.depthDim);
+    gl.uniform1f(su.uFogStart, r.fogStart);
+    gl.uniform1f(su.uSpeckRelief, s.speckRelief);
+    gl.uniform1f(su.uSpeckRound, s.speckRound);
     gl.uniform1f(su.uGlint, s.glintStrength);
     gl.uniform1f(su.uGlintRate, s.glintRate);
     gl.uniform1f(su.uTime, (performance.now() - this.t0) * 0.001);

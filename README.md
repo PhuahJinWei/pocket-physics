@@ -176,22 +176,45 @@ already was:
   out of the pile as its own rounded lump, a metaball outline at exactly the
   scale sand must not have. Wide blobs low-pass the surface over a couple of
   grains, and it reads as a slope with fuzz on it.
-- **Composite.** The level set of that field is the silhouette, jittered by
-  grain-scale noise so the edge is fuzz rather than a clean clay contour. The
-  light channel colours the mass (open surface toward cream, buried sand toward
-  brown); the coverage gradient brightens crests that face the light — brighten
-  only, because darkening the lee side as well drew a dark rim along every
-  shadowed edge, which reads as an outline. Over the whole mass sits embossed
-  noise at grain scale, a lit side and shadowed side for every grain: real
-  sand is grains all the way down, and that fine *agreeing* relief is what
-  reads as sand rather than felt. It is screen-anchored, so it fades wherever
-  the sand is moving — still sand keeps its grain, flowing sand blurs.
-- **Speck pass.** The visible grain: a few tiny (2.4 px) specks per physics
-  grain, drawn as their own points on top — mostly near the body tone, some
-  dark mineral, some bright quartz that glints. They are real particles riding
-  the sim, so texture moves exactly with the sand, and they are far too small
-  and sparse to give away which grain owns them. They fade past the silhouette
-  so a surface is fringed with texture rather than beside it.
+- **Composite.** The level set of that field is the silhouette and the light
+  channel colours the mass — open surface toward cream, buried sand toward
+  brown. Two things here are worth more than they look, and both come down to
+  *the distance a gradient is measured over*:
+
+  **The silhouette is taken from a wider average of the field, not the field
+  itself.** The raw contour is the level set of a sum of 15–20 px blobs, so it
+  undulates at physics-grain scale — the one place the grain size still showed.
+  Fine dither cannot hide it, because dither works at 3 px and the lumps are
+  five times that. A low-pass removes structure at the blob scale and keeps the
+  shape of the pile; the dither then goes back on top. Sand has no outline —
+  what it has is a boundary uncertain at grain scale, which is a different
+  thing from one bumpy at clod scale.
+
+  **Form shading samples the gradient wide too — several grains apart.** One
+  texel apart, that gradient is blob noise, and lighting it embosses every
+  grain back into the mass; several grains apart the noise averages out and
+  what remains is the shape of the pile itself: the slope of a free surface,
+  the shoulder of a heap, the hollow a finger left. That is the shading a bed
+  with perfectly good grain texture was missing, and its absence is exactly why
+  it still read as a painted slab — real sand is lit by its form first and its
+  grain second. Sampled wide it can also *darken*, which the narrow version
+  could not afford: a one-texel gradient only exists within a few pixels of the
+  edge, so shading it drew a dark rim that read as an outline.
+- **Speck pass.** The visible grain: tiny (2.4 px) specks per physics grain,
+  drawn as their own points on top — mostly near the body tone, some dark
+  mineral, some bright quartz that glints. Each one is shaded as a little
+  rounded grain, with a lit crest and a shadowed far side under one global
+  light. That fine *agreeing* relief is what reads as sand rather than as felt
+  or as static, and it lives here rather than in the composite for a reason:
+  a speck is a particle riding the simulation, so its relief travels with the
+  sand. The same relief painted as screen-space noise stands still while the
+  sand pours through it — a tell you cannot unsee once you have looked for it.
+  The shading is normalised against a speck facing straight out, so it
+  redistributes light instead of adding it; scaling raw diffuse lifts every
+  speck centre by a fifth and comes out as glitter lying *on* the sand rather
+  than as the sand's own surface. Specks are far too small and sparse to give
+  away which grain owns them, and they fade past the silhouette so a surface is
+  fringed with texture rather than flanked by loose dots.
 
 **Sand in flight** is the one case the mass render cannot handle on its own,
 and it takes three separate corrections. All of them are keyed on *contact*
@@ -217,7 +240,12 @@ tens of pixels, which would catch an entire moving bed.
   from the fade that normally keeps specks inside the silhouette. What is left
   is a porous clump, which is what a clod of sand in the air actually is. The
   extent stays honest: drawn much under size, thousands of these are a dust
-  cloud even while the simulation is behaving perfectly.
+  cloud even while the simulation is behaving perfectly. Flying grains also get
+  roughly twice the bed's speck count, at slightly smaller size, so a splash
+  reads as a *scatter of grains* rather than a puff — the extras fade in with
+  `airborne` by shrinking to nothing, because a jump in speck count cannot be
+  blended but a size of zero draws nothing. Only the few dozen genuinely
+  airborne grains pay for them.
 - **It is not sunlit.** A grain in the air is fully exposed, but that is not
   the same as being the lit crest of a pile — the top of the colour ramp is a
   pale cream earned by a whole surface facing the light. Left there, a splash
@@ -268,7 +296,7 @@ milliseconds against a simulation that costs ten or more.
 - *light seeping down* — each grain takes the brightest value from neighbours
   above it, attenuated, one layer per frame: a real depth gradient through the
   bed instead of a flat dark slab.
-- *speed* — moving sand pales a little, and loses its still-grain relief.
+- *speed* — moving sand pales a little.
 
 This bed-level shading is the shading that earns its place. It is computed in
 the sim, costs nothing extra (it rides along in the contact scan the solver
@@ -293,10 +321,13 @@ Everything lives in [`src/config.js`](src/config.js). The knobs worth knowing:
 | `render.focal` / `parallax` | how dramatic the perspective is |
 | `render.wallColor` / `wallShade` | the box interior |
 | `sand.blob` / `surface` | how smooth the silhouette is, and how tight it sits on the grains |
+| `sand.edgeRadius` / `edgeSmooth` | the silhouette low-pass that removes grain-scale lumps |
+| `sand.form` / `formRadius` | large-scale shading, and how wide its gradient reaches |
 | `sand.speckPx` / `speckCoverage` | on-screen speck size and density — independent of physics cost |
-| `sand.grainAmp` / `grainPx` | the fine grain relief over the mass |
+| `sand.speckRelief` / `speckRound` | the per-speck lit crest and shadowed side |
 | `sand.looseShrink` | how much narrower a barely-attached grain's blob is |
 | `sand.soloSize` / `speckAirSpread` | how big sand in flight draws, and how far its specks spread |
+| `sand.speckAirMul` / `speckAirSize` | how many extra specks flying sand gets, and how fine |
 | `sand.airPow` / `airLight` | how soft and how pale flying sand is |
 | `render.depthDim` / `fog` | how far, and toward what, the back of the box darkens |
 | `sand.glintStrength` / `glintRate` | sparkle |

@@ -485,11 +485,16 @@ const CONFIG = {
     // How far the back of the box falls into shadow: sand and specks fade
     // this fraction of the way toward `fog` at full depth. A colour, never a
     // coverage — sand deep in the box is opaque sand, just further away.
-    depthDim: 0.45,
+    depthDim: 0.5,
+    // Depth at which that fade begins. The per-pixel depth is an average along
+    // the view ray, so the front face of the bed already reads as mid-depth
+    // once the grains behind it are summed in; fogging from zero greyed the
+    // whole mass by a fifth. Only what is genuinely toward the back pays.
+    fogStart: 0.45,
     // What they fade toward: the box's own darkness, a shade warmer than the
     // back wall so deep sand still reads as sand in shadow rather than as a
     // hole.
-    fog: [0.09, 0.07, 0.05],
+    fog: [0.10, 0.075, 0.05],
     parallax: 65,
     // Box interior. Shaded by facing under the same light as the sand: the
     // floor catches it, the ceiling is in shadow. Back vertices are multiplied
@@ -509,10 +514,13 @@ const CONFIG = {
     // Dry quartz: shadowed brown for buried sand, warm tan through the body,
     // pale cream where the surface catches the light. Buried sand is only a
     // little darker than the surface — against the glass, real sand is nearly
-    // one tone — so the deep end stays well up from black.
-    deep: [0.30, 0.22, 0.14],
-    mid: [0.64, 0.52, 0.36],
-    lit: [0.94, 0.86, 0.68],
+    // one tone — so the deep end stays well up from black. Measured against
+    // real dry sand (beach sand #C2B280 is 45 deg / 35% sat / 63% light), the
+    // rendered mass wants to land near 40 deg / 35% / 62%; greyer than that
+    // reads as damp sand or concrete.
+    deep: [0.34, 0.25, 0.15],
+    mid: [0.70, 0.56, 0.37],
+    lit: [0.96, 0.87, 0.66],
   },
 
   // The sand look. See src/shaders.js for the idea: the pile is drawn as one
@@ -579,21 +587,27 @@ const CONFIG = {
     // breaks into fuzz instead of a smooth contour.
     dither: 0.02,
     ditherPx: 3.0,
-    // Form shading from the field gradient along the free surface (brighten
-    // only — see the shader): how strongly the gradient tilts the normal, and
-    // how much of the result the colour is allowed to see.
-    relief: 4.0,
-    form: 0.25,
+    // Form shading from the field gradient: how strongly the gradient tilts
+    // the normal, how much of the result the colour sees, and — the load
+    // bearing one — how far apart the gradient is sampled, in field texels.
+    // Sampled at one texel this is blob noise and it embosses every grain;
+    // sampled several grains apart it is the shape of the pile, which is the
+    // shading that makes a bed look like a heap of sand instead of a slab.
+    relief: 2.2,
+    form: 0.45,
+    formRadius: 7.0,
+    // Silhouette low-pass: radius in field texels, and how much of it the
+    // mask takes. The raw contour is the level set of a sum of 15-20px blobs,
+    // so it carries lumps at physics-grain scale; averaging wider removes
+    // them and the fine dither above puts the fuzz back.
+    edgeRadius: 3.0,
+    edgeSmooth: 0.75,
     // Fast sand pales a little toward dust.
     pale: 0.15,
     // Spatial patchiness: real sand varies in correlated patches (minerals,
     // moisture), not grain by grain. Scale is the patch size in CSS px.
     patchScale: 52,
     patchAmp: 0.09,
-    // Grain relief: embossed noise at grain scale over the whole mass, the
-    // lit-side/shadow-side of every grain. Screen-anchored (see the shader).
-    grainPx: 2.6,
-    grainAmp: 0.09,
 
     // Specks: the visible grain. Diameter on screen in CSS px, held constant
     // across devices; how far each grain scatters its specks (multiple of
@@ -611,6 +625,18 @@ const CONFIG = {
     // tuner's lever is now grain size, so this has to reach.
     speckMax: 48,
     speckAlpha: 0.85,
+    // Per-speck relief: each speck gets a lit crest and a shadowed far side
+    // under one global light. This is where the fine realism lives, and it is
+    // here rather than in the composite because a speck rides the simulation —
+    // so the relief travels with the sand instead of standing still while the
+    // sand pours through it. `round` is how domed a speck is; higher is
+    // flatter, and below about 0.3 the shadowed sides go black.
+    speckRelief: 0.42,
+    speckRound: 0.55,
+    // Sand in flight gets this many times the bed's specks, at this size:
+    // more and finer, so a splash reads as spray rather than as a puff.
+    speckAirMul: 2.2,
+    speckAirSize: 0.8,
     // Mineral mix. Fractions of specks that are dark grains and bright quartz,
     // their tones relative to the body, and the spread of everything else.
     speckDark: 0.10,
@@ -623,8 +649,10 @@ const CONFIG = {
     // Fading them out entirely left the back reading as smooth mud.
     speckDepthFade: 0.3,
     // Sand glints as facets catch the light: brief, sparse, on the bright
-    // specks only, more readily when moving.
-    glintStrength: 0.35,
+    // specks only, more readily when moving. Restrained on purpose — now that
+    // every speck carries its own lit crest, the bed already sparkles a
+    // little on its own, and at 0.35 on top of that it read as sugar.
+    glintStrength: 0.18,
     glintRate: 1.6,
   },
 
@@ -3113,13 +3141,15 @@ uniform float uDither;     // how far the threshold wanders, grain to grain
 uniform float uDitherPx;   // size of one such grain on screen (CSS px)
 uniform float uRelief;     // how strongly the coverage gradient tilts the normal
 uniform float uForm;       // how much that shading is allowed to do
+uniform float uFormRadius; // and how far apart it samples, in field texels
+uniform float uEdgeRadius; // silhouette low-pass radius, in field texels
+uniform float uEdgeSmooth; // how much of it the mask takes
 uniform float uPale;       // fast sand pales toward dust
 uniform float uPatchScale;
 uniform float uPatchAmp;
-uniform float uGrainPx;    // grain relief: cell size on screen (CSS px)
-uniform float uGrainAmp;   // and its contrast
 uniform vec3 uFog;         // what the back of the box fades toward
 uniform float uDepthDim;   // and how far it gets
+uniform float uFogStart;   // depth (0..1) at which the fade begins
 
 float phash(vec2 c) {
   return fract(sin(dot(c, vec2(127.1, 311.7))) * 43758.5453);
@@ -3142,71 +3172,98 @@ void main() {
   float w = f.r;
   float soft = uSoft;
 
-  // Most of the screen is empty box; leave before doing any noise for it.
-  if (w < uSurface - uDither * 0.5 - soft) discard;
+  // Most of the screen is empty box; leave before doing any noise for it. The
+  // margin covers the low-pass below, which can lift a pixel above threshold
+  // that the raw field left under it.
+  if (w < uSurface - uDither * 0.5 - soft - 0.03) discard;
   vec2 css = gl_FragCoord.xy / uDpr;
 
-  // The level set of the coverage field is the silhouette. A clean contour
-  // reads as clay, so the threshold wanders at grain scale across the screen:
-  // the edge breaks into fuzz, the way a real pile of sand never has a smooth
-  // outline. Smooth noise rather than cells, or the fuzz is square-cornered.
+  // ---- silhouette
+  //
+  // The level set of the coverage field is the outline, and taken raw it
+  // undulates at PHYSICS-GRAIN scale — it is the contour of a sum of blobs,
+  // each 15-20 px across, so the edge carries lumps at exactly the size the
+  // whole field render exists to hide. Fine dither cannot disguise them: it
+  // works at 3 px and the lumps are five times that.
+  //
+  // So the mask comes from a WIDER average of the field. That is a low-pass
+  // in image space: it removes structure at the blob scale and keeps the
+  // shape of the pile, and the fine dither goes back on top so the edge is
+  // still fuzz rather than a smooth contour. Sand has no outline; what it has
+  // is a boundary that is uncertain at grain scale, which is a different
+  // thing from one that is bumpy at clod scale.
+  vec2 er = uTexel * uEdgeRadius;
+  float ws = (
+      texture2D(uField, vUV + vec2( er.x, 0.0)).r
+    + texture2D(uField, vUV + vec2(-er.x, 0.0)).r
+    + texture2D(uField, vUV + vec2(0.0,  er.y)).r
+    + texture2D(uField, vUV + vec2(0.0, -er.y)).r) * 0.25;
+  float wMask = mix(w, ws, uEdgeSmooth);
+
   float wander = patch(css / uDitherPx) - 0.5;
   float thr = uSurface + wander * uDither;
-  float mask = smoothstep(thr - soft, thr + soft, w);
+  float mask = smoothstep(thr - soft, thr + soft, wMask);
   if (mask <= 0.004) discard;
 
   float light = f.g / max(w, 1e-4);
   float speed = f.b / max(w, 1e-4);
   float depth = f.a / max(w, 1e-4);
 
-  // Form shading from the coverage gradient, confined to the band along the
-  // free surface, and brighten-only: a crest facing the light catches it, but
-  // a slope facing away is left alone. Darkening the lee side as well drew a
-  // dark rim a few pixels wide along every shadowed edge, which reads as an
-  // outline rather than as shade — the gradient only exists in the edge band,
-  // so it can never darken a whole face the way real shadow would.
+  // ---- form
   //
-  // The packed interior is exempt too — its field is a sum of overlapping
-  // blobs and never quite flat, and shading that gradient embosses every
-  // grain back into the mass as a soft bump.
-  float l = texture2D(uField, vUV - vec2(uTexel.x, 0.0)).r;
-  float r = texture2D(uField, vUV + vec2(uTexel.x, 0.0)).r;
-  float d = texture2D(uField, vUV - vec2(0.0, uTexel.y)).r;
-  float u = texture2D(uField, vUV + vec2(0.0, uTexel.y)).r;
-  float band = 1.0 - smoothstep(uSurface * 1.5, uSurface * 4.0, w);
-  float relief = uRelief * band;
+  // Shading from the coverage gradient, sampled WIDE — several grains apart
+  // rather than one texel. That distinction is the whole trick. One texel
+  // apart the gradient is the noise of individual blobs, and lighting it
+  // embosses every grain back into the mass as a soft bump; several grains
+  // apart the blob noise averages out and what is left is the shape of the
+  // pile itself — the slope of a free surface, the shoulder of a heap, the
+  // hollow a finger left. That is the shading the mass was missing, and its
+  // absence is why a bed with perfectly good grain texture still read as a
+  // painted slab: real sand is lit by its own form first and its grain
+  // second.
+  //
+  // It darkens as well as brightens, which the narrow version could not
+  // afford: a one-texel gradient only exists within a few pixels of the
+  // silhouette, so darkening it drew a dark rim that read as an outline. A
+  // wide gradient spans a whole face, so shading it reads as shade.
+  vec2 fr = uTexel * uFormRadius;
+  float fl = texture2D(uField, vUV - vec2(fr.x, 0.0)).r;
+  float fR = texture2D(uField, vUV + vec2(fr.x, 0.0)).r;
+  float fd = texture2D(uField, vUV - vec2(0.0, fr.y)).r;
+  float fu = texture2D(uField, vUV + vec2(0.0, fr.y)).r;
   // +y is up the screen here.
-  vec3 nrm = normalize(vec3((l - r) * relief, (d - u) * relief, 1.0));
+  vec3 nrm = normalize(vec3((fl - fR) * uRelief, (fd - fu) * uRelief, 1.0));
   vec3 lightDir = normalize(vec3(-0.35, 0.62, 0.70));
-  float diffuse = max(dot(nrm, lightDir), 0.0);
-  float form = 1.0 + uForm * max(diffuse / lightDir.z - 1.0, 0.0);
+  // Normalised so a face square to the viewer is unshaded.
+  float diffuse = max(dot(nrm, lightDir), 0.0) / lightDir.z;
+  float form = mix(1.0, diffuse, uForm);
 
   vec3 c = mix(uDeep, uMid, smoothstep(0.0, 0.55, light));
   c = mix(c, uLit, smoothstep(0.45, 1.0, light));
   // Airborne dust catches the light and pales, but never glows.
   c = mix(c, vec3(0.97, 0.94, 0.86), clamp(speed, 0.0, 1.0) * uPale);
+  // Patchiness stays screen-anchored on purpose, unlike the grain relief that
+  // used to sit here. This one is only a slow brightness wash, and reads as
+  // light and shade inside the box — which genuinely does not travel with the
+  // sand. Fine relief is a different claim: it purports to BE the grains, so
+  // it has to move with them, and it now lives on the specks instead.
   c *= 1.0 - uPatchAmp + uPatchAmp * 2.0 * patch(css / uPatchScale);
   c *= form;
-
-  // Grain relief. Real sand is grains all the way down, each with a lit side
-  // and a shadowed side, and it is that fine agreeing relief — not random
-  // brightness — that reads as sand rather than as felt. Embossed value noise
-  // at grain scale: the difference between the noise here and the noise one
-  // step toward the light is a lit slope where it rises and a shadow where it
-  // falls. It is screen-anchored, so it fades out wherever the sand is
-  // moving: still sand keeps its grain, flowing sand blurs — which is also
-  // what a camera would show — and the specks carry the motion.
-  vec2 gp = css / uGrainPx;
-  float relief2 = patch(gp) - patch(gp + vec2(-0.5, 0.5));
-  float still = 1.0 - smoothstep(0.03, 0.2, speed);
-  c *= 1.0 + uGrainAmp * relief2 * 2.0 * still;
 
   // Depth is a colour, never a coverage. The back of the box falls into
   // shadow, so sand there fades toward the box's own darkness — which reads as
   // *far*. Dimming its light instead read as *buried*: it slid the colour down
   // the ramp into crevice brown, and the band of sand visible only at the
   // back came out as a dark smear.
-  c = mix(c, uFog, uDepthDim * clamp(depth, 0.0, 1.0));
+  //
+  // The fog starts partway back rather than at the glass. The depth here is
+  // an average along the view ray, so even the front face of the bed reads
+  // as mid-depth once the grains behind it are summed in — fogging from zero
+  // greyed the whole mass by a fifth (measured: 23% saturation against the
+  // 35-45% of real dry sand). Only what is genuinely toward the back should
+  // pay.
+  float far = smoothstep(uFogStart, 1.0, clamp(depth, 0.0, 1.0));
+  c = mix(c, uFog, uDepthDim * far);
 
   gl_FragColor = vec4(c, mask);
 }
@@ -3272,6 +3329,9 @@ uniform float uAlpha;
 uniform float uDepthFade;
 uniform vec3 uFog;
 uniform float uDepthDim;
+uniform float uFogStart;
+uniform float uSpeckRelief; // strength of the per-speck lit/shadow side
+uniform float uSpeckRound;  // how domed each speck is (higher = flatter)
 uniform float uGlint;
 uniform float uGlintRate;
 uniform float uTime;
@@ -3301,6 +3361,27 @@ void main() {
   c = mix(c, uLit, smoothstep(0.45, 1.0, vLight));
   c *= vTone;
 
+  // Micro-relief: every speck is a little rounded grain with a lit crest and a
+  // shadowed far side, all agreeing about one global light. This is the thing
+  // that reads as sand rather than as felt or as static — thousands of tiny
+  // highlights and shadows pointing the same way — and putting it HERE rather
+  // than in the composite is what makes it honest: a speck is a particle that
+  // rides the simulation, so its relief travels with the sand. The same relief
+  // painted as screen-space noise stands still while the sand pours through
+  // it, which is a tell you cannot unsee once you have looked for it.
+  //
+  // gl_PointCoord's y runs down the sprite, so the light vector is negated in
+  // y against the composite's: crest up-left either way.
+  vec3 lightDir = normalize(vec3(-0.33, -0.62, 0.71));
+  vec3 nrm = normalize(vec3(uv, sqrt(max(1.0 - min(r2, 1.0), 0.0)) + uSpeckRound));
+  // Normalised against a speck facing straight out, so relief REDISTRIBUTES
+  // light rather than adding it: the crest brightens by as much as the far
+  // side darkens, and the bed's overall tone is untouched. Scaling raw
+  // diffuse instead lifts every speck centre by a fifth, which came out as
+  // glitter lying on top of the sand rather than as the sand's own surface.
+  float shade = max(dot(nrm, lightDir), 0.0) / lightDir.z;
+  c *= mix(1.0, shade, uSpeckRelief);
+
   // Only the bright quartz specks ever glint (tone above 1), briefly and out
   // of phase with each other, and more readily while the sand is moving and
   // the facets are tumbling.
@@ -3311,7 +3392,7 @@ void main() {
 
   // Same fog as the mass, so a speck at the back sits *in* the sand behind
   // it rather than on top of it.
-  c = mix(c, uFog, uDepthDim * vDepth);
+  c = mix(c, uFog, uDepthDim * smoothstep(uFogStart, 1.0, vDepth));
 
   gl_FragColor = vec4(c, a);
 }
@@ -3695,7 +3776,8 @@ class Renderer {
     this.sandCompositeAttrib = { corner: gl.getAttribLocation(this.sandCompositeProgram, 'aCorner') };
     this.sandCompositeUniform = uniforms(gl, this.sandCompositeProgram, [
       'uField', 'uTexel', 'uDpr', 'uDeep', 'uMid', 'uLit', 'uSurface', 'uSoft', 'uDither', 'uDitherPx',
-      'uRelief', 'uForm', 'uPale', 'uPatchScale', 'uPatchAmp', 'uGrainPx', 'uGrainAmp', 'uFog', 'uDepthDim',
+      'uRelief', 'uForm', 'uFormRadius', 'uEdgeRadius', 'uEdgeSmooth',
+      'uPale', 'uPatchScale', 'uPatchAmp', 'uFog', 'uDepthDim', 'uFogStart',
     ]);
 
     this.speckBuffer = gl.createBuffer();
@@ -3708,7 +3790,8 @@ class Renderer {
     };
     this.speckUniform = uniforms(gl, this.speckProgram, [
       'uViewport', 'uFocal', 'uEye', 'uPointSize', 'uDepthRange',
-      'uDeep', 'uMid', 'uLit', 'uAlpha', 'uDepthFade', 'uFog', 'uDepthDim', 'uGlint', 'uGlintRate', 'uTime',
+      'uDeep', 'uMid', 'uLit', 'uAlpha', 'uDepthFade', 'uFog', 'uDepthDim', 'uFogStart',
+      'uSpeckRelief', 'uSpeckRound', 'uGlint', 'uGlintRate', 'uTime',
       'uField', 'uInvCanvas', 'uSurface', 'uAirLight',
     ]);
   }
@@ -3945,16 +4028,25 @@ class Renderer {
     const n = Math.min(sand.n, this.capacity);
     const per = this.speckCountFor(sand.radius);
     this.specksPerGrain = per;
-    const total = n * per;
-    if (this.speckCpu.length < total * FLOATS_PER_SPECK) {
-      this.speckCpu = new Float32Array(Math.ceil(total * FLOATS_PER_SPECK * 1.5));
+    // Sand in flight is drawn by its specks alone, so it gets more of them —
+    // a splash wants to read as spray, and a handful of specks spread over a
+    // whole grain is a puff rather than a scatter of grains. Only genuinely
+    // airborne grains pay for it, and there are a few dozen of those against
+    // thousands in the bed, so the extra costs nothing measurable.
+    const perAir = Math.min(s.speckMax, Math.round(per * s.speckAirMul));
+    const cap = n * per + Math.min(n, 512) * (perAir - per);
+    if (this.speckCpu.length < cap * FLOATS_PER_SPECK) {
+      this.speckCpu = new Float32Array(Math.ceil(cap * FLOATS_PER_SPECK * 1.5));
     }
+    const limit = (this.speckCpu.length / FLOATS_PER_SPECK) | 0;
     const cpu = this.speckCpu;
     const table = this.speckTable;
     const spread = s.speckSpread;
     const airSpread = s.speckAirSpread;
+    const airSize = s.speckAirSize;
     const { x, y, z, light, speed01, airborne, rad, hueJitter } = sand;
     let o = 0;
+    let count = 0;
     for (let i = 0; i < n; i++) {
       const xi = x[i];
       const yi = y[i];
@@ -3967,23 +4059,32 @@ class Renderer {
       // they spread to its true size — the clump has to be as big as the sand
       // it stands for or a splash turns into dust.
       const reach = rad[i] * (spread + (airSpread - spread) * ai);
+      const size = 1 + (airSize - 1) * ai;
+      const flying = ai > 0.02;
+      const cnt = flying ? perAir : per;
+      if (count + cnt > limit) break;
       let t = ((hueJitter[i] * SPECK_SEEDS) | 0) * (s.speckMax * SPECK_FIELDS);
-      for (let k = 0; k < per; k++) {
+      for (let k = 0; k < cnt; k++) {
+        // The specks past the bed's own count fade in with `airborne` instead
+        // of appearing the instant a grain loses its last contact — a jump in
+        // COUNT cannot be blended, but a size of zero draws nothing.
+        const extra = k < per ? 1 : Math.min(1, ai * 4);
         cpu[o] = xi + table[t] * reach;
         cpu[o + 1] = yi + table[t + 1] * reach;
         cpu[o + 2] = zi;
         cpu[o + 3] = li;
         cpu[o + 4] = table[t + 2];
-        cpu[o + 5] = table[t + 3];
+        cpu[o + 5] = table[t + 3] * size * extra;
         cpu[o + 6] = table[t + 4];
         cpu[o + 7] = si;
         cpu[o + 8] = ai;
         o += FLOATS_PER_SPECK;
         t += SPECK_FIELDS;
+        count++;
       }
     }
-    this.speckCount = total;
-    return total;
+    this.speckCount = count;
+    return count;
   }
 
   drawSand(sand, focal) {
@@ -4073,10 +4174,12 @@ class Renderer {
     gl.uniform1f(cu.uPale, s.pale);
     gl.uniform1f(cu.uPatchScale, s.patchScale);
     gl.uniform1f(cu.uPatchAmp, s.patchAmp);
-    gl.uniform1f(cu.uGrainPx, s.grainPx);
-    gl.uniform1f(cu.uGrainAmp, s.grainAmp);
+    gl.uniform1f(cu.uFormRadius, s.formRadius);
+    gl.uniform1f(cu.uEdgeRadius, s.edgeRadius);
+    gl.uniform1f(cu.uEdgeSmooth, s.edgeSmooth);
     gl.uniform3fv(cu.uFog, r.fog);
     gl.uniform1f(cu.uDepthDim, r.depthDim);
+    gl.uniform1f(cu.uFogStart, r.fogStart);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.disableVertexAttribArray(this.sandCompositeAttrib.corner);
 
@@ -4117,6 +4220,9 @@ class Renderer {
     gl.uniform1f(su.uDepthFade, s.speckDepthFade);
     gl.uniform3fv(su.uFog, r.fog);
     gl.uniform1f(su.uDepthDim, r.depthDim);
+    gl.uniform1f(su.uFogStart, r.fogStart);
+    gl.uniform1f(su.uSpeckRelief, s.speckRelief);
+    gl.uniform1f(su.uSpeckRound, s.speckRound);
     gl.uniform1f(su.uGlint, s.glintStrength);
     gl.uniform1f(su.uGlintRate, s.glintRate);
     gl.uniform1f(su.uTime, (performance.now() - this.t0) * 0.001);

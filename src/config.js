@@ -158,11 +158,16 @@ export const CONFIG = {
     // How far the back of the box falls into shadow: sand and specks fade
     // this fraction of the way toward `fog` at full depth. A colour, never a
     // coverage — sand deep in the box is opaque sand, just further away.
-    depthDim: 0.45,
+    depthDim: 0.5,
+    // Depth at which that fade begins. The per-pixel depth is an average along
+    // the view ray, so the front face of the bed already reads as mid-depth
+    // once the grains behind it are summed in; fogging from zero greyed the
+    // whole mass by a fifth. Only what is genuinely toward the back pays.
+    fogStart: 0.45,
     // What they fade toward: the box's own darkness, a shade warmer than the
     // back wall so deep sand still reads as sand in shadow rather than as a
     // hole.
-    fog: [0.09, 0.07, 0.05],
+    fog: [0.10, 0.075, 0.05],
     parallax: 65,
     // Box interior. Shaded by facing under the same light as the sand: the
     // floor catches it, the ceiling is in shadow. Back vertices are multiplied
@@ -182,10 +187,13 @@ export const CONFIG = {
     // Dry quartz: shadowed brown for buried sand, warm tan through the body,
     // pale cream where the surface catches the light. Buried sand is only a
     // little darker than the surface — against the glass, real sand is nearly
-    // one tone — so the deep end stays well up from black.
-    deep: [0.30, 0.22, 0.14],
-    mid: [0.64, 0.52, 0.36],
-    lit: [0.94, 0.86, 0.68],
+    // one tone — so the deep end stays well up from black. Measured against
+    // real dry sand (beach sand #C2B280 is 45 deg / 35% sat / 63% light), the
+    // rendered mass wants to land near 40 deg / 35% / 62%; greyer than that
+    // reads as damp sand or concrete.
+    deep: [0.34, 0.25, 0.15],
+    mid: [0.70, 0.56, 0.37],
+    lit: [0.96, 0.87, 0.66],
   },
 
   // The sand look. See src/shaders.js for the idea: the pile is drawn as one
@@ -252,21 +260,27 @@ export const CONFIG = {
     // breaks into fuzz instead of a smooth contour.
     dither: 0.02,
     ditherPx: 3.0,
-    // Form shading from the field gradient along the free surface (brighten
-    // only — see the shader): how strongly the gradient tilts the normal, and
-    // how much of the result the colour is allowed to see.
-    relief: 4.0,
-    form: 0.25,
+    // Form shading from the field gradient: how strongly the gradient tilts
+    // the normal, how much of the result the colour sees, and — the load
+    // bearing one — how far apart the gradient is sampled, in field texels.
+    // Sampled at one texel this is blob noise and it embosses every grain;
+    // sampled several grains apart it is the shape of the pile, which is the
+    // shading that makes a bed look like a heap of sand instead of a slab.
+    relief: 2.2,
+    form: 0.45,
+    formRadius: 7.0,
+    // Silhouette low-pass: radius in field texels, and how much of it the
+    // mask takes. The raw contour is the level set of a sum of 15-20px blobs,
+    // so it carries lumps at physics-grain scale; averaging wider removes
+    // them and the fine dither above puts the fuzz back.
+    edgeRadius: 3.0,
+    edgeSmooth: 0.75,
     // Fast sand pales a little toward dust.
     pale: 0.15,
     // Spatial patchiness: real sand varies in correlated patches (minerals,
     // moisture), not grain by grain. Scale is the patch size in CSS px.
     patchScale: 52,
     patchAmp: 0.09,
-    // Grain relief: embossed noise at grain scale over the whole mass, the
-    // lit-side/shadow-side of every grain. Screen-anchored (see the shader).
-    grainPx: 2.6,
-    grainAmp: 0.09,
 
     // Specks: the visible grain. Diameter on screen in CSS px, held constant
     // across devices; how far each grain scatters its specks (multiple of
@@ -284,6 +298,18 @@ export const CONFIG = {
     // tuner's lever is now grain size, so this has to reach.
     speckMax: 48,
     speckAlpha: 0.85,
+    // Per-speck relief: each speck gets a lit crest and a shadowed far side
+    // under one global light. This is where the fine realism lives, and it is
+    // here rather than in the composite because a speck rides the simulation —
+    // so the relief travels with the sand instead of standing still while the
+    // sand pours through it. `round` is how domed a speck is; higher is
+    // flatter, and below about 0.3 the shadowed sides go black.
+    speckRelief: 0.42,
+    speckRound: 0.55,
+    // Sand in flight gets this many times the bed's specks, at this size:
+    // more and finer, so a splash reads as spray rather than as a puff.
+    speckAirMul: 2.2,
+    speckAirSize: 0.8,
     // Mineral mix. Fractions of specks that are dark grains and bright quartz,
     // their tones relative to the body, and the spread of everything else.
     speckDark: 0.10,
@@ -296,8 +322,10 @@ export const CONFIG = {
     // Fading them out entirely left the back reading as smooth mud.
     speckDepthFade: 0.3,
     // Sand glints as facets catch the light: brief, sparse, on the bright
-    // specks only, more readily when moving.
-    glintStrength: 0.35,
+    // specks only, more readily when moving. Restrained on purpose — now that
+    // every speck carries its own lit crest, the bed already sparkles a
+    // little on its own, and at 0.35 on top of that it read as sugar.
+    glintStrength: 0.18,
     glintRate: 1.6,
   },
 
