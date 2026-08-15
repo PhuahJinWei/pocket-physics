@@ -212,16 +212,29 @@ tens of pixels, which would catch an entire moving bed.
 - **The specks draw it, not the field.** A lone blob's level set is a clean
   circle that nothing breaks up — the threshold dither moves it less than a
   pixel — so a full-size blob renders a flying grain as a smooth bead. Instead
-  the field only supplies a soft core at half the radius, the specks spread out
-  to the grain's true size, and they are exempt from the fade that normally
-  keeps specks inside the silhouette. What is left is a porous clump, which is
-  what a clod of sand in the air actually is. The extent stays honest: drawn
-  much under size, thousands of these are a dust cloud even while the
-  simulation is behaving perfectly.
+  the field only supplies a soft core at half the radius with a gentler blob
+  profile, the specks spread out to the grain's true size, and they are exempt
+  from the fade that normally keeps specks inside the silhouette. What is left
+  is a porous clump, which is what a clod of sand in the air actually is. The
+  extent stays honest: drawn much under size, thousands of these are a dust
+  cloud even while the simulation is behaving perfectly.
 - **It is not sunlit.** A grain in the air is fully exposed, but that is not
   the same as being the lit crest of a pile — the top of the colour ramp is a
   pale cream earned by a whole surface facing the light. Left there, a splash
-  is a scatter of glowing beads, so flying sand is capped partway up the ramp.
+  is a scatter of glowing beads, so flying sand is capped partway up the ramp,
+  in the field pass, before it is summed.
+
+**Depth is a colour, never a coverage.** When the bed leans on the back wall
+(it always does a little — gravity has a component into the screen), a band of
+sand shows above the front surface that exists only at the back of the box.
+The first version attenuated deep grains in the coverage sum, so that band drew
+as a thin translucent smear that tore into holes — measured, its coverage
+ramped 6→46 against a threshold of 22 — and it dimmed their *light*, which
+slid the colour down the ramp into buried brown. Now coverage barely depends
+on depth (sand is opaque however deep it sits), the field carries an average
+depth per pixel, and the composite fogs colour toward the box's own darkness
+by it. Same fog on the specks. That reads as *far*; the old way read as
+*buried*, and looked like smoke.
 
 Separately, loosely held grains (as opposed to fully isolated ones) draw a
 *narrower* blob, graded by how few contacts they have. A blob wide enough to
@@ -248,9 +261,8 @@ milliseconds against a simulation that costs ten or more.
 
 - a pinhole projection in the vertex shader — deeper grains shrink and converge
   toward the eye point, which slides against the tilt for a parallax peek.
-- depth fog — the back of the box falls into shadow.
-- grains at the back of the box count for less in the coverage field, so the
-  front layer against the glass is what the averages describe.
+- depth fog — the back of the box falls into shadow, sand and specks alike,
+  by a per-pixel depth the field carries along.
 - *how buried* a grain is — how much of its neighbourhood sits on the
   anti-gravity side. Grains with nothing above them are the lit surface.
 - *light seeping down* — each grain takes the brightest value from neighbours
@@ -278,14 +290,15 @@ Everything lives in [`src/config.js`](src/config.js). The knobs worth knowing:
 | `tuner.enabled` / `hiMs` | the low-end safety net; off means the look never changes, at any cost |
 | `grain.coarseRadius` | how far the tuner may coarsen — it never removes sand |
 | `bed.depthLayers` | how deep the box is, in grain diameters |
-| `render.focal` / `depthDim` / `parallax` | how dramatic the depth looks |
+| `render.focal` / `parallax` | how dramatic the perspective is |
 | `render.wallColor` / `wallShade` | the box interior |
 | `sand.blob` / `surface` | how smooth the silhouette is, and how tight it sits on the grains |
 | `sand.speckPx` / `speckCoverage` | on-screen speck size and density — independent of physics cost |
 | `sand.grainAmp` / `grainPx` | the fine grain relief over the mass |
 | `sand.looseShrink` | how much narrower a barely-attached grain's blob is |
 | `sand.soloSize` / `speckAirSpread` | how big sand in flight draws, and how far its specks spread |
-| `sand.airSoft` / `airLight` | how soft and how pale flying sand is |
+| `sand.airPow` / `airLight` | how soft and how pale flying sand is |
+| `render.depthDim` / `fog` | how far, and toward what, the back of the box darkens |
 | `sand.glintStrength` / `glintRate` | sparkle |
 | `render.deep` / `mid` / `lit` | the colour ramp from buried to sunlit |
 

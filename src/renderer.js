@@ -153,15 +153,15 @@ export class Renderer {
       jitter: gl.getAttribLocation(this.sandFieldProgram, 'aJitter'),
     };
     this.sandFieldUniform = uniforms(gl, this.sandFieldProgram, [
-      'uViewport', 'uFocal', 'uEye', 'uPointSize', 'uDepthRange', 'uDepthWeight', 'uDepthDim', 'uGain',
-      'uLooseShrink', 'uBlob', 'uThreshold', 'uSoloSize',
+      'uViewport', 'uFocal', 'uEye', 'uPointSize', 'uDepthRange', 'uDepthWeight', 'uGain',
+      'uLooseShrink', 'uBlob', 'uThreshold', 'uSoloSize', 'uAirPow', 'uAirLight',
     ]);
 
     this.sandCompositeProgram = buildProgram(gl, SAND_COMPOSITE_VERTEX, SAND_COMPOSITE_FRAGMENT);
     this.sandCompositeAttrib = { corner: gl.getAttribLocation(this.sandCompositeProgram, 'aCorner') };
     this.sandCompositeUniform = uniforms(gl, this.sandCompositeProgram, [
       'uField', 'uTexel', 'uDpr', 'uDeep', 'uMid', 'uLit', 'uSurface', 'uSoft', 'uDither', 'uDitherPx',
-      'uRelief', 'uForm', 'uPale', 'uPatchScale', 'uPatchAmp', 'uGrainPx', 'uGrainAmp', 'uAirSoft', 'uAirLight',
+      'uRelief', 'uForm', 'uPale', 'uPatchScale', 'uPatchAmp', 'uGrainPx', 'uGrainAmp', 'uFog', 'uDepthDim',
     ]);
 
     this.speckBuffer = gl.createBuffer();
@@ -173,8 +173,8 @@ export class Renderer {
       motion: gl.getAttribLocation(this.speckProgram, 'aMotion'),
     };
     this.speckUniform = uniforms(gl, this.speckProgram, [
-      'uViewport', 'uFocal', 'uEye', 'uPointSize', 'uDepthRange', 'uDepthDim',
-      'uDeep', 'uMid', 'uLit', 'uAlpha', 'uDepthFade', 'uGlint', 'uGlintRate', 'uTime',
+      'uViewport', 'uFocal', 'uEye', 'uPointSize', 'uDepthRange',
+      'uDeep', 'uMid', 'uLit', 'uAlpha', 'uDepthFade', 'uFog', 'uDepthDim', 'uGlint', 'uGlintRate', 'uTime',
       'uField', 'uInvCanvas', 'uSurface', 'uAirLight',
     ]);
   }
@@ -495,7 +495,6 @@ export class Renderer {
     gl.uniform1f(fu.uPointSize, sand.diameter * s.blob * this.dpr * s.fieldScale);
     gl.uniform1f(fu.uDepthRange, sand.depth);
     gl.uniform1f(fu.uDepthWeight, s.depthWeight);
-    gl.uniform1f(fu.uDepthDim, r.depthDim);
     gl.uniform1f(fu.uGain, s.gain);
     gl.uniform1f(fu.uLooseShrink, s.looseShrink);
     gl.uniform1f(fu.uBlob, s.blob);
@@ -503,6 +502,8 @@ export class Renderer {
     // the noise happens to land rather than flickering along with it.
     gl.uniform1f(fu.uThreshold, s.surface + s.dither * 0.5);
     gl.uniform1f(fu.uSoloSize, s.soloSize);
+    gl.uniform1f(fu.uAirPow, s.airPow);
+    gl.uniform1f(fu.uAirLight, s.airLight);
     gl.drawArrays(gl.POINTS, 0, n);
     gl.disableVertexAttribArray(fa.pos);
     gl.disableVertexAttribArray(fa.shade);
@@ -540,8 +541,8 @@ export class Renderer {
     gl.uniform1f(cu.uPatchAmp, s.patchAmp);
     gl.uniform1f(cu.uGrainPx, s.grainPx);
     gl.uniform1f(cu.uGrainAmp, s.grainAmp);
-    gl.uniform1f(cu.uAirSoft, s.airSoft);
-    gl.uniform1f(cu.uAirLight, s.airLight);
+    gl.uniform3fv(cu.uFog, r.fog);
+    gl.uniform1f(cu.uDepthDim, r.depthDim);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.disableVertexAttribArray(this.sandCompositeAttrib.corner);
 
@@ -575,12 +576,13 @@ export class Renderer {
     gl.uniform2f(su.uEye, eyeX, eyeY);
     gl.uniform1f(su.uPointSize, s.speckPx * this.dpr);
     gl.uniform1f(su.uDepthRange, sand.depth);
-    gl.uniform1f(su.uDepthDim, r.depthDim);
     gl.uniform3fv(su.uDeep, r.deep);
     gl.uniform3fv(su.uMid, r.mid);
     gl.uniform3fv(su.uLit, r.lit);
     gl.uniform1f(su.uAlpha, s.speckAlpha);
     gl.uniform1f(su.uDepthFade, s.speckDepthFade);
+    gl.uniform3fv(su.uFog, r.fog);
+    gl.uniform1f(su.uDepthDim, r.depthDim);
     gl.uniform1f(su.uGlint, s.glintStrength);
     gl.uniform1f(su.uGlintRate, s.glintRate);
     gl.uniform1f(su.uTime, (performance.now() - this.t0) * 0.001);

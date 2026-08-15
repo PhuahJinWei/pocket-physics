@@ -155,7 +155,14 @@ export const CONFIG = {
     // how far the eye slides against the tilt; it is the strongest depth cue
     // available on a phone because it is coupled to the hand.
     focal: 1.0,
-    depthDim: 0.55,
+    // How far the back of the box falls into shadow: sand and specks fade
+    // this fraction of the way toward `fog` at full depth. A colour, never a
+    // coverage — sand deep in the box is opaque sand, just further away.
+    depthDim: 0.45,
+    // What they fade toward: the box's own darkness, a shade warmer than the
+    // back wall so deep sand still reads as sand in shadow rather than as a
+    // hole.
+    fog: [0.09, 0.07, 0.05],
     parallax: 65,
     // Box interior. Shaded by facing under the same light as the sand: the
     // floor catches it, the ceiling is in shadow. Back vertices are multiplied
@@ -195,12 +202,20 @@ export const CONFIG = {
     // over a couple of grains, so it reads as a slope with fuzz on it.
     blob: 2.3,
     // Peak contribution of one blob. The interior sums twenty-odd overlapping
-    // blobs and the field is 8-bit, so this has to keep that sum below 1 —
-    // a clipped coverage channel would drag the light average up with it.
-    gain: 0.11,
-    // How much less a grain at the back of the box contributes to the field
-    // than one against the glass.
-    depthWeight: 0.55,
+    // blobs and the field is 8-bit, so this has to keep that sum below 1 — a
+    // clipped coverage channel throws the light average off. Measured on a
+    // settled 4.5k-grain bed: 0.11 clipped 0.27% of field pixels, 0.09 none,
+    // and a single layer of sand still sums to about three times the
+    // threshold.
+    gain: 0.09,
+    // How much less a grain at the back of the box counts in the field's
+    // AVERAGES (light, speed, depth). Kept small on purpose — this also scales
+    // coverage, and sand is opaque however deep it sits. At 0.55 the sand
+    // visible only at the back of the box (the band above the front surface
+    // when the bed leans on the back wall) drew as a translucent smear that
+    // tore into holes: measured, its coverage ramped 6 -> 46 against a
+    // threshold of 22. Depth belongs to colour, via render.depthDim.
+    depthWeight: 0.12,
     // A grain touching nothing draws its blob this much NARROWER (graded by
     // how few contacts it has). This is a width, not a brightness: a narrow
     // blob cannot bridge to the mass and hang off it as a drip. Its peak is
@@ -219,9 +234,10 @@ export const CONFIG = {
     // grain is a smooth 20px disc — a bead — because a lone blob's level set
     // is a clean circle that nothing breaks up.
     soloSize: 0.5,
-    // How much wider the silhouette's soft band gets for sand in flight, so
-    // that core fades out instead of ending on a hard rim.
-    airSoft: 6.0,
+    // Blob profile exponent for a lone grain (the mass uses 2). Lower is a
+    // gentler falloff, so the composite's fixed soft band spans more pixels
+    // and that core fades out instead of ending on a hard rim.
+    airPow: 0.7,
     // Ceiling on the colour ramp for sand in flight. The top of the ramp is
     // the pale cream of a sunlit surface, which a lone grain has not earned —
     // left there, a splash is a scatter of glowing beads.
@@ -275,9 +291,10 @@ export const CONFIG = {
     speckBright: 0.10,
     speckBrightTone: 1.16,
     speckVary: 0.16,
-    // Specks toward the back of the box fade, so the front layer reads as
-    // the surface against the glass.
-    speckDepthFade: 0.6,
+    // Specks toward the back of the box thin out a little. Only a little:
+    // they are the texture, and sand seen deeper in the box is still sand.
+    // Fading them out entirely left the back reading as smooth mud.
+    speckDepthFade: 0.3,
     // Sand glints as facets catch the light: brief, sparse, on the bright
     // specks only, more readily when moving.
     glintStrength: 0.35,

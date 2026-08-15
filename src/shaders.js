@@ -37,15 +37,17 @@ uniform vec2 uEye;        // projection centre in CSS px (parallax lives here)
 uniform float uPointSize; // blob diameter for a mean grain, in field px
 uniform float uDepthRange;
 uniform float uDepthWeight;
-uniform float uDepthDim;
 uniform float uLooseShrink;
 uniform float uGain;      // peak of a packed grain's blob
 uniform float uBlob;      // blob radius as a multiple of the grain radius
 uniform float uThreshold; // worst-case coverage the composite calls "sand"
 uniform float uSoloSize;  // where a lone grain's level set lands, in radii
+uniform float uAirPow;    // profile exponent for a lone grain (mass uses 2)
+uniform float uAirLight;  // ceiling on the light ramp for sand in flight
 
 varying float vLight;
 varying float vSpeed;
+varying float vDepth;
 varying float vWeight;
 varying float vAir;
 
@@ -59,47 +61,60 @@ void main() {
   // that is barely attached and draw it as a drip hanging off the mass; a
   // narrow blob can only reach as far as it is wide.
   float loose = aShade.z;
+  float air = aJitter.y;
   float shrink = 1.0 - uLooseShrink * loose;
   gl_PointSize = uPointSize * aJitter.x * persp * shrink;
 
   float depth = clamp(aPos.z / uDepthRange, 0.0, 1.0);
-  // The back of the box falls into shadow, and a deep grain also counts for
-  // less in the sum: the front layer is what the eye sees against the glass,
-  // so it should dominate the averages.
-  vLight = aShade.x * (1.0 - uDepthDim * depth);
+  vDepth = depth;
+  // A grain in the air is fully exposed, but that is not the same as being the
+  // sunlit crest of a pile — the top of the ramp is a pale cream earned by a
+  // whole surface catching the light. Capped here, before it is summed, so
+  // the composite never has to know what is flying.
+  float lit = aShade.x;
+  vLight = mix(lit, min(lit, uAirLight), air);
   vSpeed = aShade.y;
 
   // Two regimes, blended by whether the grain has anything to overlap with.
   //
   // A grain in the mass contributes a moderate blob and the surface is built
   // out of hundreds of them summing together, so its own peak hardly matters.
-  // ('packed' is a reserved word in GLSL ES — hence 'bulk'.)
+  // ('packed' is a reserved word in GLSL ES — hence 'bulk'.) Depth barely
+  // touches it: sand is opaque however deep it sits, and attenuating the back
+  // of the box drew the sand that is only there — the band you see above the
+  // front surface when the bed leans on the back wall — as a thin, translucent
+  // smear that tore into holes. Measured, that band ramped from 6 to 46 in a
+  // field whose threshold is 22. What SHOULD change with depth is colour, and
+  // that is the composite's job (uDepthDim there); the small weight kept here
+  // only lets the front layer lead the averages a little.
   //
   // A grain touching NOTHING has to clear the threshold by itself or it is not
   // drawn at all, and with a fixed peak it usually could not: measured, 75% of
-  // the grains in a splash rendered as literally nothing, every one of them
-  // past the front of the box, because the depth weighting alone put them
-  // under the threshold. So it gets exactly the peak that lands its level set
-  // on uSoloSize of its own radius, with no depth attenuation — sand thrown at
-  // the back of the box is still sand.
-  //
-  // Solving for the peak rather than turning the gain up is what keeps this
-  // safe: a narrow blob with a tall peak is a compact dot that cannot bridge
-  // to anything, and because uSoloSize sits inside the blob radius the peak
+  // the grains in a splash rendered as literally nothing. So it gets exactly
+  // the peak that lands its level set on uSoloSize of its own radius. Solving
+  // for the peak rather than turning the gain up is what keeps this safe: a
+  // narrow blob with a tall peak is a compact dot that cannot bridge to
+  // anything, and because uSoloSize sits inside the blob radius the peak
   // needed stays low enough that several may overlap before the 8-bit field
-  // clips (measured max 170/255 through a splash, nothing clipped).
+  // clips (measured max 186/255 through a splash, nothing clipped).
   //
   // Gated on *airborne*, not on looseness. A surface grain is under-coordinated
   // by definition — four contacts instead of six — and blending it toward the
   // solo peak bulges it out of the surface as its own lump, which fringes the
   // whole bed with grain-sized nubs: exactly the scale the field render exists
   // to hide.
+  //
+  // A lone grain also gets a gentler blob profile (uAirPow, against 2 for the
+  // mass), so the coverage ramps across its edge over more pixels and the
+  // composite's fixed soft band lands as a soft, porous puff instead of a
+  // hard-rimmed pea. The peak has to be solved against that same profile.
   float bulk = uGain * (1.0 - uDepthWeight * depth);
   float rn = min(uSoloSize / (uBlob * shrink), 0.95);
   float e = 1.0 - rn * rn;
-  float solo = uThreshold / max(e * e, 1e-3);
-  vWeight = mix(bulk, max(bulk, solo), aJitter.y);
-  vAir = aJitter.y;
+  float prof = mix(e * e, pow(e, uAirPow), air);
+  float solo = uThreshold / max(prof, 1e-3);
+  vWeight = mix(bulk, max(bulk, solo), air);
+  vAir = air;
 }
 `;
 
@@ -108,24 +123,28 @@ precision mediump float;
 
 varying float vLight;
 varying float vSpeed;
+varying float vDepth;
 varying float vWeight;
 varying float vAir;
+
+// Declared in both stages, and the two default to different precisions —
+// GLSL treats that as two different uniforms and refuses to link.
+uniform highp float uAirPow;
 
 void main() {
   vec2 uv = gl_PointCoord * 2.0 - 1.0;
   float r2 = dot(uv, uv);
   if (r2 > 1.0) discard;
   // Squared falloff: overlapping blobs merge without a seam, and the sum
-  // still keeps an edge instead of fogging outward. vWeight is the peak the
-  // vertex shader solved for — gain and depth are already folded in.
+  // still keeps an edge instead of fogging outward. A lone grain in the air
+  // gets a gentler falloff instead (see the vertex shader). vWeight is the
+  // peak the vertex shader solved for — gain and depth are already folded in.
   float w = 1.0 - r2;
-  w = w * w;
-  float t = w * vWeight;
-  // R: coverage. G, B, A: coverage weighted by light, speed and airborne-ness,
-  // so the composite can divide them back out as per-pixel averages. The
-  // airborne channel is what lets it soften flying sand without knowing
-  // anything about grains.
-  gl_FragColor = vec4(t, t * vLight, t * vSpeed, t * vAir);
+  float p = mix(w * w, pow(w, uAirPow), vAir);
+  float t = p * vWeight;
+  // R: coverage. G, B, A: coverage weighted by light, speed and depth, so the
+  // composite can divide them back out as per-pixel averages.
+  gl_FragColor = vec4(t, t * vLight, t * vSpeed, t * vDepth);
 }
 `;
 
@@ -163,8 +182,8 @@ uniform float uPatchScale;
 uniform float uPatchAmp;
 uniform float uGrainPx;    // grain relief: cell size on screen (CSS px)
 uniform float uGrainAmp;   // and its contrast
-uniform float uAirSoft;    // how much wider the edge band gets for flying sand
-uniform float uAirLight;   // ceiling on the colour ramp for flying sand
+uniform vec3 uFog;         // what the back of the box fades toward
+uniform float uDepthDim;   // and how far it gets
 
 float phash(vec2 c) {
   return fract(sin(dot(c, vec2(127.1, 311.7))) * 43758.5453);
@@ -185,19 +204,9 @@ float patch(vec2 p) {
 void main() {
   vec4 f = texture2D(uField, vUV);
   float w = f.r;
+  float soft = uSoft;
 
-  // Sand in flight gets a soft, porous edge instead of the mass's tight one.
-  // A grain alone in the air has a steep blob and nothing to overlap, so its
-  // level set is a clean circle that the threshold dither barely moves —
-  // measured, under a pixel — which draws a splash as a scatter of smooth
-  // peas. Widening the band turns each into a puff that fades out, and the
-  // specks riding on it supply the grain.
-  float air = clamp(f.a / max(w, 1e-4), 0.0, 1.0);
-  float soft = uSoft * mix(1.0, uAirSoft, air);
-
-  // Most of the screen is empty box; leave before doing any noise for it. The
-  // bound has to allow for the widened band above, or it clips the very
-  // falloff that softens the splash.
+  // Most of the screen is empty box; leave before doing any noise for it.
   if (w < uSurface - uDither * 0.5 - soft) discard;
   vec2 css = gl_FragCoord.xy / uDpr;
 
@@ -212,13 +221,7 @@ void main() {
 
   float light = f.g / max(w, 1e-4);
   float speed = f.b / max(w, 1e-4);
-
-  // A grain in the air is fully exposed, but that is not the same as being the
-  // sunlit crest of a pile. The top of the ramp is a pale cream, earned by a
-  // whole surface catching the light across its face; a lone grain gathers
-  // nothing like it, and drawn there — pale, soft-edged and round — it reads
-  // as a glowing bead rather than as a fleck of sand.
-  light = mix(light, min(light, uAirLight), air);
+  float depth = f.a / max(w, 1e-4);
 
   // Form shading from the coverage gradient, confined to the band along the
   // free surface, and brighten-only: a crest facing the light catches it, but
@@ -262,6 +265,13 @@ void main() {
   float still = 1.0 - smoothstep(0.03, 0.2, speed);
   c *= 1.0 + uGrainAmp * relief2 * 2.0 * still;
 
+  // Depth is a colour, never a coverage. The back of the box falls into
+  // shadow, so sand there fades toward the box's own darkness — which reads as
+  // *far*. Dimming its light instead read as *buried*: it slid the colour down
+  // the ramp into crevice brown, and the band of sand visible only at the
+  // back came out as a dark smear.
+  c = mix(c, uFog, uDepthDim * clamp(depth, 0.0, 1.0));
+
   gl_FragColor = vec4(c, mask);
 }
 `;
@@ -280,7 +290,6 @@ uniform float uFocal;
 uniform vec2 uEye;
 uniform float uPointSize; // speck diameter in device px
 uniform float uDepthRange;
-uniform float uDepthDim;
 uniform float uAirLight;
 
 varying float vLight;
@@ -297,12 +306,11 @@ void main() {
   gl_Position = vec4(unit.x * 2.0 - 1.0, 1.0 - unit.y * 2.0, 0.0, 1.0);
   gl_PointSize = uPointSize * aData.z * persp;
   float depth = clamp(aPos.z / uDepthRange, 0.0, 1.0);
-  // Sand in the air is not the sunlit crest of a pile — see the composite,
+  // Sand in the air is not the sunlit crest of a pile — see the field pass,
   // which caps the ramp the same way. Without it a flying grain's specks come
   // out as the palest cream in the palette and read as sparks.
   float lit = aData.x;
-  lit = mix(lit, min(lit, uAirLight), aMotion.y);
-  vLight = lit * (1.0 - uDepthDim * depth);
+  vLight = mix(lit, min(lit, uAirLight), aMotion.y);
   vTone = aData.y;
   vPhase = aData.w;
   vSpeed = aMotion.x;
@@ -326,6 +334,8 @@ uniform vec3 uMid;
 uniform vec3 uLit;
 uniform float uAlpha;
 uniform float uDepthFade;
+uniform vec3 uFog;
+uniform float uDepthDim;
 uniform float uGlint;
 uniform float uGlintRate;
 uniform float uTime;
@@ -362,6 +372,10 @@ void main() {
   float tw = sin(uTime * uGlintRate + vPhase * 6.2831853);
   c += vec3(1.0, 0.97, 0.9) * pow(max(tw, 0.0), 48.0) * uGlint * bright
     * (0.35 + 0.65 * clamp(vLight, 0.0, 1.0)) * (0.5 + vSpeed);
+
+  // Same fog as the mass, so a speck at the back sits *in* the sand behind
+  // it rather than on top of it.
+  c = mix(c, uFog, uDepthDim * vDepth);
 
   gl_FragColor = vec4(c, a);
 }
