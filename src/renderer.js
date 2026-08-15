@@ -1,15 +1,15 @@
-// WebGL point-sprite renderer: one interleaved buffer, one draw call. Prefers
-// a WebGL2 context but the shaders are ES 1.00 so a WebGL1 fallback is
-// identical in output.
+// WebGL point-sprite renderer: one interleaved buffer, one draw call for the
+// sand plus a tiny one for the box. Prefers a WebGL2 context but the shaders
+// are ES 1.00 so a WebGL1 fallback is identical in output.
 //
 // Grains are packed back-to-front (a 32-bucket counting sort on z), so nearer
-// beads paint over deeper ones and no depth buffer is needed — point sprites
+// grains paint over deeper ones and no depth buffer is needed — point sprites
 // with blending and a depth buffer fight over the alpha edges anyway.
 
 import { CONFIG } from './config.js';
-import { VERTEX_SHADER, buildFragmentShader } from './shaders.js';
+import { VERTEX_SHADER, buildFragmentShader, WALL_VERTEX_SHADER, WALL_FRAGMENT_SHADER } from './shaders.js';
 
-const FLOATS_PER_GRAIN = 7; // x, y, z, light, speed, sizeJitter, hueJitter
+const FLOATS_PER_GRAIN = 8; // x,y,z | light, speed, airborne | sizeJitter, hueJitter
 const STRIDE = FLOATS_PER_GRAIN * 4;
 const BUCKETS = 32;
 
@@ -34,6 +34,14 @@ export class Renderer {
     this.eyeX = 0;
     this.eyeY = 0;
     this.t0 = performance.now();
+    // 5 quads (four interior walls + back plane), 6 vertices each, xyz + shade.
+    this.wallData = new Float32Array(5 * 6 * 4);
+    this.wallKey = '';
+    // Speck styling, derived from the on-screen sprite size (see
+    // ensureGrainStyle). The program is rebuilt when the count changes.
+    this.speckCount = 0;
+    this.speckRadius = 0.28;
+    this._styleKey = '';
     this.contextLost = false;
 
     const opts = {
@@ -68,7 +76,73 @@ export class Renderer {
 
   initGL() {
     const gl = this.gl;
-    this.program = buildProgram(gl, VERTEX_SHADER, buildFragmentShader(CONFIG.render.speckCount));
+
+    this.buffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, this.cpu.byteLength, gl.DYNAMIC_DRAW);
+
+    // Wall program: its own tiny pipeline, sharing the projection maths.
+    this.wallProgram = buildProgram(gl, WALL_VERTEX_SHADER, WALL_FRAGMENT_SHADER);
+    this.wallAttrib = {
+      pos: gl.getAttribLocation(this.wallProgram, 'aPos'),
+      shade: gl.getAttribLocation(this.wallProgram, 'aShade'),
+    };
+    this.wallUniform = {
+      viewport: gl.getUniformLocation(this.wallProgram, 'uViewport'),
+      focal: gl.getUniformLocation(this.wallProgram, 'uFocal'),
+      eye: gl.getUniformLocation(this.wallProgram, 'uEye'),
+      color: gl.getUniformLocation(this.wallProgram, 'uWallColor'),
+    };
+    this.wallBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.wallBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, this.wallData.byteLength, gl.DYNAMIC_DRAW);
+    this.wallKey = '';
+
+    const bg = CONFIG.render.background;
+    gl.clearColor(bg[0], bg[1], bg[2], 1);
+    gl.disable(gl.DEPTH_TEST);
+    gl.enable(gl.BLEND);
+
+    // Grain program is built lazily by ensureGrainStyle on the first draw,
+    // because the speck count depends on the sprite's on-screen size.
+    this.program = null;
+    this.speckCount = 0;
+    this._styleKey = '';
+  }
+
+  /**
+   * Keep the *on-screen* speck size constant. The physics grain radius scales
+   * with the short edge of the viewport (and is clamped), so on a wide screen
+   * each grain sprite can be twice the phone's size — with a fixed speck count
+   * and ratio the sand turned coarse exactly where there was most room to see
+   * it. Instead the speck radius targets `speckPx` CSS pixels and the count
+   * grows to keep the same covered fraction, so a big sprite gets many small
+   * specks rather than a few big ones. The count is a compile-time constant in
+   * ES 1.00, so changing it means relinking the grain program — rare (layout
+   * and tuner changes only) and cheap.
+   */
+  ensureGrainStyle(diameter) {
+    const r = CONFIG.render;
+    const clusterPx = Math.max(diameter * r.clusterSize, 4);
+    const key = clusterPx.toFixed(2);
+    if (key === this._styleKey && this.program) return;
+    this._styleKey = key;
+
+    // uSpeck is in sprite units: a speck's on-screen diameter is
+    // uSpeck * clusterPx.
+    this.speckRadius = Math.min(0.42, Math.max(0.12, r.speckPx / clusterPx));
+    const count = Math.round(Math.min(40, Math.max(6,
+      r.speckCoverage / (this.speckRadius * this.speckRadius))));
+    if (count !== this.speckCount || !this.program) {
+      this.speckCount = count;
+      this.setupGrainProgram();
+    }
+  }
+
+  setupGrainProgram() {
+    const gl = this.gl;
+    if (this.program) gl.deleteProgram(this.program);
+    this.program = buildProgram(gl, VERTEX_SHADER, buildFragmentShader(this.speckCount));
     gl.useProgram(this.program);
 
     this.attrib = {
@@ -79,7 +153,7 @@ export class Renderer {
     this.uniform = {
       viewport: gl.getUniformLocation(this.program, 'uViewport'),
       pointSize: gl.getUniformLocation(this.program, 'uPointSize'),
-      speedBoost: gl.getUniformLocation(this.program, 'uSpeedBoost'),
+      airShrink: gl.getUniformLocation(this.program, 'uAirShrink'),
       focal: gl.getUniformLocation(this.program, 'uFocal'),
       eye: gl.getUniformLocation(this.program, 'uEye'),
       depthRange: gl.getUniformLocation(this.program, 'uDepthRange'),
@@ -91,39 +165,112 @@ export class Renderer {
       patchAmp: gl.getUniformLocation(this.program, 'uPatchAmp'),
       spread: gl.getUniformLocation(this.program, 'uSpread'),
       speck: gl.getUniformLocation(this.program, 'uSpeck'),
+      airSpeck: gl.getUniformLocation(this.program, 'uAirSpeck'),
       vary: gl.getUniformLocation(this.program, 'uVary'),
       glint: gl.getUniformLocation(this.program, 'uGlint'),
       glintRate: gl.getUniformLocation(this.program, 'uGlintRate'),
       time: gl.getUniformLocation(this.program, 'uTime'),
     };
 
-    this.buffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
-    gl.bufferData(gl.ARRAY_BUFFER, this.cpu.byteLength, gl.DYNAMIC_DRAW);
-
     for (const loc of Object.values(this.attrib)) {
       if (loc >= 0) gl.enableVertexAttribArray(loc);
     }
     gl.vertexAttribPointer(this.attrib.pos, 3, gl.FLOAT, false, STRIDE, 0);
-    gl.vertexAttribPointer(this.attrib.shade, 2, gl.FLOAT, false, STRIDE, 12);
-    gl.vertexAttribPointer(this.attrib.jitter, 2, gl.FLOAT, false, STRIDE, 20);
-
-    const bg = CONFIG.render.background;
-    gl.clearColor(bg[0], bg[1], bg[2], 1);
-    gl.disable(gl.DEPTH_TEST);
-    gl.enable(gl.BLEND);
+    gl.vertexAttribPointer(this.attrib.shade, 3, gl.FLOAT, false, STRIDE, 12);
+    gl.vertexAttribPointer(this.attrib.jitter, 2, gl.FLOAT, false, STRIDE, 24);
 
     const r = CONFIG.render;
     gl.uniform1f(this.uniform.spread, r.speckSpread);
-    gl.uniform1f(this.uniform.speck, r.speckRadius);
     gl.uniform1f(this.uniform.vary, r.speckVariation);
     gl.uniform1f(this.uniform.patchScale, r.patchScale);
     gl.uniform1f(this.uniform.patchAmp, r.patchAmp);
     gl.uniform1f(this.uniform.glint, r.glintStrength);
     gl.uniform1f(this.uniform.glintRate, r.glintRate);
+    gl.uniform1f(this.uniform.airShrink, r.airShrink);
     gl.uniform3fv(this.uniform.deep, r.deep);
     gl.uniform3fv(this.uniform.mid, r.mid);
     gl.uniform3fv(this.uniform.lit, r.lit);
+  }
+
+  /**
+   * Box interior: four walls running from the viewport edge (z=0) back to an
+   * inset rectangle (z=depth), plus the back plane. Shaded by facing — the
+   * floor catches the light, the ceiling is in shadow — and darkened toward the
+   * back so each wall carries a recession gradient of its own.
+   */
+  buildWalls(w, h, depth) {
+    const key = `${w}|${h}|${depth}`;
+    if (key === this.wallKey) return;
+    this.wallKey = key;
+
+    const L = CONFIG.render.wallShade;
+    const back = CONFIG.render.wallBackFalloff;
+    const d = this.wallData;
+    let o = 0;
+    // Each quad: front-left, front-right, back-right, back-left (in its plane).
+    const quad = (ax, ay, bx, by, shade) => {
+      const f = shade;
+      const b = shade * back;
+      const v = [
+        ax, ay, 0, f,
+        bx, by, 0, f,
+        bx, by, depth, b,
+        ax, ay, 0, f,
+        bx, by, depth, b,
+        ax, ay, depth, b,
+      ];
+      for (let i = 0; i < v.length; i++) d[o++] = v[i];
+    };
+
+    quad(0, 0, w, 0, L.ceiling);   // top
+    quad(w, 0, w, h, L.right);     // right
+    quad(w, h, 0, h, L.floor);     // bottom
+    quad(0, h, 0, 0, L.left);      // left
+    // Back plane, flat at z = depth.
+    const bp = L.back * back;
+    const v = [
+      0, 0, depth, bp,
+      w, 0, depth, bp,
+      w, h, depth, bp,
+      0, 0, depth, bp,
+      w, h, depth, bp,
+      0, h, depth, bp,
+    ];
+    for (let i = 0; i < v.length; i++) d[o++] = v[i];
+
+    const gl = this.gl;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.wallBuffer);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, d);
+  }
+
+  drawWalls(depth, focal, eyeX, eyeY) {
+    const gl = this.gl;
+    this.buildWalls(this.width, this.height, depth);
+
+    gl.useProgram(this.wallProgram);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.wallBuffer);
+    gl.enableVertexAttribArray(this.wallAttrib.pos);
+    gl.enableVertexAttribArray(this.wallAttrib.shade);
+    gl.vertexAttribPointer(this.wallAttrib.pos, 3, gl.FLOAT, false, 16, 0);
+    gl.vertexAttribPointer(this.wallAttrib.shade, 1, gl.FLOAT, false, 16, 12);
+
+    gl.uniform2f(this.wallUniform.viewport, this.width, this.height);
+    gl.uniform1f(this.wallUniform.focal, focal);
+    gl.uniform2f(this.wallUniform.eye, this.width * 0.5 + eyeX, this.height * 0.5 + eyeY);
+    gl.uniform3fv(this.wallUniform.color, CONFIG.render.wallColor);
+    gl.drawArrays(gl.TRIANGLES, 0, 30);
+
+    // Hand the pipeline back to the grain program.
+    gl.disableVertexAttribArray(this.wallAttrib.shade);
+    gl.useProgram(this.program);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+    for (const loc of Object.values(this.attrib)) {
+      if (loc >= 0) gl.enableVertexAttribArray(loc);
+    }
+    gl.vertexAttribPointer(this.attrib.pos, 3, gl.FLOAT, false, STRIDE, 0);
+    gl.vertexAttribPointer(this.attrib.shade, 3, gl.FLOAT, false, STRIDE, 12);
+    gl.vertexAttribPointer(this.attrib.jitter, 2, gl.FLOAT, false, STRIDE, 24);
   }
 
   /** Returns true when the backing store changed size. */
@@ -145,12 +292,18 @@ export class Renderer {
     const gl = this.gl;
     if (this.contextLost) return;
 
+    this.ensureGrainStyle(sand.diameter);
+
     gl.clear(gl.COLOR_BUFFER_BIT);
+    const focal = CONFIG.render.focal * Math.min(this.width, this.height);
+    // Box first: the sand always lives inside it, so no depth test is needed.
+    this.drawWalls(sand.depth, focal, this.eyeX, this.eyeY);
+
     const n = sand.n;
     if (n === 0) return;
 
     // Counting sort by z bucket, deepest first, so the pack order is
-    // back-to-front for the bead pass.
+    // back-to-front for the grain pass.
     const { bucketOf, drawOrder, bucketStart } = this;
     const zScale = BUCKETS / Math.max(sand.depth, 1e-3);
     const zArr = sand.z;
@@ -172,7 +325,7 @@ export class Renderer {
     for (let i = 0; i < n; i++) drawOrder[bucketStart[bucketOf[i] + 1]++] = i;
 
     const cpu = this.cpu;
-    const { x, y, light, speed01, sizeJitter, hueJitter } = sand;
+    const { x, y, light, speed01, airborne, sizeJitter, hueJitter } = sand;
     for (let k = 0; k < n; k++) {
       const i = drawOrder[k];
       const o = k * FLOATS_PER_GRAIN;
@@ -181,8 +334,9 @@ export class Renderer {
       cpu[o + 2] = zArr[i];
       cpu[o + 3] = light[i];
       cpu[o + 4] = speed01[i];
-      cpu[o + 5] = sizeJitter[i];
-      cpu[o + 6] = hueJitter[i];
+      cpu[o + 5] = airborne[i];
+      cpu[o + 6] = sizeJitter[i];
+      cpu[o + 7] = hueJitter[i];
     }
 
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
@@ -196,8 +350,13 @@ export class Renderer {
     const px = sand.diameter * this.dpr;
     gl.uniform2f(this.uniform.viewport, this.width, this.height);
     gl.uniform1f(this.uniform.time, (performance.now() - this.t0) * 0.001);
-    gl.uniform1f(this.uniform.speedBoost, 0.35);
-    gl.uniform1f(this.uniform.focal, CONFIG.render.focal * Math.min(this.width, this.height));
+    gl.uniform1f(this.uniform.speck, this.speckRadius);
+    // An isolated grain draws as one speck the size of the grain itself. The
+    // sprite is clusterSize x the grain, and the alpha falloff makes the solid
+    // core about 1.6x the speck radius, so this lands the visible speck on the
+    // true grain diameter whatever the screen.
+    gl.uniform1f(this.uniform.airSpeck, 0.5 / (CONFIG.render.clusterSize * 1.6));
+    gl.uniform1f(this.uniform.focal, focal);
     gl.uniform2f(this.uniform.eye, this.width * 0.5 + this.eyeX, this.height * 0.5 + this.eyeY);
     gl.uniform1f(this.uniform.depthRange, sand.depth);
     gl.uniform1f(this.uniform.depthDim, CONFIG.render.depthDim);

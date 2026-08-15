@@ -78,7 +78,11 @@ config.js    every tunable, in one place
 screen is the front glass; the box extends a few grain diameters in Z), over a
 uniform 3D spatial hash, in typed arrays with no per-frame allocation. Grains
 are equal-mass spheres with no rotational degree of freedom, so friction is pure
-sliding friction. Each fixed substep: gravity, find contacts, solve velocities,
+sliding friction. Radii are **polydisperse** (±18% around the mean): identical
+spheres crystallise into a regular lattice the moment they settle — visible as a
+woven grid across the whole bed — and no spawn jitter keeps them from finding it
+again. Real sand never crystallises for exactly this reason, and the size
+spread is also what breaks the sprite tiling on large screens. Each fixed substep: gravity, find contacts, solve velocities,
 integrate, then repair leftover overlap.
 
 The velocity/position split is the whole basis of the solver. An impulse can only
@@ -143,6 +147,22 @@ finer than the solver's grains, for free. Making the physics that fine instead
 would roughly quintuple simulation cost (count scales with 1/r²); the cluster
 costs a few ALU per fragment and no extra geometry.
 
+A grain touching nothing draws as a **single speck the size of the grain
+itself**, rather than as a cluster. Two failure modes sit either side of that:
+spread the cluster and a flying grain reads as a flower of specks stuck
+together; collapse it to the fine bed-speck size and the grain is drawn several
+times smaller than it physically is — thousands of those look exactly like a
+dust cloud, even while the simulation is behaving perfectly. It is keyed on
+isolation rather than speed, because a speed threshold fires on any grain that
+has fallen a few tens of pixels.
+
+Speck size targets a constant number of *on-screen* pixels (`speckPx`), with
+the per-sprite count adapting to keep coverage — the physics grain scales with
+the viewport, so without this a wide screen showed coarse sand exactly where
+there was most room to see it. Fast free-flying grains collapse their cluster
+onto a single speck and shrink; inside the bed the cluster trick is invisible,
+but an airborne grain drawn as a bundle reads as a little flower of balls.
+
 Nearly all of the realism is **micro-relief**: every speck gets a gentle fake
 normal lit by one global light — lit crest up-left, shade down-right — and the
 webbing between specks falls into crevice shadow. Thousands of tiny highlights
@@ -157,6 +177,16 @@ cluster leaves show the grain drawn behind, which is deeper and darker — free
 crevices.
 
 **The depth look.** Real Z plus cheap cues:
+
+- **the box itself** — four interior walls running from the viewport edge back
+  to an inset rectangle, plus a back plane, shaded by facing (the floor catches
+  the light, the ceiling is in shadow) and darkened toward the back. Without
+  them the container is invisible and the eye has to infer a box from loose
+  grains, which is why depth read as flat however many layers were behind the
+  glass. Because the front rectangle sits exactly on the viewport edge (persp is
+  1 at z=0, parallax included), only the back moves — so tilting *shears* the
+  walls, and that motion is the strongest depth cue a phone can give.
+
 
 - a pinhole projection in the vertex shader — deeper grains shrink and converge
   toward the eye point, which slides against the tilt for a parallax peek.
@@ -185,15 +215,16 @@ Everything lives in [`src/config.js`](src/config.js). The knobs worth knowing:
 | Knob | Effect |
 | ---- | ------ |
 | `bed.fill` | how much of the screen the settled sand covers |
-| `bed.depthLayers` | how deep the box is, in grain diameters |
-| `grain.divisor` | grain size relative to the short edge of the screen |
+| `grain.divisor` / `polydispersity` | grain size and its spread |
 | `sim.gravityScale` | how briskly it pours and falls |
 | `sim.velocityIterations` / `shockIterations` | how stiffly deep piles stand up |
 | `sim.friction` / `wallFriction` | angle of repose; wall value must stay low |
 | `bed.fill` (again) | pile depth is the solver's hardest constraint — deeper beds sink |
 | `tuner.enabled` / `hiMs` | the low-end safety net; off means the look never changes, at any cost |
+| `bed.depthLayers` | how deep the box is, in grain diameters |
 | `render.focal` / `depthDim` / `parallax` | how dramatic the depth looks |
-| `render.speckCount` / `speckRadius` | how fine the sand looks — independent of physics cost |
+| `render.wallColor` / `wallShade` | the box interior |
+| `render.speckPx` / `speckCoverage` | on-screen speck size and density — independent of physics cost |
 | `render.glintStrength` / `glintRate` | sparkle |
 | `render.deep` / `mid` / `lit` | the colour ramp from crevice to sunlit |
 

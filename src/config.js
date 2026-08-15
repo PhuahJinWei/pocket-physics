@@ -12,7 +12,7 @@ export const CONFIG = {
     fill: 0.22,
     // Depth of the box behind the glass, in grain diameters. This is the Z the
     // screen is a window into; deeper looks better but costs grains cubically.
-    depthLayers: 3.5,
+    depthLayers: 5.0,
     // 3D random-close-packing density, converts bed volume -> grain count.
     packing: 0.64,
     minGrains: 400,
@@ -27,6 +27,10 @@ export const CONFIG = {
     divisor: 76,
     minRadius: 2.8,
     maxRadius: 9.5,
+    // Radius spread around the mean. Identical spheres crystallise into a
+    // regular lattice as they settle — visible as a woven grid across the bed —
+    // and real sand never does exactly because its grains all differ.
+    polydispersity: 0.18,
   },
 
   // Velocity-level sequential impulses. See src/grains.js for the reasoning
@@ -38,9 +42,17 @@ export const CONFIG = {
     // how brisk and alive the sand feels.
     gravityScale: 7.0,
     // The solver runs on a fixed timestep so the feel never depends on frame
-    // rate. maxSubsteps bounds catch-up work after a stall.
-    fixedHz: 150,
-    maxSubsteps: 4,
+    // rate. Keep maxSubsteps tight: catch-up is a feedback loop, because a slow
+    // frame hands the next step a bigger dt, which buys *more* substeps and
+    // makes it slower again. Capped, a struggling device runs the sim slightly
+    // slow-motion instead of spiralling — measured 37fps -> 60fps here.
+    // 120Hz x 3 substeps = 25ms of simulated time available per frame, so the
+    // sim stays real-time on anything holding 40fps. At 150Hz the budget was
+    // 20ms, and a wide window (which maximises grain count AND gravity) dropped
+    // below that mid-splash — the sim then runs in slow motion, and a splash
+    // that rains out in half a second becomes seconds of drifting mist.
+    fixedHz: 120,
+    maxSubsteps: 3,
     // Contacts are found this far apart (fraction of a diameter) and the solver
     // then limits approach speed to the remaining gap. Detecting only actual
     // overlap leaves a grain resting exactly on a surface with no contact at
@@ -51,9 +63,10 @@ export const CONFIG = {
     // them, so the list is rebuilt at most once a frame — and only when some
     // grain has moved half the skin.
     skin: 0.35,
-    // Grid cell size as a multiple of grain diameter; must exceed the list
-    // radius (1 + skin) so the 3x3x3 scan cannot miss a pair.
-    cellMul: 1.4,
+    // Grid cell size as a multiple of grain diameter; must exceed the largest
+    // pair's list radius (1 + polydispersity + skin) so the 3x3x3 scan cannot
+    // truncate the speculative band for the biggest grains.
+    cellMul: 1.6,
     // Gauss-Seidel sweeps. Velocity iterations buy stacking stiffness (a deep
     // pile needs more); position iterations only clean up leftover overlap.
     velocityIterations: 6,
@@ -104,7 +117,28 @@ export const CONFIG = {
     // Fraction of a grain's brightness that reaches the grain beneath it.
     lightTransmit: 0.93,
     lightSmoothing: 18,
-    splashSpeed: 1.0,
+    // A shake is modelled as the box being jerked: a body acceleration added
+    // to gravity for a moment, in multiples of gravity, rather than a velocity
+    // handed to each grain. See Grains.splash — writing velocities is what
+    // turns a splash into a dust cloud, because per-grain velocity is relative
+    // velocity, and relative velocity is what pulls a packed bed apart.
+    // The floor matters more than it looks: a pulse too weak to lift the bed
+    // clear of the ground leaves part of it supported while the rest rises, so
+    // the bed shears against itself and goes loose. Measured at strength 1,
+    // 2.6g left 5.7% of grains isolated and 3.4g left 0.5%. Once airborne
+    // every grain shares the same gravity, so the mass travels rigid — the
+    // dispersion only ever happens during a half-hearted launch.
+    splashAccel: 3.4,
+    // Added per unit of shake strength above 1. Deliberately shallow: a hard
+    // shake should hit harder, but the strong end is already well clear of the
+    // threshold and a linear scaling just throws sand into the ceiling.
+    splashGain: 0.8,
+    // Seconds the pulse lasts. Long enough to launch the bed, short enough to
+    // read as a jerk rather than a change in gravity.
+    splashDuration: 0.09,
+    // How far the jerk tips off the gravity axis, so shakes differ and the
+    // sand heaves sideways rather than hopping straight up.
+    splashLean: 0.45,
   },
 
   render: {
@@ -113,13 +147,20 @@ export const CONFIG = {
     // cluster of small matte specks rather than one ball, which is what makes
     // the sand look finer than the physics actually is — visual grain size is
     // speckRadius * clusterSize * diameter, not the physics diameter.
-    clusterSize: 1.35,
-    // Specks per grain, how far they scatter across the sprite, and their
-    // radius in sprite units. Spread + radius must stay under 1.0 or specks get
-    // clipped by the sprite's edge.
-    speckCount: 9,
+    clusterSize: 1.5,
+    // Speck size on screen, in CSS px — held constant across devices. The
+    // physics grain scales with the viewport (and is clamped), so on a wide
+    // screen each sprite is nearly twice the phone's size; a fixed speck count
+    // and ratio made the sand coarsest exactly where there was most room to
+    // see it. The renderer picks the per-sprite speck count from this and
+    // speckCoverage, rebuilding the shader when it changes.
+    speckPx: 3.4,
+    speckCoverage: 0.72,
     speckSpread: 1.2,
-    speckRadius: 0.28,
+    // Airborne grains barely shrink now: the fragment shader draws them as a
+    // single grain-sized speck, so shrinking the sprite on top would make a
+    // flying grain smaller than it physically is.
+    airShrink: 0.05,
     // Brightness scatter between specks; the grain-to-grain variation that
     // stops a bed reading as one smooth surface.
     speckVariation: 0.3,
@@ -129,13 +170,30 @@ export const CONFIG = {
     patchAmp: 0.09,
     // Sand glints as facets catch the light. Brief flashes on a few specks at
     // a time — cheap, and it does a lot of the work of selling the material.
-    glintStrength: 0.4,
-    glintRate: 1.9,
+    glintStrength: 0.16,
+    glintRate: 1.2,
     // Perspective: focal length as a multiple of min(viewport w, h). Smaller =
     // more dramatic depth. Parallax shifts the eye against tilt, in px.
-    focal: 1.4,
-    depthDim: 0.45,
-    parallax: 40,
+    // Shorter focal = more aggressive convergence toward the back. Parallax is
+    // how far the eye slides against the tilt; it is the strongest depth cue
+    // available on a phone because it is coupled to the hand.
+    focal: 1.0,
+    depthDim: 0.55,
+    parallax: 65,
+    // Box interior. Shaded by facing under the same light as the sand: the
+    // floor catches it, the ceiling is in shadow. Back vertices are multiplied
+    // by wallBackFalloff so every wall recedes into darkness.
+    // Kept deliberately dim. The box only has to be *implied* — measured
+    // against a background of 5/255, the old values put the floor at 67 and
+    // the right wall at 57, so the empty half of the box read as a lit brown
+    // panel competing with the sand. Halved, the walls sit at 2-7x the
+    // background: enough to place the corners, not enough to look at.
+    wallColor: [0.15, 0.125, 0.095],
+    // Right was nearly as bright as the floor, which is what made the far wall
+    // pop. Pulled closer to the left face, keeping some asymmetry so the box
+    // still reads as lit from one side.
+    wallShade: { floor: 1.0, ceiling: 0.42, left: 0.5, right: 0.58, back: 0.55 },
+    wallBackFalloff: 0.55,
     background: [0.02, 0.017, 0.014],
     // Dry quartz: crevice-shadow brown for buried grains, tan through the
     // body, pale warm cream where the surface catches the light.
@@ -164,9 +222,20 @@ export const CONFIG = {
     shakeThreshold: 13,
     shakeCooldown: 0.35,
     shakeArmDelay: 1.5,
-    // Finger/mouse push.
-    pokeRadius: 46,
-    pokeStrength: 2600,
+    // Finger/mouse push. The radius is a fraction of the shorter screen edge,
+    // not a pixel count: fixed at 46px it reached about a hundred grains on a
+    // desktop and read as a pinprick.
+    pokeRadiusFrac: 0.22,
+    pokeRadiusMin: 54,
+    // Push strength in gravities. A packed bed absorbs a weak push completely
+    // — the solver removes it as fast as it goes in, so velocity never
+    // accumulates — and the old fixed 2600 (a fifth of a g on a large screen)
+    // moved the sand by a *seventh of one grain* however wide the touch area
+    // was. It has to be gravity-relative for the same reason the radius has to
+    // be screen-relative: gravityScale follows the screen diagonal, so a fixed
+    // number lands differently on every device. Past roughly 5g the travel
+    // clamp caps grain speed anyway, so more strength only widens the crater.
+    pokeAccel: 4.5,
     pokeDrag: 0.85,
   },
 

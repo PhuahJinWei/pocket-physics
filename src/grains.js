@@ -2,8 +2,11 @@
 //
 // The screen is the front glass; the box extends a few grain diameters in Z.
 // Grains are equal-mass spheres with no rotational degree of freedom, so
-// friction is pure sliding friction and a pile's angle of repose comes out at
-// roughly atan(mu) — real physics rather than a stiction trick.
+// friction is pure sliding friction. Radii are **polydisperse** (a spread
+// around the mean): identical spheres crystallise into a regular lattice the
+// moment they settle — visible as a woven grid across the whole bed — and no
+// amount of jitter keeps them from finding it again. Real sand never
+// crystallises for exactly this reason.
 //
 // Each fixed substep:
 //   1. gravity and drag into velocity
@@ -51,10 +54,19 @@ export class Grains {
     this.sizeJitter = f32();
     this.hueJitter = f32();
     this.contacts = new Uint8Array(capacity);
+    // 1 when a grain is touching nothing at all. The renderer collapses a
+    // grain's speck cluster to a single speck when this is high — keyed on
+    // isolation rather than speed, because a *speed* threshold fires on any
+    // grain that has fallen a few tens of pixels, which turns an entire moving
+    // bed into dust specks.
+    this.airborne = f32();
     this.cover = f32();
     this.litAbove = f32();
 
     this.rank = new Int32Array(capacity);
+    // Per-grain radius (px). this.radius stays the mean, and most solver
+    // scales (skin, slop, travel caps) stay keyed to it.
+    this.rad = f32();
     // Positions when the contact list was last rebuilt, for the skin test.
     this.refX = f32();
     this.refY = f32();
@@ -78,6 +90,8 @@ export class Grains {
     // Separation speed each contact should end the step with — restitution,
     // computed from the approach speed before the solve touches anything.
     this.cbounce = new Float32Array(0);
+    // Rest distance per contact: rad[i] + rad[j] for the pair it belongs to.
+    this.crest = new Float32Array(0);
     this.active = new Int32Array(0);
     this.contactCount = 0;
     this.activeCount = 0;
@@ -99,6 +113,16 @@ export class Grains {
     this.inner = { x0: 0, y0: 0, z0: 0, x1: 1, y1: 1, z1: 1 };
     this.gravityMagnitude = 4000;
     this.speedNorm = 600;
+    // Unit gravity from the last step, kept so a splash can throw the bed away
+    // from whichever wall it is currently resting on.
+    this.gdx = 0;
+    this.gdy = 1;
+    this.gdz = 0;
+    // Live shake pulse: an extra body acceleration, and how long it has left.
+    this.kickX = 0;
+    this.kickY = 0;
+    this.kickZ = 0;
+    this.kickTime = 0;
     this.substeps = 1;
     this.iterations = CONFIG.sim.velocityIterations;
     this._carry = 0;
@@ -106,6 +130,12 @@ export class Grains {
 
   /** Set the box size and grain size; keeps existing grains in place. */
   configure(width, height, radius) {
+    if (this.n > 0 && this.radius > 0 && radius !== this.radius) {
+      // Quality/layout changed the mean: rescale every grain so each keeps its
+      // place in the size distribution.
+      const k = radius / this.radius;
+      for (let i = 0; i < this.n; i++) this.rad[i] *= k;
+    }
     this.radius = radius;
     this.diameter = radius * 2;
     // Must cover the speculative contact radius, or the 3x3x3 scan misses pairs
@@ -128,6 +158,13 @@ export class Grains {
 
     this.gravityMagnitude = CONFIG.sim.gravityScale * Math.hypot(width, height);
     this.speedNorm = 0.35 * Math.sqrt(2 * this.gravityMagnitude * height);
+    // A finger covers a fraction of the screen, not a fixed pixel count: as a
+    // constant it ends up a dot on a big display and reaches barely a hundred
+    // grains. Scaled, the touch keeps the same footprint everywhere.
+    this.pokeRadius = Math.max(
+      CONFIG.input.pokeRadiusMin,
+      Math.min(width, height) * CONFIG.input.pokeRadiusFrac,
+    );
   }
 
   ensureContactCapacity(need) {
@@ -144,6 +181,7 @@ export class Grains {
     this.cfy = new Float32Array(cap);
     this.cfz = new Float32Array(cap);
     this.cbounce = new Float32Array(cap);
+    this.crest = new Float32Array(cap);
     this.active = new Int32Array(cap);
     this.contactCapacity = cap;
     this.ensureHash(cap);
@@ -152,7 +190,8 @@ export class Grains {
   /** Grain count that fills `CONFIG.bed.fill` of the front view when settled. */
   idealCount(fill = CONFIG.bed.fill) {
     const { x1, y1 } = this.bounds;
-    const grainVol = (4 / 3) * Math.PI * this.radius ** 3;
+    const v = CONFIG.grain.polydispersity;
+    const grainVol = (4 / 3) * Math.PI * this.radius ** 3 * (1 + 3 * v * v);
     const volume = x1 * (fill * y1) * this.depth;
     const ideal = (volume * CONFIG.bed.packing) / grainVol;
     const ceiling = Math.min(
@@ -173,11 +212,16 @@ export class Grains {
     this.vz[i] = 0;
     this.light[i] = 0.5;
     this.speed01[i] = 0;
-    this.sizeJitter[i] = rand();
+    const v = CONFIG.grain.polydispersity;
+    this.rad[i] = this.radius * (1 - v + 2 * v * rand());
+    // The renderer reads this as the sprite size ratio (and as the cluster
+    // seed — any per-grain float works for hashing).
+    this.sizeJitter[i] = this.rad[i] / this.radius;
     this.hueJitter[i] = rand();
     this.contacts[i] = 0;
     this.cover[i] = 0;
     this.litAbove[i] = 0;
+    this.airborne[i] = 0;
   }
 
   /**
@@ -195,14 +239,17 @@ export class Grains {
     const n = Math.min(count, this.capacity);
     this.n = n;
     this.grid.ensureCapacity(n);
+    this.kickTime = 0; // a fresh bed must not inherit a shake in progress
 
     const rand = this.random;
     const b = this.inner;
-    const d = this.diameter;
-    const pitch = d * 1.04;
+    // Spacing must clear the largest possible pair, not the mean, or the
+    // biggest grains spawn overlapped and hand the solver stored energy.
+    const d = this.diameter * (1 + CONFIG.grain.polydispersity);
+    const pitch = d * 1.05;
     // With a half-pitch offset in both x and z, the nearest grain in the layer
-    // below sits at sqrt((p/2)^2 + yp^2 + (p/2)^2); 0.75d keeps that over d.
-    const yPitch = d * 0.75;
+    // below sits at sqrt((p/2)^2 + yp^2 + (p/2)^2); 0.78d keeps that over d.
+    const yPitch = d * 0.78;
     const spanX = Math.max(pitch, b.x1 - b.x0);
     const spanZ = Math.max(0, b.z1 - b.z0);
     const perX = Math.max(1, Math.floor(spanX / pitch) + 1);
@@ -239,7 +286,7 @@ export class Grains {
 
     const rand = this.random;
     const b = this.inner;
-    const pitch = this.diameter * 1.1;
+    const pitch = this.diameter * (1 + CONFIG.grain.polydispersity) * 1.1;
     const perX = Math.max(1, Math.floor((b.x1 - b.x0) / pitch) + 1);
     const perZ = Math.max(1, Math.floor((b.z1 - b.z0) / pitch) + 1);
     const perLayer = perX * perZ;
@@ -267,24 +314,60 @@ export class Grains {
     }
   }
 
-  /** Shake response: throw the bed into the air. */
+  /**
+   * Shake response: jerk the box, and let the sand work out the rest.
+   *
+   * The obvious implementation — hand every grain a velocity — cannot help
+   * making a dust cloud, whatever distribution it draws from. Any per-grain
+   * velocity is *relative* velocity between neighbours, so the bed aerates
+   * everywhere at once: measured over a splash, mean contacts per grain fell
+   * from 7.6 to about 4, i.e. the whole mass went loose and grainy rather than
+   * moving as sand. Randomising the direction is the worst case (the solver
+   * may only remove energy, so most of the kick is annihilated in two frames
+   * and all that is left is the boil), but even a perfectly coherent throw
+   * decompacts the bed if it is written into velocities.
+   *
+   * A hand shaking a box never does that. It accelerates the container, and
+   * the sand feels a pseudo-force — a *body* force, identical for every grain,
+   * which produces no relative velocity at the contacts at all. The bed stays
+   * packed while it is driven, leaves the floor as one mass, and only opens up
+   * where real sand opens up: at the free surface, and on landing.
+   *
+   * So this records a short acceleration pulse and lets `step` add it to
+   * gravity. No velocities are touched.
+   */
   splash(strength) {
     const rand = this.random;
-    const speed = this.speedNorm * CONFIG.sim.splashSpeed * strength;
-    for (let i = 0; i < this.n; i++) {
-      const a = rand() * Math.PI * 2;
-      const m = speed * (0.35 + rand() * 0.65);
-      this.vx[i] += Math.cos(a) * m;
-      this.vy[i] += Math.sin(a) * m * 0.7 - m * 0.55;
-      this.vz[i] += (rand() - 0.5) * m * 0.5;
-    }
+    const cfg = CONFIG.sim;
+
+    // Drive against gravity, not up the screen: on a tilted phone the sand
+    // rests on a wall, and that wall is what throws it.
+    let ux = -this.gdx;
+    let uy = -this.gdy;
+    let uz = -this.gdz;
+    // Lean off-axis so repeated shakes differ and the bed heaves sideways
+    // rather than hopping straight up.
+    const lean = (rand() - 0.5) * 2 * cfg.splashLean;
+    const tx = -uy * lean;
+    const ty = ux * lean;
+    ux += tx;
+    uy += ty;
+    const inv = 1 / (Math.hypot(ux, uy, uz) || 1);
+    ux *= inv; uy *= inv; uz *= inv;
+
+    const a =
+      this.gravityMagnitude * (cfg.splashAccel + cfg.splashGain * Math.max(0, strength - 1));
+    this.kickX = ux * a;
+    this.kickY = uy * a;
+    this.kickZ = uz * a;
+    this.kickTime = cfg.splashDuration;
   }
 
   /** Push grains away from a screen point (a cylinder through the depth). */
   poke(cx, cy, dragX, dragY, dt) {
-    const r = CONFIG.input.pokeRadius;
+    const r = this.pokeRadius;
     const r2 = r * r;
-    const push = CONFIG.input.pokeStrength * dt;
+    const push = this.gravityMagnitude * CONFIG.input.pokeAccel * dt;
     const dragScale = CONFIG.input.pokeDrag;
     const { x, y, vx, vy } = this;
     for (let i = 0; i < this.n; i++) {
@@ -326,9 +409,25 @@ export class Grains {
     const gdx = gx / gmag;
     const gdy = gy / gmag;
     const gdz = gz / gmag;
+    this.gdx = gdx;
+    this.gdy = gdy;
+    this.gdz = gdz;
 
     for (let s = 0; s < steps; s++) {
-      this.applyGravity(h, gx, gy, gz);
+      // A live shake pulse rides on top of gravity as a pseudo-force. Note the
+      // ordering direction above stays the *true* gravity: the pulse comes
+      // from the floor, so contacts should still be solved bottom-up, and the
+      // shading must not flip over for the tenth of a second it lasts.
+      let ax = gx;
+      let ay = gy;
+      let az = gz;
+      if (this.kickTime > 0) {
+        ax += this.kickX;
+        ay += this.kickY;
+        az += this.kickZ;
+        this.kickTime -= h;
+      }
+      this.applyGravity(h, ax, ay, az);
       if (s === 0 || this.listStale()) this.findContacts(gdx, gdy, gdz);
       else this.refreshGaps();
       this.solveVelocity(h);
@@ -450,23 +549,22 @@ export class Grains {
     this.stashImpulses();
     this.ensureContactCapacity(n * 10);
 
-    const { x, y, z, contacts, cover, light, litAbove } = this;
-    const { ci, cj, cnx, cny, cnz, cgap } = this;
+    const { x, y, z, rad, contacts, cover, light, litAbove } = this;
+    const { ci, cj, cnx, cny, cnz, cgap, crest } = this;
     const cols = grid.cols, rows = grid.rows, slabs = grid.slabs;
     const layer = cols * rows;
     const start = grid.cellStart;
     const cellOrder = grid.order;
     const cellOf = grid.cellOf;
     const D = this.diameter;
-    const margin = CONFIG.sim.contactMargin * D;
-    // Built with a skin so the list outlives several substeps; whether a listed
-    // pair is actually active is decided per substep in refreshGaps().
-    const RC = D + CONFIG.sim.skin * D;
-    // Scan radius covers both the speculative contacts and the shading reach.
-    const RS = Math.max(RC, D * CONFIG.sim.shadeRadius);
+    const skinD = CONFIG.sim.skin * D;
+    // The list is built with a skin so it outlives several substeps; whether a
+    // pair is actually active is decided per substep in refreshGaps(). Scan
+    // radius covers the largest possible pair plus skin, and the shading reach.
+    const RS = Math.max(D * (1 + CONFIG.grain.polydispersity) + skinD, D * CONFIG.sim.shadeRadius);
     const RS2 = RS * RS;
     const DS2 = (D * CONFIG.sim.shadeRadius) ** 2;
-    const b = this.inner;
+    const B = this.bounds;
     const cap = this.contactCapacity;
 
     contacts.fill(0, 0, n);
@@ -477,27 +575,28 @@ export class Grains {
     for (let k = 0; k < n; k++) {
       const i = order[k];
       const xi = x[i], yi = y[i], zi = z[i];
+      const ri = rad[i];
 
       // Walls first: they are the ultimate support, so solving them ahead of
-      // this grain's neighbours is what a deepest-first sweep wants.
-      const skin = CONFIG.sim.skin * D;
+      // this grain's neighbours is what a deepest-first sweep wants. Gaps are
+      // measured against the outer box minus this grain's own radius.
       // Speculative: a grain resting exactly ON a wall has zero penetration, so
       // a strict "is it past the plane" test finds nothing and the floor
       // silently stops supporting the bed. Catch them a margin early instead
       // and let the solver limit approach speed to the remaining gap.
       if (c + 6 <= cap) {
-        let gap = xi - b.x0;
-        if (gap < skin) { ci[c] = i; cj[c] = -1; cnx[c] = -1; cny[c] = 0; cnz[c] = 0; cgap[c] = gap; c++; }
-        gap = b.x1 - xi;
-        if (gap < skin) { ci[c] = i; cj[c] = -2; cnx[c] = 1; cny[c] = 0; cnz[c] = 0; cgap[c] = gap; c++; }
-        gap = yi - b.y0;
-        if (gap < skin) { ci[c] = i; cj[c] = -3; cnx[c] = 0; cny[c] = -1; cnz[c] = 0; cgap[c] = gap; c++; }
-        gap = b.y1 - yi;
-        if (gap < skin) { ci[c] = i; cj[c] = -4; cnx[c] = 0; cny[c] = 1; cnz[c] = 0; cgap[c] = gap; c++; }
-        gap = zi - b.z0;
-        if (gap < skin) { ci[c] = i; cj[c] = -5; cnx[c] = 0; cny[c] = 0; cnz[c] = -1; cgap[c] = gap; c++; }
-        gap = b.z1 - zi;
-        if (gap < skin) { ci[c] = i; cj[c] = -6; cnx[c] = 0; cny[c] = 0; cnz[c] = 1; cgap[c] = gap; c++; }
+        let gap = xi - B.x0 - ri;
+        if (gap < skinD) { ci[c] = i; cj[c] = -1; cnx[c] = -1; cny[c] = 0; cnz[c] = 0; cgap[c] = gap; crest[c] = ri; c++; }
+        gap = B.x1 - xi - ri;
+        if (gap < skinD) { ci[c] = i; cj[c] = -2; cnx[c] = 1; cny[c] = 0; cnz[c] = 0; cgap[c] = gap; crest[c] = ri; c++; }
+        gap = yi - B.y0 - ri;
+        if (gap < skinD) { ci[c] = i; cj[c] = -3; cnx[c] = 0; cny[c] = -1; cnz[c] = 0; cgap[c] = gap; crest[c] = ri; c++; }
+        gap = B.y1 - yi - ri;
+        if (gap < skinD) { ci[c] = i; cj[c] = -4; cnx[c] = 0; cny[c] = 1; cnz[c] = 0; cgap[c] = gap; crest[c] = ri; c++; }
+        gap = zi - ri;
+        if (gap < skinD) { ci[c] = i; cj[c] = -5; cnx[c] = 0; cny[c] = 0; cnz[c] = -1; cgap[c] = gap; crest[c] = ri; c++; }
+        gap = this.depth - zi - ri;
+        if (gap < skinD) { ci[c] = i; cj[c] = -6; cnx[c] = 0; cny[c] = 0; cnz[c] = 1; cgap[c] = gap; crest[c] = ri; c++; }
       }
 
       const cell = cellOf[i];
@@ -555,11 +654,13 @@ export class Grains {
                 }
               }
 
-              if (dist >= RC || c >= cap) continue;
+              const sumR = ri + rad[j];
+              if (dist >= sumR + skinD || c >= cap) continue;
               ci[c] = i;
               cj[c] = j;
               cnx[c] = nx; cny[c] = ny; cnz[c] = nz;
-              cgap[c] = dist - D;
+              cgap[c] = dist - sumR;
+              crest[c] = sumR;
               c++;
             }
           }
@@ -599,10 +700,10 @@ export class Grains {
    */
   refreshGaps() {
     const cnt = this.contactCount;
-    const { ci, cj, cnx, cny, cnz, cgap, cjn, cfx, cfy, cfz, active, x, y, z } = this;
-    const b = this.inner;
-    const D = this.diameter;
-    const margin = CONFIG.sim.contactMargin * D;
+    const { ci, cj, cnx, cny, cnz, cgap, crest, cjn, cfx, cfy, cfz, active, x, y, z, rad } = this;
+    const B = this.bounds;
+    const depth = this.depth;
+    const margin = CONFIG.sim.contactMargin * this.diameter;
     let a = 0;
     for (let c = 0; c < cnt; c++) {
       const i = ci[c];
@@ -610,23 +711,24 @@ export class Grains {
       if (j >= 0) {
         const dx = x[j] - x[i], dy = y[j] - y[i], dz = z[j] - z[i];
         const d2 = dx * dx + dy * dy + dz * dz;
-        const rc = D + margin;
+        const rc = crest[c] + margin;
         if (d2 >= rc * rc) { cjn[c] = 0; cfx[c] = 0; cfy[c] = 0; cfz[c] = 0; continue; }
         const dist = Math.sqrt(d2);
         if (dist > 1e-6) {
           const inv = 1 / dist;
           cnx[c] = dx * inv; cny[c] = dy * inv; cnz[c] = dz * inv;
         }
-        cgap[c] = dist - D;
+        cgap[c] = dist - crest[c];
       } else {
         const nx = cnx[c], ny = cny[c], nz = cnz[c];
+        const ri = rad[i];
         let gap;
-        if (nx < 0) gap = x[i] - b.x0;
-        else if (nx > 0) gap = b.x1 - x[i];
-        else if (ny < 0) gap = y[i] - b.y0;
-        else if (ny > 0) gap = b.y1 - y[i];
-        else if (nz < 0) gap = z[i] - b.z0;
-        else gap = b.z1 - z[i];
+        if (nx < 0) gap = x[i] - B.x0 - ri;
+        else if (nx > 0) gap = B.x1 - x[i] - ri;
+        else if (ny < 0) gap = y[i] - B.y0 - ri;
+        else if (ny > 0) gap = B.y1 - y[i] - ri;
+        else if (nz < 0) gap = z[i] - ri;
+        else gap = depth - z[i] - ri;
         if (gap >= margin) { cjn[c] = 0; cfx[c] = 0; cfy[c] = 0; cfz[c] = 0; continue; }
         cgap[c] = gap;
       }
@@ -847,13 +949,14 @@ export class Grains {
    */
   solvePosition() {
     const cnt = this.activeCount;
-    const { ci, cj, cnx, cny, cnz, active, x, y, z } = this;
+    const { ci, cj, cnx, cny, cnz, crest, active, x, y, z, rad } = this;
     const iters = CONFIG.sim.positionIterations;
     const beta = CONFIG.sim.positionBeta;
     const D = this.diameter;
     const slop = CONFIG.sim.slop * D;
     const maxFix = CONFIG.sim.maxCorrection * D;
-    const b = this.inner;
+    const B = this.bounds;
+    const depth = this.depth;
 
     for (let it = 0; it < iters; it++) {
       for (let a = 0; a < cnt; a++) {
@@ -861,11 +964,12 @@ export class Grains {
         const i = ci[c];
         const j = cj[c];
         if (j >= 0) {
+          const rest = crest[c];
           const dx = x[j] - x[i], dy = y[j] - y[i], dz = z[j] - z[i];
           const d2 = dx * dx + dy * dy + dz * dz;
-          if (d2 >= D * D || d2 < 1e-12) continue;
+          if (d2 >= rest * rest || d2 < 1e-12) continue;
           const dist = Math.sqrt(d2);
-          let push = (D - dist - slop) * beta * 0.5;
+          let push = (rest - dist - slop) * beta * 0.5;
           if (push <= 0) continue;
           if (push > maxFix) push = maxFix;
           const inv = 1 / dist;
@@ -874,15 +978,16 @@ export class Grains {
           x[j] += nx * push; y[j] += ny * push; z[j] += nz * push;
         } else {
           const nx = cnx[c], ny = cny[c], nz = cnz[c];
+          const ri = rad[i];
           // Distance past the plane this normal points at (negative = still
           // inside, which is the common speculative case and does nothing).
           let pen;
-          if (nx < 0) pen = b.x0 - x[i];
-          else if (nx > 0) pen = x[i] - b.x1;
-          else if (ny < 0) pen = b.y0 - y[i];
-          else if (ny > 0) pen = y[i] - b.y1;
-          else if (nz < 0) pen = b.z0 - z[i];
-          else pen = z[i] - b.z1;
+          if (nx < 0) pen = B.x0 + ri - x[i];
+          else if (nx > 0) pen = x[i] - (B.x1 - ri);
+          else if (ny < 0) pen = B.y0 + ri - y[i];
+          else if (ny > 0) pen = y[i] - (B.y1 - ri);
+          else if (nz < 0) pen = ri - z[i];
+          else pen = z[i] - (depth - ri);
           let push = (pen - slop) * beta;
           if (push <= 0) continue;
           if (push > maxFix) push = maxFix;
@@ -894,16 +999,17 @@ export class Grains {
     // Final hard clamp: whatever the solver did, nothing leaves the box.
     const n = this.n;
     for (let i = 0; i < n; i++) {
-      if (x[i] < b.x0) x[i] = b.x0; else if (x[i] > b.x1) x[i] = b.x1;
-      if (y[i] < b.y0) y[i] = b.y0; else if (y[i] > b.y1) y[i] = b.y1;
-      if (z[i] < b.z0) z[i] = b.z0; else if (z[i] > b.z1) z[i] = b.z1;
+      const ri = rad[i];
+      if (x[i] < B.x0 + ri) x[i] = B.x0 + ri; else if (x[i] > B.x1 - ri) x[i] = B.x1 - ri;
+      if (y[i] < B.y0 + ri) y[i] = B.y0 + ri; else if (y[i] > B.y1 - ri) y[i] = B.y1 - ri;
+      if (z[i] < ri) z[i] = ri; else if (z[i] > depth - ri) z[i] = depth - ri;
     }
   }
 
   updateShading(dt) {
     const n = this.n;
     const cfg = CONFIG.sim;
-    const { light, cover, contacts, litAbove, speed01, vx, vy, vz } = this;
+    const { light, cover, contacts, litAbove, speed01, airborne, vx, vy, vz } = this;
     const invCover = 1 / cfg.coverNorm;
     const invSpeed = 1 / this.speedNorm;
     const blend = 1 - Math.exp(-cfg.lightSmoothing * dt);
@@ -918,6 +1024,10 @@ export class Grains {
       const target = Math.max(exposed, litAbove[i] * transmit);
       light[i] += (target - light[i]) * blend;
       speed01[i] = clamp(Math.hypot(vx[i], vy[i], vz[i]) * invSpeed, 0, 1);
+      // Touching nothing means genuinely in flight. Smoothed so a grain
+      // entering or leaving the mass fades rather than pops.
+      const air = contacts[i] === 0 ? 1 : 0;
+      airborne[i] += (air - airborne[i]) * blend;
     }
   }
 }

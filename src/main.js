@@ -73,7 +73,15 @@ function grainRadius(width, height) {
 }
 
 function targetCount() {
-  return forcedGrains ? Math.min(forcedGrains, sand.capacity) : sand.idealCount();
+  if (forcedGrains) return Math.min(forcedGrains, sand.capacity);
+  const ideal = sand.idealCount();
+  // On a large screen the wanted grain radius exceeds maxRadius and gets
+  // pinned there — and since the tuner coarsens by *growing* grains, pinning
+  // leaves it with no lever at all: it drops quality, nothing changes, and the
+  // device just runs slow forever. When that happens, trade bed depth instead.
+  const g = CONFIG.grain;
+  const pinned = Math.min(viewWidth, viewHeight) / g.divisor >= g.maxRadius;
+  return pinned ? Math.round(ideal * Math.min(1, tuner.scale)) : ideal;
 }
 
 /**

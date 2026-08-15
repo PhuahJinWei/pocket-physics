@@ -230,7 +230,7 @@ const CONFIG = {
     fill: 0.22,
     // Depth of the box behind the glass, in grain diameters. This is the Z the
     // screen is a window into; deeper looks better but costs grains cubically.
-    depthLayers: 3.5,
+    depthLayers: 5.0,
     // 3D random-close-packing density, converts bed volume -> grain count.
     packing: 0.64,
     minGrains: 400,
@@ -245,6 +245,10 @@ const CONFIG = {
     divisor: 76,
     minRadius: 2.8,
     maxRadius: 9.5,
+    // Radius spread around the mean. Identical spheres crystallise into a
+    // regular lattice as they settle — visible as a woven grid across the bed —
+    // and real sand never does exactly because its grains all differ.
+    polydispersity: 0.18,
   },
 
   // Velocity-level sequential impulses. See src/grains.js for the reasoning
@@ -256,9 +260,17 @@ const CONFIG = {
     // how brisk and alive the sand feels.
     gravityScale: 7.0,
     // The solver runs on a fixed timestep so the feel never depends on frame
-    // rate. maxSubsteps bounds catch-up work after a stall.
-    fixedHz: 150,
-    maxSubsteps: 4,
+    // rate. Keep maxSubsteps tight: catch-up is a feedback loop, because a slow
+    // frame hands the next step a bigger dt, which buys *more* substeps and
+    // makes it slower again. Capped, a struggling device runs the sim slightly
+    // slow-motion instead of spiralling — measured 37fps -> 60fps here.
+    // 120Hz x 3 substeps = 25ms of simulated time available per frame, so the
+    // sim stays real-time on anything holding 40fps. At 150Hz the budget was
+    // 20ms, and a wide window (which maximises grain count AND gravity) dropped
+    // below that mid-splash — the sim then runs in slow motion, and a splash
+    // that rains out in half a second becomes seconds of drifting mist.
+    fixedHz: 120,
+    maxSubsteps: 3,
     // Contacts are found this far apart (fraction of a diameter) and the solver
     // then limits approach speed to the remaining gap. Detecting only actual
     // overlap leaves a grain resting exactly on a surface with no contact at
@@ -269,9 +281,10 @@ const CONFIG = {
     // them, so the list is rebuilt at most once a frame — and only when some
     // grain has moved half the skin.
     skin: 0.35,
-    // Grid cell size as a multiple of grain diameter; must exceed the list
-    // radius (1 + skin) so the 3x3x3 scan cannot miss a pair.
-    cellMul: 1.4,
+    // Grid cell size as a multiple of grain diameter; must exceed the largest
+    // pair's list radius (1 + polydispersity + skin) so the 3x3x3 scan cannot
+    // truncate the speculative band for the biggest grains.
+    cellMul: 1.6,
     // Gauss-Seidel sweeps. Velocity iterations buy stacking stiffness (a deep
     // pile needs more); position iterations only clean up leftover overlap.
     velocityIterations: 6,
@@ -322,7 +335,28 @@ const CONFIG = {
     // Fraction of a grain's brightness that reaches the grain beneath it.
     lightTransmit: 0.93,
     lightSmoothing: 18,
-    splashSpeed: 1.0,
+    // A shake is modelled as the box being jerked: a body acceleration added
+    // to gravity for a moment, in multiples of gravity, rather than a velocity
+    // handed to each grain. See Grains.splash — writing velocities is what
+    // turns a splash into a dust cloud, because per-grain velocity is relative
+    // velocity, and relative velocity is what pulls a packed bed apart.
+    // The floor matters more than it looks: a pulse too weak to lift the bed
+    // clear of the ground leaves part of it supported while the rest rises, so
+    // the bed shears against itself and goes loose. Measured at strength 1,
+    // 2.6g left 5.7% of grains isolated and 3.4g left 0.5%. Once airborne
+    // every grain shares the same gravity, so the mass travels rigid — the
+    // dispersion only ever happens during a half-hearted launch.
+    splashAccel: 3.4,
+    // Added per unit of shake strength above 1. Deliberately shallow: a hard
+    // shake should hit harder, but the strong end is already well clear of the
+    // threshold and a linear scaling just throws sand into the ceiling.
+    splashGain: 0.8,
+    // Seconds the pulse lasts. Long enough to launch the bed, short enough to
+    // read as a jerk rather than a change in gravity.
+    splashDuration: 0.09,
+    // How far the jerk tips off the gravity axis, so shakes differ and the
+    // sand heaves sideways rather than hopping straight up.
+    splashLean: 0.45,
   },
 
   render: {
@@ -331,13 +365,20 @@ const CONFIG = {
     // cluster of small matte specks rather than one ball, which is what makes
     // the sand look finer than the physics actually is — visual grain size is
     // speckRadius * clusterSize * diameter, not the physics diameter.
-    clusterSize: 1.35,
-    // Specks per grain, how far they scatter across the sprite, and their
-    // radius in sprite units. Spread + radius must stay under 1.0 or specks get
-    // clipped by the sprite's edge.
-    speckCount: 9,
+    clusterSize: 1.5,
+    // Speck size on screen, in CSS px — held constant across devices. The
+    // physics grain scales with the viewport (and is clamped), so on a wide
+    // screen each sprite is nearly twice the phone's size; a fixed speck count
+    // and ratio made the sand coarsest exactly where there was most room to
+    // see it. The renderer picks the per-sprite speck count from this and
+    // speckCoverage, rebuilding the shader when it changes.
+    speckPx: 3.4,
+    speckCoverage: 0.72,
     speckSpread: 1.2,
-    speckRadius: 0.28,
+    // Airborne grains barely shrink now: the fragment shader draws them as a
+    // single grain-sized speck, so shrinking the sprite on top would make a
+    // flying grain smaller than it physically is.
+    airShrink: 0.05,
     // Brightness scatter between specks; the grain-to-grain variation that
     // stops a bed reading as one smooth surface.
     speckVariation: 0.3,
@@ -347,13 +388,30 @@ const CONFIG = {
     patchAmp: 0.09,
     // Sand glints as facets catch the light. Brief flashes on a few specks at
     // a time — cheap, and it does a lot of the work of selling the material.
-    glintStrength: 0.4,
-    glintRate: 1.9,
+    glintStrength: 0.16,
+    glintRate: 1.2,
     // Perspective: focal length as a multiple of min(viewport w, h). Smaller =
     // more dramatic depth. Parallax shifts the eye against tilt, in px.
-    focal: 1.4,
-    depthDim: 0.45,
-    parallax: 40,
+    // Shorter focal = more aggressive convergence toward the back. Parallax is
+    // how far the eye slides against the tilt; it is the strongest depth cue
+    // available on a phone because it is coupled to the hand.
+    focal: 1.0,
+    depthDim: 0.55,
+    parallax: 65,
+    // Box interior. Shaded by facing under the same light as the sand: the
+    // floor catches it, the ceiling is in shadow. Back vertices are multiplied
+    // by wallBackFalloff so every wall recedes into darkness.
+    // Kept deliberately dim. The box only has to be *implied* — measured
+    // against a background of 5/255, the old values put the floor at 67 and
+    // the right wall at 57, so the empty half of the box read as a lit brown
+    // panel competing with the sand. Halved, the walls sit at 2-7x the
+    // background: enough to place the corners, not enough to look at.
+    wallColor: [0.15, 0.125, 0.095],
+    // Right was nearly as bright as the floor, which is what made the far wall
+    // pop. Pulled closer to the left face, keeping some asymmetry so the box
+    // still reads as lit from one side.
+    wallShade: { floor: 1.0, ceiling: 0.42, left: 0.5, right: 0.58, back: 0.55 },
+    wallBackFalloff: 0.55,
     background: [0.02, 0.017, 0.014],
     // Dry quartz: crevice-shadow brown for buried grains, tan through the
     // body, pale warm cream where the surface catches the light.
@@ -382,9 +440,20 @@ const CONFIG = {
     shakeThreshold: 13,
     shakeCooldown: 0.35,
     shakeArmDelay: 1.5,
-    // Finger/mouse push.
-    pokeRadius: 46,
-    pokeStrength: 2600,
+    // Finger/mouse push. The radius is a fraction of the shorter screen edge,
+    // not a pixel count: fixed at 46px it reached about a hundred grains on a
+    // desktop and read as a pinprick.
+    pokeRadiusFrac: 0.22,
+    pokeRadiusMin: 54,
+    // Push strength in gravities. A packed bed absorbs a weak push completely
+    // — the solver removes it as fast as it goes in, so velocity never
+    // accumulates — and the old fixed 2600 (a fifth of a g on a large screen)
+    // moved the sand by a *seventh of one grain* however wide the touch area
+    // was. It has to be gravity-relative for the same reason the radius has to
+    // be screen-relative: gravityScale follows the screen diagonal, so a fixed
+    // number lands differently on every device. Past roughly 5g the travel
+    // clamp caps grain speed anyway, so more strength only widens the crater.
+    pokeAccel: 4.5,
     pokeDrag: 0.85,
   },
 
@@ -563,8 +632,11 @@ function isIOS() {
 //
 // The screen is the front glass; the box extends a few grain diameters in Z.
 // Grains are equal-mass spheres with no rotational degree of freedom, so
-// friction is pure sliding friction and a pile's angle of repose comes out at
-// roughly atan(mu) — real physics rather than a stiction trick.
+// friction is pure sliding friction. Radii are **polydisperse** (a spread
+// around the mean): identical spheres crystallise into a regular lattice the
+// moment they settle — visible as a woven grid across the whole bed — and no
+// amount of jitter keeps them from finding it again. Real sand never
+// crystallises for exactly this reason.
 //
 // Each fixed substep:
 //   1. gravity and drag into velocity
@@ -609,10 +681,19 @@ class Grains {
     this.sizeJitter = f32();
     this.hueJitter = f32();
     this.contacts = new Uint8Array(capacity);
+    // 1 when a grain is touching nothing at all. The renderer collapses a
+    // grain's speck cluster to a single speck when this is high — keyed on
+    // isolation rather than speed, because a *speed* threshold fires on any
+    // grain that has fallen a few tens of pixels, which turns an entire moving
+    // bed into dust specks.
+    this.airborne = f32();
     this.cover = f32();
     this.litAbove = f32();
 
     this.rank = new Int32Array(capacity);
+    // Per-grain radius (px). this.radius stays the mean, and most solver
+    // scales (skin, slop, travel caps) stay keyed to it.
+    this.rad = f32();
     // Positions when the contact list was last rebuilt, for the skin test.
     this.refX = f32();
     this.refY = f32();
@@ -636,6 +717,8 @@ class Grains {
     // Separation speed each contact should end the step with — restitution,
     // computed from the approach speed before the solve touches anything.
     this.cbounce = new Float32Array(0);
+    // Rest distance per contact: rad[i] + rad[j] for the pair it belongs to.
+    this.crest = new Float32Array(0);
     this.active = new Int32Array(0);
     this.contactCount = 0;
     this.activeCount = 0;
@@ -657,6 +740,16 @@ class Grains {
     this.inner = { x0: 0, y0: 0, z0: 0, x1: 1, y1: 1, z1: 1 };
     this.gravityMagnitude = 4000;
     this.speedNorm = 600;
+    // Unit gravity from the last step, kept so a splash can throw the bed away
+    // from whichever wall it is currently resting on.
+    this.gdx = 0;
+    this.gdy = 1;
+    this.gdz = 0;
+    // Live shake pulse: an extra body acceleration, and how long it has left.
+    this.kickX = 0;
+    this.kickY = 0;
+    this.kickZ = 0;
+    this.kickTime = 0;
     this.substeps = 1;
     this.iterations = CONFIG.sim.velocityIterations;
     this._carry = 0;
@@ -664,6 +757,12 @@ class Grains {
 
   /** Set the box size and grain size; keeps existing grains in place. */
   configure(width, height, radius) {
+    if (this.n > 0 && this.radius > 0 && radius !== this.radius) {
+      // Quality/layout changed the mean: rescale every grain so each keeps its
+      // place in the size distribution.
+      const k = radius / this.radius;
+      for (let i = 0; i < this.n; i++) this.rad[i] *= k;
+    }
     this.radius = radius;
     this.diameter = radius * 2;
     // Must cover the speculative contact radius, or the 3x3x3 scan misses pairs
@@ -686,6 +785,13 @@ class Grains {
 
     this.gravityMagnitude = CONFIG.sim.gravityScale * Math.hypot(width, height);
     this.speedNorm = 0.35 * Math.sqrt(2 * this.gravityMagnitude * height);
+    // A finger covers a fraction of the screen, not a fixed pixel count: as a
+    // constant it ends up a dot on a big display and reaches barely a hundred
+    // grains. Scaled, the touch keeps the same footprint everywhere.
+    this.pokeRadius = Math.max(
+      CONFIG.input.pokeRadiusMin,
+      Math.min(width, height) * CONFIG.input.pokeRadiusFrac,
+    );
   }
 
   ensureContactCapacity(need) {
@@ -702,6 +808,7 @@ class Grains {
     this.cfy = new Float32Array(cap);
     this.cfz = new Float32Array(cap);
     this.cbounce = new Float32Array(cap);
+    this.crest = new Float32Array(cap);
     this.active = new Int32Array(cap);
     this.contactCapacity = cap;
     this.ensureHash(cap);
@@ -710,7 +817,8 @@ class Grains {
   /** Grain count that fills `CONFIG.bed.fill` of the front view when settled. */
   idealCount(fill = CONFIG.bed.fill) {
     const { x1, y1 } = this.bounds;
-    const grainVol = (4 / 3) * Math.PI * this.radius ** 3;
+    const v = CONFIG.grain.polydispersity;
+    const grainVol = (4 / 3) * Math.PI * this.radius ** 3 * (1 + 3 * v * v);
     const volume = x1 * (fill * y1) * this.depth;
     const ideal = (volume * CONFIG.bed.packing) / grainVol;
     const ceiling = Math.min(
@@ -731,11 +839,16 @@ class Grains {
     this.vz[i] = 0;
     this.light[i] = 0.5;
     this.speed01[i] = 0;
-    this.sizeJitter[i] = rand();
+    const v = CONFIG.grain.polydispersity;
+    this.rad[i] = this.radius * (1 - v + 2 * v * rand());
+    // The renderer reads this as the sprite size ratio (and as the cluster
+    // seed — any per-grain float works for hashing).
+    this.sizeJitter[i] = this.rad[i] / this.radius;
     this.hueJitter[i] = rand();
     this.contacts[i] = 0;
     this.cover[i] = 0;
     this.litAbove[i] = 0;
+    this.airborne[i] = 0;
   }
 
   /**
@@ -753,14 +866,17 @@ class Grains {
     const n = Math.min(count, this.capacity);
     this.n = n;
     this.grid.ensureCapacity(n);
+    this.kickTime = 0; // a fresh bed must not inherit a shake in progress
 
     const rand = this.random;
     const b = this.inner;
-    const d = this.diameter;
-    const pitch = d * 1.04;
+    // Spacing must clear the largest possible pair, not the mean, or the
+    // biggest grains spawn overlapped and hand the solver stored energy.
+    const d = this.diameter * (1 + CONFIG.grain.polydispersity);
+    const pitch = d * 1.05;
     // With a half-pitch offset in both x and z, the nearest grain in the layer
-    // below sits at sqrt((p/2)^2 + yp^2 + (p/2)^2); 0.75d keeps that over d.
-    const yPitch = d * 0.75;
+    // below sits at sqrt((p/2)^2 + yp^2 + (p/2)^2); 0.78d keeps that over d.
+    const yPitch = d * 0.78;
     const spanX = Math.max(pitch, b.x1 - b.x0);
     const spanZ = Math.max(0, b.z1 - b.z0);
     const perX = Math.max(1, Math.floor(spanX / pitch) + 1);
@@ -797,7 +913,7 @@ class Grains {
 
     const rand = this.random;
     const b = this.inner;
-    const pitch = this.diameter * 1.1;
+    const pitch = this.diameter * (1 + CONFIG.grain.polydispersity) * 1.1;
     const perX = Math.max(1, Math.floor((b.x1 - b.x0) / pitch) + 1);
     const perZ = Math.max(1, Math.floor((b.z1 - b.z0) / pitch) + 1);
     const perLayer = perX * perZ;
@@ -825,24 +941,60 @@ class Grains {
     }
   }
 
-  /** Shake response: throw the bed into the air. */
+  /**
+   * Shake response: jerk the box, and let the sand work out the rest.
+   *
+   * The obvious implementation — hand every grain a velocity — cannot help
+   * making a dust cloud, whatever distribution it draws from. Any per-grain
+   * velocity is *relative* velocity between neighbours, so the bed aerates
+   * everywhere at once: measured over a splash, mean contacts per grain fell
+   * from 7.6 to about 4, i.e. the whole mass went loose and grainy rather than
+   * moving as sand. Randomising the direction is the worst case (the solver
+   * may only remove energy, so most of the kick is annihilated in two frames
+   * and all that is left is the boil), but even a perfectly coherent throw
+   * decompacts the bed if it is written into velocities.
+   *
+   * A hand shaking a box never does that. It accelerates the container, and
+   * the sand feels a pseudo-force — a *body* force, identical for every grain,
+   * which produces no relative velocity at the contacts at all. The bed stays
+   * packed while it is driven, leaves the floor as one mass, and only opens up
+   * where real sand opens up: at the free surface, and on landing.
+   *
+   * So this records a short acceleration pulse and lets `step` add it to
+   * gravity. No velocities are touched.
+   */
   splash(strength) {
     const rand = this.random;
-    const speed = this.speedNorm * CONFIG.sim.splashSpeed * strength;
-    for (let i = 0; i < this.n; i++) {
-      const a = rand() * Math.PI * 2;
-      const m = speed * (0.35 + rand() * 0.65);
-      this.vx[i] += Math.cos(a) * m;
-      this.vy[i] += Math.sin(a) * m * 0.7 - m * 0.55;
-      this.vz[i] += (rand() - 0.5) * m * 0.5;
-    }
+    const cfg = CONFIG.sim;
+
+    // Drive against gravity, not up the screen: on a tilted phone the sand
+    // rests on a wall, and that wall is what throws it.
+    let ux = -this.gdx;
+    let uy = -this.gdy;
+    let uz = -this.gdz;
+    // Lean off-axis so repeated shakes differ and the bed heaves sideways
+    // rather than hopping straight up.
+    const lean = (rand() - 0.5) * 2 * cfg.splashLean;
+    const tx = -uy * lean;
+    const ty = ux * lean;
+    ux += tx;
+    uy += ty;
+    const inv = 1 / (Math.hypot(ux, uy, uz) || 1);
+    ux *= inv; uy *= inv; uz *= inv;
+
+    const a =
+      this.gravityMagnitude * (cfg.splashAccel + cfg.splashGain * Math.max(0, strength - 1));
+    this.kickX = ux * a;
+    this.kickY = uy * a;
+    this.kickZ = uz * a;
+    this.kickTime = cfg.splashDuration;
   }
 
   /** Push grains away from a screen point (a cylinder through the depth). */
   poke(cx, cy, dragX, dragY, dt) {
-    const r = CONFIG.input.pokeRadius;
+    const r = this.pokeRadius;
     const r2 = r * r;
-    const push = CONFIG.input.pokeStrength * dt;
+    const push = this.gravityMagnitude * CONFIG.input.pokeAccel * dt;
     const dragScale = CONFIG.input.pokeDrag;
     const { x, y, vx, vy } = this;
     for (let i = 0; i < this.n; i++) {
@@ -884,9 +1036,25 @@ class Grains {
     const gdx = gx / gmag;
     const gdy = gy / gmag;
     const gdz = gz / gmag;
+    this.gdx = gdx;
+    this.gdy = gdy;
+    this.gdz = gdz;
 
     for (let s = 0; s < steps; s++) {
-      this.applyGravity(h, gx, gy, gz);
+      // A live shake pulse rides on top of gravity as a pseudo-force. Note the
+      // ordering direction above stays the *true* gravity: the pulse comes
+      // from the floor, so contacts should still be solved bottom-up, and the
+      // shading must not flip over for the tenth of a second it lasts.
+      let ax = gx;
+      let ay = gy;
+      let az = gz;
+      if (this.kickTime > 0) {
+        ax += this.kickX;
+        ay += this.kickY;
+        az += this.kickZ;
+        this.kickTime -= h;
+      }
+      this.applyGravity(h, ax, ay, az);
       if (s === 0 || this.listStale()) this.findContacts(gdx, gdy, gdz);
       else this.refreshGaps();
       this.solveVelocity(h);
@@ -1008,23 +1176,22 @@ class Grains {
     this.stashImpulses();
     this.ensureContactCapacity(n * 10);
 
-    const { x, y, z, contacts, cover, light, litAbove } = this;
-    const { ci, cj, cnx, cny, cnz, cgap } = this;
+    const { x, y, z, rad, contacts, cover, light, litAbove } = this;
+    const { ci, cj, cnx, cny, cnz, cgap, crest } = this;
     const cols = grid.cols, rows = grid.rows, slabs = grid.slabs;
     const layer = cols * rows;
     const start = grid.cellStart;
     const cellOrder = grid.order;
     const cellOf = grid.cellOf;
     const D = this.diameter;
-    const margin = CONFIG.sim.contactMargin * D;
-    // Built with a skin so the list outlives several substeps; whether a listed
-    // pair is actually active is decided per substep in refreshGaps().
-    const RC = D + CONFIG.sim.skin * D;
-    // Scan radius covers both the speculative contacts and the shading reach.
-    const RS = Math.max(RC, D * CONFIG.sim.shadeRadius);
+    const skinD = CONFIG.sim.skin * D;
+    // The list is built with a skin so it outlives several substeps; whether a
+    // pair is actually active is decided per substep in refreshGaps(). Scan
+    // radius covers the largest possible pair plus skin, and the shading reach.
+    const RS = Math.max(D * (1 + CONFIG.grain.polydispersity) + skinD, D * CONFIG.sim.shadeRadius);
     const RS2 = RS * RS;
     const DS2 = (D * CONFIG.sim.shadeRadius) ** 2;
-    const b = this.inner;
+    const B = this.bounds;
     const cap = this.contactCapacity;
 
     contacts.fill(0, 0, n);
@@ -1035,27 +1202,28 @@ class Grains {
     for (let k = 0; k < n; k++) {
       const i = order[k];
       const xi = x[i], yi = y[i], zi = z[i];
+      const ri = rad[i];
 
       // Walls first: they are the ultimate support, so solving them ahead of
-      // this grain's neighbours is what a deepest-first sweep wants.
-      const skin = CONFIG.sim.skin * D;
+      // this grain's neighbours is what a deepest-first sweep wants. Gaps are
+      // measured against the outer box minus this grain's own radius.
       // Speculative: a grain resting exactly ON a wall has zero penetration, so
       // a strict "is it past the plane" test finds nothing and the floor
       // silently stops supporting the bed. Catch them a margin early instead
       // and let the solver limit approach speed to the remaining gap.
       if (c + 6 <= cap) {
-        let gap = xi - b.x0;
-        if (gap < skin) { ci[c] = i; cj[c] = -1; cnx[c] = -1; cny[c] = 0; cnz[c] = 0; cgap[c] = gap; c++; }
-        gap = b.x1 - xi;
-        if (gap < skin) { ci[c] = i; cj[c] = -2; cnx[c] = 1; cny[c] = 0; cnz[c] = 0; cgap[c] = gap; c++; }
-        gap = yi - b.y0;
-        if (gap < skin) { ci[c] = i; cj[c] = -3; cnx[c] = 0; cny[c] = -1; cnz[c] = 0; cgap[c] = gap; c++; }
-        gap = b.y1 - yi;
-        if (gap < skin) { ci[c] = i; cj[c] = -4; cnx[c] = 0; cny[c] = 1; cnz[c] = 0; cgap[c] = gap; c++; }
-        gap = zi - b.z0;
-        if (gap < skin) { ci[c] = i; cj[c] = -5; cnx[c] = 0; cny[c] = 0; cnz[c] = -1; cgap[c] = gap; c++; }
-        gap = b.z1 - zi;
-        if (gap < skin) { ci[c] = i; cj[c] = -6; cnx[c] = 0; cny[c] = 0; cnz[c] = 1; cgap[c] = gap; c++; }
+        let gap = xi - B.x0 - ri;
+        if (gap < skinD) { ci[c] = i; cj[c] = -1; cnx[c] = -1; cny[c] = 0; cnz[c] = 0; cgap[c] = gap; crest[c] = ri; c++; }
+        gap = B.x1 - xi - ri;
+        if (gap < skinD) { ci[c] = i; cj[c] = -2; cnx[c] = 1; cny[c] = 0; cnz[c] = 0; cgap[c] = gap; crest[c] = ri; c++; }
+        gap = yi - B.y0 - ri;
+        if (gap < skinD) { ci[c] = i; cj[c] = -3; cnx[c] = 0; cny[c] = -1; cnz[c] = 0; cgap[c] = gap; crest[c] = ri; c++; }
+        gap = B.y1 - yi - ri;
+        if (gap < skinD) { ci[c] = i; cj[c] = -4; cnx[c] = 0; cny[c] = 1; cnz[c] = 0; cgap[c] = gap; crest[c] = ri; c++; }
+        gap = zi - ri;
+        if (gap < skinD) { ci[c] = i; cj[c] = -5; cnx[c] = 0; cny[c] = 0; cnz[c] = -1; cgap[c] = gap; crest[c] = ri; c++; }
+        gap = this.depth - zi - ri;
+        if (gap < skinD) { ci[c] = i; cj[c] = -6; cnx[c] = 0; cny[c] = 0; cnz[c] = 1; cgap[c] = gap; crest[c] = ri; c++; }
       }
 
       const cell = cellOf[i];
@@ -1113,11 +1281,13 @@ class Grains {
                 }
               }
 
-              if (dist >= RC || c >= cap) continue;
+              const sumR = ri + rad[j];
+              if (dist >= sumR + skinD || c >= cap) continue;
               ci[c] = i;
               cj[c] = j;
               cnx[c] = nx; cny[c] = ny; cnz[c] = nz;
-              cgap[c] = dist - D;
+              cgap[c] = dist - sumR;
+              crest[c] = sumR;
               c++;
             }
           }
@@ -1157,10 +1327,10 @@ class Grains {
    */
   refreshGaps() {
     const cnt = this.contactCount;
-    const { ci, cj, cnx, cny, cnz, cgap, cjn, cfx, cfy, cfz, active, x, y, z } = this;
-    const b = this.inner;
-    const D = this.diameter;
-    const margin = CONFIG.sim.contactMargin * D;
+    const { ci, cj, cnx, cny, cnz, cgap, crest, cjn, cfx, cfy, cfz, active, x, y, z, rad } = this;
+    const B = this.bounds;
+    const depth = this.depth;
+    const margin = CONFIG.sim.contactMargin * this.diameter;
     let a = 0;
     for (let c = 0; c < cnt; c++) {
       const i = ci[c];
@@ -1168,23 +1338,24 @@ class Grains {
       if (j >= 0) {
         const dx = x[j] - x[i], dy = y[j] - y[i], dz = z[j] - z[i];
         const d2 = dx * dx + dy * dy + dz * dz;
-        const rc = D + margin;
+        const rc = crest[c] + margin;
         if (d2 >= rc * rc) { cjn[c] = 0; cfx[c] = 0; cfy[c] = 0; cfz[c] = 0; continue; }
         const dist = Math.sqrt(d2);
         if (dist > 1e-6) {
           const inv = 1 / dist;
           cnx[c] = dx * inv; cny[c] = dy * inv; cnz[c] = dz * inv;
         }
-        cgap[c] = dist - D;
+        cgap[c] = dist - crest[c];
       } else {
         const nx = cnx[c], ny = cny[c], nz = cnz[c];
+        const ri = rad[i];
         let gap;
-        if (nx < 0) gap = x[i] - b.x0;
-        else if (nx > 0) gap = b.x1 - x[i];
-        else if (ny < 0) gap = y[i] - b.y0;
-        else if (ny > 0) gap = b.y1 - y[i];
-        else if (nz < 0) gap = z[i] - b.z0;
-        else gap = b.z1 - z[i];
+        if (nx < 0) gap = x[i] - B.x0 - ri;
+        else if (nx > 0) gap = B.x1 - x[i] - ri;
+        else if (ny < 0) gap = y[i] - B.y0 - ri;
+        else if (ny > 0) gap = B.y1 - y[i] - ri;
+        else if (nz < 0) gap = z[i] - ri;
+        else gap = depth - z[i] - ri;
         if (gap >= margin) { cjn[c] = 0; cfx[c] = 0; cfy[c] = 0; cfz[c] = 0; continue; }
         cgap[c] = gap;
       }
@@ -1405,13 +1576,14 @@ class Grains {
    */
   solvePosition() {
     const cnt = this.activeCount;
-    const { ci, cj, cnx, cny, cnz, active, x, y, z } = this;
+    const { ci, cj, cnx, cny, cnz, crest, active, x, y, z, rad } = this;
     const iters = CONFIG.sim.positionIterations;
     const beta = CONFIG.sim.positionBeta;
     const D = this.diameter;
     const slop = CONFIG.sim.slop * D;
     const maxFix = CONFIG.sim.maxCorrection * D;
-    const b = this.inner;
+    const B = this.bounds;
+    const depth = this.depth;
 
     for (let it = 0; it < iters; it++) {
       for (let a = 0; a < cnt; a++) {
@@ -1419,11 +1591,12 @@ class Grains {
         const i = ci[c];
         const j = cj[c];
         if (j >= 0) {
+          const rest = crest[c];
           const dx = x[j] - x[i], dy = y[j] - y[i], dz = z[j] - z[i];
           const d2 = dx * dx + dy * dy + dz * dz;
-          if (d2 >= D * D || d2 < 1e-12) continue;
+          if (d2 >= rest * rest || d2 < 1e-12) continue;
           const dist = Math.sqrt(d2);
-          let push = (D - dist - slop) * beta * 0.5;
+          let push = (rest - dist - slop) * beta * 0.5;
           if (push <= 0) continue;
           if (push > maxFix) push = maxFix;
           const inv = 1 / dist;
@@ -1432,15 +1605,16 @@ class Grains {
           x[j] += nx * push; y[j] += ny * push; z[j] += nz * push;
         } else {
           const nx = cnx[c], ny = cny[c], nz = cnz[c];
+          const ri = rad[i];
           // Distance past the plane this normal points at (negative = still
           // inside, which is the common speculative case and does nothing).
           let pen;
-          if (nx < 0) pen = b.x0 - x[i];
-          else if (nx > 0) pen = x[i] - b.x1;
-          else if (ny < 0) pen = b.y0 - y[i];
-          else if (ny > 0) pen = y[i] - b.y1;
-          else if (nz < 0) pen = b.z0 - z[i];
-          else pen = z[i] - b.z1;
+          if (nx < 0) pen = B.x0 + ri - x[i];
+          else if (nx > 0) pen = x[i] - (B.x1 - ri);
+          else if (ny < 0) pen = B.y0 + ri - y[i];
+          else if (ny > 0) pen = y[i] - (B.y1 - ri);
+          else if (nz < 0) pen = ri - z[i];
+          else pen = z[i] - (depth - ri);
           let push = (pen - slop) * beta;
           if (push <= 0) continue;
           if (push > maxFix) push = maxFix;
@@ -1452,16 +1626,17 @@ class Grains {
     // Final hard clamp: whatever the solver did, nothing leaves the box.
     const n = this.n;
     for (let i = 0; i < n; i++) {
-      if (x[i] < b.x0) x[i] = b.x0; else if (x[i] > b.x1) x[i] = b.x1;
-      if (y[i] < b.y0) y[i] = b.y0; else if (y[i] > b.y1) y[i] = b.y1;
-      if (z[i] < b.z0) z[i] = b.z0; else if (z[i] > b.z1) z[i] = b.z1;
+      const ri = rad[i];
+      if (x[i] < B.x0 + ri) x[i] = B.x0 + ri; else if (x[i] > B.x1 - ri) x[i] = B.x1 - ri;
+      if (y[i] < B.y0 + ri) y[i] = B.y0 + ri; else if (y[i] > B.y1 - ri) y[i] = B.y1 - ri;
+      if (z[i] < ri) z[i] = ri; else if (z[i] > depth - ri) z[i] = depth - ri;
     }
   }
 
   updateShading(dt) {
     const n = this.n;
     const cfg = CONFIG.sim;
-    const { light, cover, contacts, litAbove, speed01, vx, vy, vz } = this;
+    const { light, cover, contacts, litAbove, speed01, airborne, vx, vy, vz } = this;
     const invCover = 1 / cfg.coverNorm;
     const invSpeed = 1 / this.speedNorm;
     const blend = 1 - Math.exp(-cfg.lightSmoothing * dt);
@@ -1476,6 +1651,10 @@ class Grains {
       const target = Math.max(exposed, litAbove[i] * transmit);
       light[i] += (target - light[i]) * blend;
       speed01[i] = clamp(Math.hypot(vx[i], vy[i], vz[i]) * invSpeed, 0, 1);
+      // Touching nothing means genuinely in flight. Smoothed so a grain
+      // entering or leaving the mass fades rather than pops.
+      const air = contacts[i] === 0 ? 1 : 0;
+      airborne[i] += (air - airborne[i]) * blend;
     }
   }
 }
@@ -1500,12 +1679,12 @@ const VERTEX_SHADER = `
 precision highp float;
 
 attribute vec3 aPos;      // sim position: x,y CSS px, z depth (0 = glass)
-attribute vec2 aShade;    // x: surface light 0..1, y: normalised speed 0..1
+attribute vec3 aShade;    // x: surface light, y: normalised speed, z: airborne
 attribute vec2 aJitter;   // x: cluster seed, y: tint variation
 
 uniform vec2 uViewport;   // CSS px
 uniform float uPointSize; // device px, already scaled by dpr
-uniform float uSpeedBoost;
+uniform float uAirShrink;
 uniform float uFocal;     // focal length in CSS px
 uniform vec2 uEye;        // projection centre in CSS px (parallax lives here)
 uniform float uDepthRange;
@@ -1513,6 +1692,7 @@ uniform float uPatchScale;
 
 varying float vLight;
 varying float vSpeed;
+varying float vAir;
 varying float vTint;
 varying float vDepth;
 varying float vSeed;
@@ -1527,10 +1707,15 @@ void main() {
   vec2 projected = uEye + (aPos.xy - uEye) * persp;
   vec2 unit = projected / uViewport;
   gl_Position = vec4(unit.x * 2.0 - 1.0, 1.0 - unit.y * 2.0, 0.0, 1.0);
-  float grow = 1.0 + aShade.y * uSpeedBoost;
-  gl_PointSize = uPointSize * (0.92 + 0.16 * aJitter.x) * grow * persp;
+  // Airborne grains keep their sprite: the fragment shader draws them as one
+  // grain-sized speck instead of a cluster, so the size must stay honest.
+  float shrink = 1.0 - uAirShrink * aShade.z;
+  // aJitter.x is the grain's physical radius ratio, so the sprite matches the
+  // polydisperse physics exactly.
+  gl_PointSize = uPointSize * aJitter.x * shrink * persp;
   vLight = aShade.x;
   vSpeed = aShade.y;
+  vAir = aShade.z;
   vTint = aJitter.y;
   vDepth = clamp(aPos.z / uDepthRange, 0.0, 1.0);
   vSeed = aJitter.x;
@@ -1562,6 +1747,7 @@ precision highp float;
 
 varying float vLight;
 varying float vSpeed;
+varying float vAir;
 varying float vTint;
 varying float vDepth;
 varying float vSeed;
@@ -1572,7 +1758,8 @@ uniform vec3 uMid;
 uniform vec3 uLit;
 uniform float uDepthDim;  // how much the back of the box falls into shadow
 uniform float uSpread;    // how far specks scatter across the sprite
-uniform float uSpeck;     // speck radius, sprite units
+uniform float uSpeck;     // speck radius in the packed bed, sprite units
+uniform float uAirSpeck;  // speck radius for an isolated grain, sprite units
 uniform float uVary;      // matte brightness spread between specks
 uniform float uPatchAmp;  // strength of the spatial patchiness
 uniform float uGlint;     // sparkle strength
@@ -1610,13 +1797,29 @@ void main() {
   float r2 = dot(uv, uv);
   if (r2 > 1.0) discard;
 
+  // A packed grain spreads its specks across the sprite; a grain touching
+  // nothing draws as a single speck instead — otherwise every airborne grain
+  // reads as a little flower of specks stuck together, which the cluster trick
+  // hides inside the bed but not in flight.
+  //
+  // Keyed on isolation, not speed: a speed threshold fires on any grain that
+  // has fallen a few tens of pixels, so a whole bed in motion collapses and
+  // reads as drifting dust rather than sand.
+  //
+  // The lone speck grows to the grain's *actual* size (uAirSpeck). Collapsing
+  // to the fine bed-speck size instead leaves a flying grain drawn several
+  // times smaller than it physically is — thousands of those is exactly what a
+  // dust cloud looks like, even when the simulation is behaving perfectly.
+  float spread = uSpread * (1.0 - 0.85 * vAir);
+  float speck = mix(uSpeck, uAirSpeck, vAir);
+
   // Nearest speck in the cluster.
   float best = 10.0;
   float bestId = 0.0;
   vec2 bestC = vec2(0.0);
   for (int k = 0; k < SPECKS; k++) {
     float fk = float(k);
-    vec2 c = (hash21(vSeed * 17.0 + fk * 3.71) - 0.5) * uSpread;
+    vec2 c = (hash21(vSeed * 17.0 + fk * 3.71) - 0.5) * spread;
     float d = length(uv - c);
     if (d < best) {
       best = d;
@@ -1628,7 +1831,7 @@ void main() {
   // Coverage runs a little past the specks so neighbours web together into a
   // porous but connected mass; what shows through the gaps is the grain drawn
   // behind, which is deeper and darker — free crevices.
-  float alpha = smoothstep(uSpeck * 2.1, uSpeck * 1.1, best)
+  float alpha = smoothstep(speck * 2.1, speck * 1.1, best)
     * smoothstep(1.0, 0.8, r2);
   if (alpha < 0.02) discard;
 
@@ -1636,22 +1839,25 @@ void main() {
 
   // Micro-relief: a gentle fake normal per speck, all lit by the same global
   // light. Lit crest up-left, shade down-right, crevice shadow in the webbing.
-  vec2 local = (uv - bestC) / max(uSpeck, 1e-3);
+  vec2 local = (uv - bestC) / max(speck, 1e-3);
   float lz = sqrt(max(1.0 - min(dot(local, local), 1.0) * 0.75, 0.0));
   vec3 nrm = normalize(vec3(local.x, local.y, lz * 1.35));
   vec3 lightDir = normalize(vec3(-0.33, -0.62, 0.71));
   float diffuse = max(dot(nrm, lightDir), 0.0);
-  float crevice = smoothstep(uSpeck * 2.0, uSpeck * 0.5, best);
+  float crevice = smoothstep(speck * 2.0, speck * 0.5, best);
   color *= (0.52 + 0.62 * diffuse) * (0.55 + 0.45 * crevice);
 
   // A touch of per-speck scatter on top — grains are not all one mineral.
   color *= 1.0 - uVary * 0.5 + uVary * hash11(vSeed * 5.3 + bestId * 2.17);
   color *= 1.0 - uDepthDim * vDepth;
 
-  // Sparkle: dry sand glints as facets catch the sun. Warm, brief, sparse.
+  // Sparkle: dry sand glints as facets catch the sun — but only the odd
+  // facet. Most specks never glint at all; letting every speck flash on a
+  // cycle made the whole bed shimmer like glitter.
+  float facet = step(0.85, hash11(vSeed * 31.7 + bestId * 7.77));
   float phase = hash11(vSeed * 9.1 + bestId * 4.3);
   float tw = sin(uTime * uGlintRate + phase * 6.2831853);
-  color += vec3(1.0, 0.97, 0.9) * pow(max(tw, 0.0), 48.0) * uGlint
+  color += vec3(1.0, 0.97, 0.9) * pow(max(tw, 0.0), 64.0) * uGlint * facet
     * (0.3 + 0.7 * clamp(vLight, 0.0, 1.0)) * diffuse;
 
   gl_FragColor = vec4(color, alpha);
@@ -1659,17 +1865,57 @@ void main() {
 `;
 }
 
+// The box itself: interior walls and back plane, drawn before the sand in the
+// same pinhole projection.
+//
+// Without them the container is invisible and the eye has to infer a box from
+// loose grains alone — which is why the depth read as flat no matter how many
+// layers were behind the glass. Four trapezoids converging on an inset back
+// rectangle give the eye a reference frame, and because the front rectangle sits
+// exactly on the viewport edge (persp is 1 at z=0, parallax included), only the
+// back moves: tilting shears the walls, which is the strongest depth cue here.
+
+const WALL_VERTEX_SHADER = `
+precision highp float;
+
+attribute vec3 aPos;
+attribute float aShade;
+
+uniform vec2 uViewport;
+uniform float uFocal;
+uniform vec2 uEye;
+
+varying float vShade;
+
+void main() {
+  float persp = uFocal / (uFocal + aPos.z);
+  vec2 p = uEye + (aPos.xy - uEye) * persp;
+  vec2 unit = p / uViewport;
+  gl_Position = vec4(unit.x * 2.0 - 1.0, 1.0 - unit.y * 2.0, 0.0, 1.0);
+  vShade = aShade;
+}
+`;
+
+const WALL_FRAGMENT_SHADER = `
+precision mediump float;
+varying float vShade;
+uniform vec3 uWallColor;
+void main() {
+  gl_FragColor = vec4(uWallColor * vShade, 1.0);
+}
+`;
+
 // ---- src/renderer.js ----
-// WebGL point-sprite renderer: one interleaved buffer, one draw call. Prefers
-// a WebGL2 context but the shaders are ES 1.00 so a WebGL1 fallback is
-// identical in output.
+// WebGL point-sprite renderer: one interleaved buffer, one draw call for the
+// sand plus a tiny one for the box. Prefers a WebGL2 context but the shaders
+// are ES 1.00 so a WebGL1 fallback is identical in output.
 //
 // Grains are packed back-to-front (a 32-bucket counting sort on z), so nearer
-// beads paint over deeper ones and no depth buffer is needed — point sprites
+// grains paint over deeper ones and no depth buffer is needed — point sprites
 // with blending and a depth buffer fight over the alpha edges anyway.
 
 
-const FLOATS_PER_GRAIN = 7; // x, y, z, light, speed, sizeJitter, hueJitter
+const FLOATS_PER_GRAIN = 8; // x,y,z | light, speed, airborne | sizeJitter, hueJitter
 const STRIDE = FLOATS_PER_GRAIN * 4;
 const BUCKETS = 32;
 
@@ -1694,6 +1940,14 @@ class Renderer {
     this.eyeX = 0;
     this.eyeY = 0;
     this.t0 = performance.now();
+    // 5 quads (four interior walls + back plane), 6 vertices each, xyz + shade.
+    this.wallData = new Float32Array(5 * 6 * 4);
+    this.wallKey = '';
+    // Speck styling, derived from the on-screen sprite size (see
+    // ensureGrainStyle). The program is rebuilt when the count changes.
+    this.speckCount = 0;
+    this.speckRadius = 0.28;
+    this._styleKey = '';
     this.contextLost = false;
 
     const opts = {
@@ -1728,7 +1982,73 @@ class Renderer {
 
   initGL() {
     const gl = this.gl;
-    this.program = buildProgram(gl, VERTEX_SHADER, buildFragmentShader(CONFIG.render.speckCount));
+
+    this.buffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, this.cpu.byteLength, gl.DYNAMIC_DRAW);
+
+    // Wall program: its own tiny pipeline, sharing the projection maths.
+    this.wallProgram = buildProgram(gl, WALL_VERTEX_SHADER, WALL_FRAGMENT_SHADER);
+    this.wallAttrib = {
+      pos: gl.getAttribLocation(this.wallProgram, 'aPos'),
+      shade: gl.getAttribLocation(this.wallProgram, 'aShade'),
+    };
+    this.wallUniform = {
+      viewport: gl.getUniformLocation(this.wallProgram, 'uViewport'),
+      focal: gl.getUniformLocation(this.wallProgram, 'uFocal'),
+      eye: gl.getUniformLocation(this.wallProgram, 'uEye'),
+      color: gl.getUniformLocation(this.wallProgram, 'uWallColor'),
+    };
+    this.wallBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.wallBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, this.wallData.byteLength, gl.DYNAMIC_DRAW);
+    this.wallKey = '';
+
+    const bg = CONFIG.render.background;
+    gl.clearColor(bg[0], bg[1], bg[2], 1);
+    gl.disable(gl.DEPTH_TEST);
+    gl.enable(gl.BLEND);
+
+    // Grain program is built lazily by ensureGrainStyle on the first draw,
+    // because the speck count depends on the sprite's on-screen size.
+    this.program = null;
+    this.speckCount = 0;
+    this._styleKey = '';
+  }
+
+  /**
+   * Keep the *on-screen* speck size constant. The physics grain radius scales
+   * with the short edge of the viewport (and is clamped), so on a wide screen
+   * each grain sprite can be twice the phone's size — with a fixed speck count
+   * and ratio the sand turned coarse exactly where there was most room to see
+   * it. Instead the speck radius targets `speckPx` CSS pixels and the count
+   * grows to keep the same covered fraction, so a big sprite gets many small
+   * specks rather than a few big ones. The count is a compile-time constant in
+   * ES 1.00, so changing it means relinking the grain program — rare (layout
+   * and tuner changes only) and cheap.
+   */
+  ensureGrainStyle(diameter) {
+    const r = CONFIG.render;
+    const clusterPx = Math.max(diameter * r.clusterSize, 4);
+    const key = clusterPx.toFixed(2);
+    if (key === this._styleKey && this.program) return;
+    this._styleKey = key;
+
+    // uSpeck is in sprite units: a speck's on-screen diameter is
+    // uSpeck * clusterPx.
+    this.speckRadius = Math.min(0.42, Math.max(0.12, r.speckPx / clusterPx));
+    const count = Math.round(Math.min(40, Math.max(6,
+      r.speckCoverage / (this.speckRadius * this.speckRadius))));
+    if (count !== this.speckCount || !this.program) {
+      this.speckCount = count;
+      this.setupGrainProgram();
+    }
+  }
+
+  setupGrainProgram() {
+    const gl = this.gl;
+    if (this.program) gl.deleteProgram(this.program);
+    this.program = buildProgram(gl, VERTEX_SHADER, buildFragmentShader(this.speckCount));
     gl.useProgram(this.program);
 
     this.attrib = {
@@ -1739,7 +2059,7 @@ class Renderer {
     this.uniform = {
       viewport: gl.getUniformLocation(this.program, 'uViewport'),
       pointSize: gl.getUniformLocation(this.program, 'uPointSize'),
-      speedBoost: gl.getUniformLocation(this.program, 'uSpeedBoost'),
+      airShrink: gl.getUniformLocation(this.program, 'uAirShrink'),
       focal: gl.getUniformLocation(this.program, 'uFocal'),
       eye: gl.getUniformLocation(this.program, 'uEye'),
       depthRange: gl.getUniformLocation(this.program, 'uDepthRange'),
@@ -1751,39 +2071,112 @@ class Renderer {
       patchAmp: gl.getUniformLocation(this.program, 'uPatchAmp'),
       spread: gl.getUniformLocation(this.program, 'uSpread'),
       speck: gl.getUniformLocation(this.program, 'uSpeck'),
+      airSpeck: gl.getUniformLocation(this.program, 'uAirSpeck'),
       vary: gl.getUniformLocation(this.program, 'uVary'),
       glint: gl.getUniformLocation(this.program, 'uGlint'),
       glintRate: gl.getUniformLocation(this.program, 'uGlintRate'),
       time: gl.getUniformLocation(this.program, 'uTime'),
     };
 
-    this.buffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
-    gl.bufferData(gl.ARRAY_BUFFER, this.cpu.byteLength, gl.DYNAMIC_DRAW);
-
     for (const loc of Object.values(this.attrib)) {
       if (loc >= 0) gl.enableVertexAttribArray(loc);
     }
     gl.vertexAttribPointer(this.attrib.pos, 3, gl.FLOAT, false, STRIDE, 0);
-    gl.vertexAttribPointer(this.attrib.shade, 2, gl.FLOAT, false, STRIDE, 12);
-    gl.vertexAttribPointer(this.attrib.jitter, 2, gl.FLOAT, false, STRIDE, 20);
-
-    const bg = CONFIG.render.background;
-    gl.clearColor(bg[0], bg[1], bg[2], 1);
-    gl.disable(gl.DEPTH_TEST);
-    gl.enable(gl.BLEND);
+    gl.vertexAttribPointer(this.attrib.shade, 3, gl.FLOAT, false, STRIDE, 12);
+    gl.vertexAttribPointer(this.attrib.jitter, 2, gl.FLOAT, false, STRIDE, 24);
 
     const r = CONFIG.render;
     gl.uniform1f(this.uniform.spread, r.speckSpread);
-    gl.uniform1f(this.uniform.speck, r.speckRadius);
     gl.uniform1f(this.uniform.vary, r.speckVariation);
     gl.uniform1f(this.uniform.patchScale, r.patchScale);
     gl.uniform1f(this.uniform.patchAmp, r.patchAmp);
     gl.uniform1f(this.uniform.glint, r.glintStrength);
     gl.uniform1f(this.uniform.glintRate, r.glintRate);
+    gl.uniform1f(this.uniform.airShrink, r.airShrink);
     gl.uniform3fv(this.uniform.deep, r.deep);
     gl.uniform3fv(this.uniform.mid, r.mid);
     gl.uniform3fv(this.uniform.lit, r.lit);
+  }
+
+  /**
+   * Box interior: four walls running from the viewport edge (z=0) back to an
+   * inset rectangle (z=depth), plus the back plane. Shaded by facing — the
+   * floor catches the light, the ceiling is in shadow — and darkened toward the
+   * back so each wall carries a recession gradient of its own.
+   */
+  buildWalls(w, h, depth) {
+    const key = `${w}|${h}|${depth}`;
+    if (key === this.wallKey) return;
+    this.wallKey = key;
+
+    const L = CONFIG.render.wallShade;
+    const back = CONFIG.render.wallBackFalloff;
+    const d = this.wallData;
+    let o = 0;
+    // Each quad: front-left, front-right, back-right, back-left (in its plane).
+    const quad = (ax, ay, bx, by, shade) => {
+      const f = shade;
+      const b = shade * back;
+      const v = [
+        ax, ay, 0, f,
+        bx, by, 0, f,
+        bx, by, depth, b,
+        ax, ay, 0, f,
+        bx, by, depth, b,
+        ax, ay, depth, b,
+      ];
+      for (let i = 0; i < v.length; i++) d[o++] = v[i];
+    };
+
+    quad(0, 0, w, 0, L.ceiling);   // top
+    quad(w, 0, w, h, L.right);     // right
+    quad(w, h, 0, h, L.floor);     // bottom
+    quad(0, h, 0, 0, L.left);      // left
+    // Back plane, flat at z = depth.
+    const bp = L.back * back;
+    const v = [
+      0, 0, depth, bp,
+      w, 0, depth, bp,
+      w, h, depth, bp,
+      0, 0, depth, bp,
+      w, h, depth, bp,
+      0, h, depth, bp,
+    ];
+    for (let i = 0; i < v.length; i++) d[o++] = v[i];
+
+    const gl = this.gl;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.wallBuffer);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, d);
+  }
+
+  drawWalls(depth, focal, eyeX, eyeY) {
+    const gl = this.gl;
+    this.buildWalls(this.width, this.height, depth);
+
+    gl.useProgram(this.wallProgram);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.wallBuffer);
+    gl.enableVertexAttribArray(this.wallAttrib.pos);
+    gl.enableVertexAttribArray(this.wallAttrib.shade);
+    gl.vertexAttribPointer(this.wallAttrib.pos, 3, gl.FLOAT, false, 16, 0);
+    gl.vertexAttribPointer(this.wallAttrib.shade, 1, gl.FLOAT, false, 16, 12);
+
+    gl.uniform2f(this.wallUniform.viewport, this.width, this.height);
+    gl.uniform1f(this.wallUniform.focal, focal);
+    gl.uniform2f(this.wallUniform.eye, this.width * 0.5 + eyeX, this.height * 0.5 + eyeY);
+    gl.uniform3fv(this.wallUniform.color, CONFIG.render.wallColor);
+    gl.drawArrays(gl.TRIANGLES, 0, 30);
+
+    // Hand the pipeline back to the grain program.
+    gl.disableVertexAttribArray(this.wallAttrib.shade);
+    gl.useProgram(this.program);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+    for (const loc of Object.values(this.attrib)) {
+      if (loc >= 0) gl.enableVertexAttribArray(loc);
+    }
+    gl.vertexAttribPointer(this.attrib.pos, 3, gl.FLOAT, false, STRIDE, 0);
+    gl.vertexAttribPointer(this.attrib.shade, 3, gl.FLOAT, false, STRIDE, 12);
+    gl.vertexAttribPointer(this.attrib.jitter, 2, gl.FLOAT, false, STRIDE, 24);
   }
 
   /** Returns true when the backing store changed size. */
@@ -1805,12 +2198,18 @@ class Renderer {
     const gl = this.gl;
     if (this.contextLost) return;
 
+    this.ensureGrainStyle(sand.diameter);
+
     gl.clear(gl.COLOR_BUFFER_BIT);
+    const focal = CONFIG.render.focal * Math.min(this.width, this.height);
+    // Box first: the sand always lives inside it, so no depth test is needed.
+    this.drawWalls(sand.depth, focal, this.eyeX, this.eyeY);
+
     const n = sand.n;
     if (n === 0) return;
 
     // Counting sort by z bucket, deepest first, so the pack order is
-    // back-to-front for the bead pass.
+    // back-to-front for the grain pass.
     const { bucketOf, drawOrder, bucketStart } = this;
     const zScale = BUCKETS / Math.max(sand.depth, 1e-3);
     const zArr = sand.z;
@@ -1832,7 +2231,7 @@ class Renderer {
     for (let i = 0; i < n; i++) drawOrder[bucketStart[bucketOf[i] + 1]++] = i;
 
     const cpu = this.cpu;
-    const { x, y, light, speed01, sizeJitter, hueJitter } = sand;
+    const { x, y, light, speed01, airborne, sizeJitter, hueJitter } = sand;
     for (let k = 0; k < n; k++) {
       const i = drawOrder[k];
       const o = k * FLOATS_PER_GRAIN;
@@ -1841,8 +2240,9 @@ class Renderer {
       cpu[o + 2] = zArr[i];
       cpu[o + 3] = light[i];
       cpu[o + 4] = speed01[i];
-      cpu[o + 5] = sizeJitter[i];
-      cpu[o + 6] = hueJitter[i];
+      cpu[o + 5] = airborne[i];
+      cpu[o + 6] = sizeJitter[i];
+      cpu[o + 7] = hueJitter[i];
     }
 
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
@@ -1856,8 +2256,13 @@ class Renderer {
     const px = sand.diameter * this.dpr;
     gl.uniform2f(this.uniform.viewport, this.width, this.height);
     gl.uniform1f(this.uniform.time, (performance.now() - this.t0) * 0.001);
-    gl.uniform1f(this.uniform.speedBoost, 0.35);
-    gl.uniform1f(this.uniform.focal, CONFIG.render.focal * Math.min(this.width, this.height));
+    gl.uniform1f(this.uniform.speck, this.speckRadius);
+    // An isolated grain draws as one speck the size of the grain itself. The
+    // sprite is clusterSize x the grain, and the alpha falloff makes the solid
+    // core about 1.6x the speck radius, so this lands the visible speck on the
+    // true grain diameter whatever the screen.
+    gl.uniform1f(this.uniform.airSpeck, 0.5 / (CONFIG.render.clusterSize * 1.6));
+    gl.uniform1f(this.uniform.focal, focal);
     gl.uniform2f(this.uniform.eye, this.width * 0.5 + this.eyeX, this.height * 0.5 + this.eyeY);
     gl.uniform1f(this.uniform.depthRange, sand.depth);
     gl.uniform1f(this.uniform.depthDim, CONFIG.render.depthDim);
@@ -2602,7 +3007,15 @@ function grainRadius(width, height) {
 }
 
 function targetCount() {
-  return forcedGrains ? Math.min(forcedGrains, sand.capacity) : sand.idealCount();
+  if (forcedGrains) return Math.min(forcedGrains, sand.capacity);
+  const ideal = sand.idealCount();
+  // On a large screen the wanted grain radius exceeds maxRadius and gets
+  // pinned there — and since the tuner coarsens by *growing* grains, pinning
+  // leaves it with no lever at all: it drops quality, nothing changes, and the
+  // device just runs slow forever. When that happens, trade bed depth instead.
+  const g = CONFIG.grain;
+  const pinned = Math.min(viewWidth, viewHeight) / g.divisor >= g.maxRadius;
+  return pinned ? Math.round(ideal * Math.min(1, tuner.scale)) : ideal;
 }
 
 /**
