@@ -54,9 +54,9 @@ python tools/bundle.py
 
 URL parameters: `?stats` opens the stats panel, `?demo` runs a hands-free sway
 (useful for screenshots and for checking the sim without sensors), `?grains=8000`
-and `?r=3` pin the grain count and radius, `?stick` forces the tilt pad, and
-`?capture` enables `preserveDrawingBuffer` so screenshot tools can read the
-canvas.
+and `?r=3` pin the grain count and radius, `?tune=off` disables adaptive quality,
+`?stick` forces the tilt pad, and `?capture` enables `preserveDrawingBuffer` so
+screenshot tools can read the canvas.
 
 ## How it works
 
@@ -64,7 +64,7 @@ canvas.
 main.js      frame loop, viewport → sim size, quality changes
   gravity.js   deviceorientation / keys / tilt pad → a gravity vector
   poke.js      pointers → push impulses
-  sand.js      the simulation
+  grains.js    the simulation
     grid.js      counting-sort spatial hash
   renderer.js  WebGL point sprites
     shaders.js
@@ -73,38 +73,47 @@ main.js      frame loop, viewport → sim size, quality changes
 config.js    every tunable, in one place
 ```
 
-**Simulation.** Position-based dynamics in a shallow 3D box (the screen is the
-front glass; the box extends ~4 grain diameters in Z), over a uniform 3D spatial
-hash, in typed arrays with no per-frame allocation. Each substep integrates,
-rebuilds the grid, then relaxes contacts: overlapping grains are pushed apart,
-and a Coulomb-ish friction term cancels the tangential part of their relative
-motion. Friction is what makes it sand rather than water — it gives the bed
-shear strength, so it piles instead of levelling out. Grains are visited
-deepest-first along the current gravity direction, so support propagates from
-the base of a pile upward in a single sweep.
+**Simulation.** Velocity-level sequential impulses in a shallow 3D box (the
+screen is the front glass; the box extends a few grain diameters in Z), over a
+uniform 3D spatial hash, in typed arrays with no per-frame allocation. Grains
+are equal-mass spheres with no rotational degree of freedom, so friction is pure
+sliding friction. Each fixed substep: gravity, find contacts, solve velocities,
+integrate, then repair leftover overlap.
 
-Tilt maps to a full 3D gravity vector: hold the phone flat and the sand settles
-against the back wall; stand it up and the sand pours down the glass.
+The velocity/position split is the whole basis of the solver. An impulse can only
+remove kinetic energy, so contacts can never manufacture motion, and the position
+pass repairs penetration *without* writing back into velocity, so geometry never
+becomes energy either. Resolving overlap by moving grains and then re-deriving
+velocity from that movement — the obvious approach, and what an earlier version
+of this did — pumps energy into every contact and boils the bed, which no amount
+of damping, sleeping or clamping can hide. Because nothing injects energy the bed
+settles on its own, so there is **no sleep system**: every grain integrates every
+step, which is why tilt response is immediate and flow is continuous.
 
-**Sleep.** A grain that stays slow and supported for a third of a second goes
-fully dormant — no gravity, no solver corrections, an immovable obstacle. This
-is what makes a resting bed *pixel-still* (and nearly free: a dormant bed costs
-~0 CPU), and it is hysteretic, so nothing shimmers on the edge of stopping.
-Waking is deliberate: tipping the device past ~10° wakes the whole bed at once
-(a hard tilt slumps as one mass instead of peeling off layer by layer), pokes
-and shakes wake what they touch, and ballistic grains — a splash landing — wake
-what they hit. Slow creep deliberately cannot transmit wakefulness; that one
-rule is the difference between a bed that sleeps and a bed that simmers forever.
+Four details carry more weight than they look:
 
-**Cost control.** A fixed sweep budget per frame is split between substeps and
-iterations: a settled bed spends it all on iterations (converging the deep,
-compressed layers), while a bed in flight spends it on substeps instead. On top
-of that the tuner watches frame time and adjusts grain *size* — count scales
-with 1/r³, so headroom buys finer grains, never a different amount of sand. It
-only judges frames where the sim actually worked; tuning on dormant frames
-would inflate quality, spawn grains, and oscillate. Grains added by a quality
-step spawn in a thin layer just above the bed surface, not at the top of the
-screen.
+- **Warm starting.** Each contact begins the step by re-applying the impulse it
+  settled on last time — kept in a hash keyed by the contact pair, since
+  rebuilding the list shuffles indices. This is what makes the bed *actually*
+  still. From a cold start the solver has to rediscover the entire weight of the
+  pile inside its iteration budget every step, always falls slightly short, and
+  the bed sinks a little, gets pushed out, and sinks again: a permanent low
+  simmer that no amount of damping removes. Friction is warm started the same
+  way, accumulated as a vector and clamped as a whole, which is what produces
+  true static friction — and therefore an angle of repose that responds to `mu`
+  at all.
+- **Speculative contacts.** Pairs are found slightly *before* they touch and the
+  solver limits approach to the remaining gap. Detecting only actual overlap
+  leaves a grain resting exactly on a surface with no contact at all — the floor
+  stops holding the bed up and it sinks straight through.
+- **Shock propagation.** One bottom-up sweep treats the deeper grain of each pair
+  as immovable. Between equal masses an impulse only averages their velocities,
+  so support crawls up a stack geometrically and a deep bed crushes itself; the
+  floor, treated as ground, carries support to the surface in one pass.
+- **Wall friction must stay low.** The box is only a few grains deep, so about
+  half of them touch the glass at any moment. At sand-on-sand values the walls
+  grip the whole bed and it rides out a 50° tilt as one rigid slab, whatever
+  grain friction says.
 
 **The depth look.** Real Z plus cheap cues:
 
@@ -136,23 +145,19 @@ Everything lives in [`src/config.js`](src/config.js). The knobs worth knowing:
 | `bed.depthLayers` | how deep the box is, in grain diameters |
 | `grain.divisor` | grain size relative to the short edge of the screen |
 | `sim.gravityScale` | how briskly it pours and falls |
-| `sim.sleepSpeed` / `sleepDelay` | how quickly the bed goes dormant |
-| `sim.gravityWakeAngle` | tilt change that wakes the whole bed at once |
-| `sim.wakeSpeed` | how fast a grain must move to wake sleepers on impact |
-| `sim.muS` / `muK` / `frictionPressureFloor` | grip; the floor is what gives near-unloaded surface grains any friction at all |
-| `sim.contactDrag` / `rollingDrag` | how quickly loose grains calm down |
+| `sim.velocityIterations` / `shockIterations` | how stiffly deep piles stand up |
+| `sim.friction` / `wallFriction` | angle of repose; wall value must stay low |
+| `bed.fill` (again) | pile depth is the solver's hardest constraint — deeper beds sink |
+| `tuner.enabled` / `hiMs` | the low-end safety net; off means the look never changes, at any cost |
 | `render.focal` / `depthDim` / `parallax` | how dramatic the depth looks |
 | `render.deep` / `mid` / `ice` | the colour ramp from buried to surface |
 
-A few of these are load-bearing in non-obvious ways, and each is commented in
-place: dissipation is charged **per second and per contact** (a fixed
-per-substep factor damps a settled bed least, so it slowly heats up); the
-velocity ceiling and substep budget are fractions of a grain **diameter**, not
-of a grid cell — a grain that crosses more than about half its own width in one
-substep lands inside its neighbour and gets catapulted back out; and the sleep
-decision runs on **net frame displacement**, never on instantaneous velocity,
-because solver churn makes a grain squeezed between sleepers look permanently
-fast while it goes nowhere.
+The three notes above are the ones that cost real debugging time, and each is
+commented where it lives. One more worth knowing: **bed depth is the binding
+constraint on everything.** Pile depth is what the contact solver has to hold
+up, and a bed much deeper than the default starts sinking into itself no matter
+how many iterations it gets — which in turn caps how small grains can be, since
+finer grains mean a deeper pile for the same bed.
 
 `window.SILT` exposes the live sim (`SILT.sand`, `SILT.gravity`, `SILT.tuner`, …)
 for poking at from a console.

@@ -1,9 +1,7 @@
-// Uniform 3D spatial hash built with a counting sort. Allocation-free after
-// warm-up: build() only touches pre-sized typed arrays.
+// Uniform 3D spatial hash, built with a counting sort. Allocation-free after
+// warm-up. Purely a lookup structure — it knows nothing about the physics.
 //
-// Layout: cellStart[c]..cellStart[c+1] indexes into `order`, which holds grain
-// indices grouped by cell. Cells are x-major, then y, then z slabs — index
-// (z * rows + y) * cols + x over the shallow sim box.
+// Cells are x-major then y then z: index (cz * rows + cy) * cols + cx.
 
 export class Grid {
   constructor(capacity) {
@@ -14,15 +12,16 @@ export class Grid {
     this.cellSize = 1;
     this.cellStart = new Int32Array(1);
     this.cursor = new Int32Array(1);
-    this.cellOrder = new Int32Array(1);
     this.order = new Int32Array(capacity);
     this.cellOf = new Int32Array(capacity);
+    this.grainOrder = new Int32Array(capacity);
   }
 
   ensureCapacity(n) {
     if (this.order.length >= n) return;
     this.order = new Int32Array(n);
     this.cellOf = new Int32Array(n);
+    this.grainOrder = new Int32Array(n);
   }
 
   configure(width, height, depth, cellSize) {
@@ -34,7 +33,6 @@ export class Grid {
     if (this.cellStart.length < this.cellCount + 1) {
       this.cellStart = new Int32Array(this.cellCount + 1);
       this.cursor = new Int32Array(this.cellCount + 1);
-      this.cellOrder = new Int32Array(this.cellCount);
     }
   }
 
@@ -70,12 +68,11 @@ export class Grid {
   }
 
   /**
-   * Order cells deepest-first along the gravity direction. Resolving contacts
-   * from the base of a pile upward lets support propagate in a single sweep,
-   * which is what keeps stacks from sinking with only a couple of iterations.
-   * The dominant gravity axis becomes the outermost loop.
+   * Grain indices ordered deepest-first along a direction. Solving contacts in
+   * this order lets a single Gauss-Seidel sweep carry support all the way up
+   * through a pile, instead of one layer per iteration.
    */
-  orderCellsByGravity(gx, gy, gz) {
+  orderByGravity(gx, gy, gz, n) {
     const axes = [
       { len: this.cols, stride: 1, g: gx },
       { len: this.rows, stride: this.cols, g: gy },
@@ -88,14 +85,18 @@ export class Grid {
     }
 
     const [a0, a1, a2] = axes;
-    const out = this.cellOrder;
+    const start = this.cellStart;
+    const order = this.order;
+    const out = this.grainOrder;
     let k = 0;
     for (let i0 = 0; i0 < a0.len; i0++) {
       const o0 = (a0.start + i0 * a0.step) * a0.stride;
       for (let i1 = 0; i1 < a1.len; i1++) {
         const o1 = o0 + (a1.start + i1 * a1.step) * a1.stride;
         for (let i2 = 0; i2 < a2.len; i2++) {
-          out[k++] = o1 + (a2.start + i2 * a2.step) * a2.stride;
+          const c = o1 + (a2.start + i2 * a2.step) * a2.stride;
+          const e = start[c + 1];
+          for (let s = start[c]; s < e; s++) out[k++] = order[s];
         }
       }
     }

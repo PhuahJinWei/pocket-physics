@@ -5,10 +5,14 @@ export const CONFIG = {
   bed: {
     // Fraction of the screen height the settled bed should fill (front view).
     // Grain count is derived from this so the look is constant across devices.
-    fill: 0.34,
+    // Keep it shallow: pile depth is what the contact solver has to hold up,
+    // and a bed much deeper than this starts sinking into itself no matter how
+    // many iterations it gets. It also matches the reference hardware, whose
+    // bed is only a shallow layer.
+    fill: 0.22,
     // Depth of the box behind the glass, in grain diameters. This is the Z the
     // screen is a window into; deeper looks better but costs grains cubically.
-    depthLayers: 4.0,
+    depthLayers: 3.5,
     // 3D random-close-packing density, converts bed volume -> grain count.
     packing: 0.64,
     minGrains: 400,
@@ -17,100 +21,71 @@ export const CONFIG = {
 
   grain: {
     // radius = min(viewport) / divisor, clamped. 3D needs chunkier grains than
-    // 2D did: count scales with 1/r^3, so halving the radius is 8x the grains.
-    divisor: 80,
-    minRadius: 3.2,
+    // 2D did (count scales steeply with 1/r), but the default should look like
+    // sand, not marbles — slow devices are the tuner's problem, not a tax the
+    // designed look pays up front.
+    divisor: 76,
+    minRadius: 2.8,
     maxRadius: 9.5,
-    // Spatial-hash cell size as a multiple of grain diameter. Must be >= the
-    // shading radius or the 3x3x3 neighbour scan misses contacts.
-    cellMul: 1.25,
   },
 
+  // Velocity-level sequential impulses. See src/grains.js for the reasoning
+  // behind the velocity/position split — it is the whole basis of the solver.
   sim: {
-    // Gravity magnitude = gravityScale * viewport diagonal (px/s^2). A real
-    // phone screen is ~50 px/cm, so true gravity would be ~50000 px/s^2 —
-    // far below that reads as "falling through honey". This is the knob for
+    // Gravity magnitude = gravityScale * viewport diagonal (px/s^2). A phone
+    // screen is ~50 px/cm, so true gravity would be ~50000 px/s^2; well below
+    // that still reads as "falling through honey". This is the main knob for
     // how brisk and alive the sand feels.
-    gravityScale: 4.5,
-    // Total relaxation sweeps per frame, split across substeps: a settled bed
-    // spends them all on convergence (which is what lets the deepest, most
-    // compressed layers decompress), while a bed in flight spends them on
-    // substeps instead. Frame cost stays roughly flat either way.
-    solveBudget: 8,
-    maxIterations: 8,
-    // Also the cap on how fast anything may move: max speed is roughly
-    // substepTravel * maxSubsteps * diameter * 60/s. Too low and splashes and
-    // free fall visibly hit a terminal-velocity ceiling.
-    maxSubsteps: 12,
-    // Both are fractions of a grain *diameter* — not of a grid cell. A grain
-    // that moves further than about half its own width in one substep ends up
-    // deep inside its neighbour, and the solver then flings the pair apart
-    // hard enough to boil the whole bed.
-    substepTravel: 0.45,
-    speedCeiling: 0.5,
-    // Ceiling on a single separation correction. Deep overlaps (a splash
-    // landing, grains squeezed into a corner) then unwind over a few substeps
-    // instead of detonating.
-    maxSeparation: 0.45,
-    stiffness: 1.0,
-    // Coulomb-ish contact friction. muS is the static cone, muK the sliding
-    // coefficient; both scale with penetration depth (a pressure proxy).
-    // Keep these moderate: piles get their permanence from sleep, not from
-    // friction — overdoing friction makes the bed feel like wet clay.
-    // Strong enough that the loaded bed floor jams solid instead of creeping
-    // sideways under the pile's weight forever. Responsiveness to tilt comes
-    // from the wake dynamics, not from weak friction.
-    muS: 2.0,
-    muK: 0.85,
-    // Under-relaxation for the friction correction, since a grain's contacts
-    // are resolved one after another rather than simultaneously.
-    frictionRelax: 0.75,
-    // Floor on the penetration-as-normal-force proxy, as a fraction of a grain
-    // diameter, so near-unloaded surface grains get some grip too.
-    frictionPressureFloor: 0.05,
-    // Dissipation, per second so the substep count cannot change the feel.
-    // Granular energy is lost at contacts, so most of the drag is charged per
-    // contact — the bulk goes quiet while airborne grains stay lively.
-    airDrag: 0.15,
-    contactDrag: 0.55,
-    maxDragContacts: 12,
-    // Rolling resistance: extra per-second drag on grains moving slower than
-    // rollingBelow (multiples of the sleep speed). Real grains are angular and
-    // stop rolling almost immediately; perfect spheres would trundle around
-    // trading momentum forever, each one keeping its neighbours' sleep debt
-    // from ever maturing. Leaves anything faster than a crawl untouched.
-    rollingDrag: 7.0,
-    rollingBelow: 1.6,
-    wallFriction: 0.45,
-    // Sleep, the hysteretic kind. A grain drifting slower than sleepSpeed (in
-    // grain diameters per second) with at least sleepContacts neighbours goes
-    // fully dormant: no gravity, no solver corrections, zero motion — which is
-    // both what makes a resting bed pixel-still and what holds a pile's shape.
-    // It wakes when pushed by more than wakePressure (fraction of a diameter,
-    // accumulated over a frame), or when gravity swings by gravityWakeAngle
-    // degrees — that global wake is what lets the whole bed slump at once on a
-    // hard tilt instead of peeling off layer by layer.
-    sleepSpeed: 3.0,
-    sleepContacts: 4,
-    // A grain must stay slow for this many consecutive substeps before it may
-    // sleep. Without the delay, a freshly woken bed re-freezes before gravity
-    // has had a single frame to accelerate it — which is exactly the "back
-    // grains wait for the front" stickiness, reintroduced through the back door.
-    sleepDelay: 20,
-    wakePressure: 0.1,
-    // Minimum speed (diameters/s) a grain needs before it can wake sleepers at
-    // all. Resting grains lean into their support by g*dt^2 every substep, and
-    // slow surface trickle re-energises the bed floor in a perpetual simmer —
-    // so only ballistic grains (splash landings, a poured stream) transmit
-    // wakefulness. Everything slower relies on the tilt/poke/splash wakes.
-    wakeSpeed: 25,
-    // Overlap (fraction of a diameter) against a sleeper that wakes it outright.
-    // Catches grains trapped in pockets that froze too small for them. Must sit
-    // well above the bed's equilibrium load-bearing overlap or it wakes the
-    // pile floor in a perpetual storm — check the stats panel's awake count
-    // holds near zero at rest after touching gravity or stiffness.
-    pinchWake: 0.55,
-    gravityWakeAngle: 10,
+    gravityScale: 7.0,
+    // The solver runs on a fixed timestep so the feel never depends on frame
+    // rate. maxSubsteps bounds catch-up work after a stall.
+    fixedHz: 150,
+    maxSubsteps: 4,
+    // Contacts are found this far apart (fraction of a diameter) and the solver
+    // then limits approach speed to the remaining gap. Detecting only actual
+    // overlap leaves a grain resting exactly on a surface with no contact at
+    // all — the floor stops holding the bed up and it sinks straight through.
+    contactMargin: 0.05,
+    // Extra reach (fraction of a diameter) baked into the contact list so it
+    // survives several substeps. Finding pairs costs far more than solving
+    // them, so the list is rebuilt at most once a frame — and only when some
+    // grain has moved half the skin.
+    skin: 0.35,
+    // Grid cell size as a multiple of grain diameter; must exceed the list
+    // radius (1 + skin) so the 3x3x3 scan cannot miss a pair.
+    cellMul: 1.4,
+    // Gauss-Seidel sweeps. Velocity iterations buy stacking stiffness (a deep
+    // pile needs more); position iterations only clean up leftover overlap.
+    velocityIterations: 6,
+    // Bottom-up sweeps treating the supported side as ground. One is usually
+    // enough and it is what lets a deep bed stand up at all.
+    shockIterations: 1,
+    positionIterations: 3,
+    // Fraction of excess penetration removed per position iteration.
+    positionBeta: 0.15,
+    // Overlap left uncorrected, as a fraction of a diameter. A little slack
+    // here is what lets a settled bed stop fidgeting entirely.
+    slop: 0.02,
+    // Ceiling on one position correction, so a deep overlap unwinds over a few
+    // steps instead of teleporting.
+    maxCorrection: 0.08,
+    // Coulomb friction. Grain-on-grain sets the angle of repose, which lands
+    // well above atan(mu) because spheres have to climb out of each other's
+    // pockets to move: 0.28 gives ~34°, which is real sand. Only meaningful
+    // because friction is warm started — without that the solver never builds
+    // enough of it to hold a slope, and the value barely matters.
+    friction: 0.28,
+    // Wall friction has to stay LOW and is the single most surprising knob in
+    // here. The box is only a few grains deep, so roughly half of them touch
+    // the glass or the back wall at any moment — at sand-on-sand values the
+    // walls grip the entire bed and it rides out a 50° tilt as one rigid slab,
+    // no matter what grain friction says.
+    wallFriction: 0.12,
+    // Gentle per-second velocity decay; sand is not springy, but this is only
+    // a whisper — the contacts do the real dissipating.
+    airDrag: 0.4,
+    // Hard speed ceiling, in grain diameters travelled per substep.
+    maxTravel: 1.0,
     // Neighbour search radius for shading, as a multiple of grain diameter.
     shadeRadius: 1.15,
     // Divisor for the "how buried am I" term (sum of upward contact dots).
@@ -118,13 +93,13 @@ export const CONFIG = {
     // Fraction of a grain's brightness that reaches the grain beneath it.
     lightTransmit: 0.93,
     lightSmoothing: 18,
-    splashSpeed: 1.1,
+    splashSpeed: 1.0,
   },
 
   render: {
     maxDpr: 2,
     // Sprite sizes as multiples of grain diameter.
-    beadSize: 1.35,
+    beadSize: 1.15,
     glowSize: 3.2,
     glowStrength: 0.1,
     // Perspective: focal length as a multiple of min(viewport w, h). Smaller =
@@ -159,13 +134,29 @@ export const CONFIG = {
   },
 
   tuner: {
-    // Target CPU+GPU frame budget. Below lo we add grains, above hi we remove.
-    loMs: 9.5,
-    hiMs: 14.5,
-    sampleFrames: 45,
+    // Downscale-only safety net, not an optimiser. Grain size is chosen from
+    // the screen alone, and that is the ceiling: the tuner may coarsen grains
+    // on a device that cannot keep up, and never refines past the designed
+    // look. Refining was the wrong idea twice over — it made the app look
+    // different depending on the GPU, and "more detail" means spawning grains,
+    // which is visible as sand appearing out of nowhere seconds after load.
+    //
+    // Consequence: it never adds grains, so it can no longer disturb a settled
+    // bed. A device that coarsens stays coarse until reload, which is a fair
+    // trade for a look that never changes on its own.
+    enabled: true,
+    // Only sustained trouble counts — comfortably past a 60fps budget so a
+    // stray spike or a background tab never triggers it.
+    hiMs: 19,
+    sampleFrames: 60,
     cooldown: 2.5,
+    // Ignore the first seconds entirely. Every load opens with the bed
+    // avalanching into place with nothing asleep yet — the most expensive
+    // moment the app ever has, and an atypical one. Judging on it coarsened
+    // the look on hardware that then ran the actual scene at a steady 60fps.
+    warmup: 4.5,
     step: 0.18,
+    // Coarsest allowed, as a fraction of the designed grain count.
     minScale: 0.22,
-    maxScale: 2.0,
   },
 };

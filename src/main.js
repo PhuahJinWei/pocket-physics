@@ -1,7 +1,7 @@
 // Wiring: viewport -> box size, input -> gravity, frame loop, adaptive quality.
 
 import { CONFIG } from './config.js';
-import { Sand } from './sand.js';
+import { Grains } from './grains.js';
 import { Renderer } from './renderer.js';
 import { GravityInput } from './gravity.js';
 import { PokeInput } from './poke.js';
@@ -21,7 +21,7 @@ try {
   throw err;
 }
 
-const sand = new Sand(CONFIG.bed.maxGrains);
+const sand = new Grains(CONFIG.bed.maxGrains);
 const gravity = new GravityInput();
 const poke = new PokeInput(canvas);
 const tuner = new Tuner();
@@ -29,7 +29,7 @@ const tuner = new Tuner();
 const touch = isTouchDevice();
 const forcedGrains = intParam('grains');
 const forcedRadius = floatParam('r');
-if (forcedGrains) tuner.enabled = false;
+if (forcedGrains || params.get('tune') === 'off') tuner.enabled = false;
 if (params.has('demo')) gravity.demo = true;
 if (params.has('flip')) gravity.flipped = true;
 if (params.has('stats')) hud.toggleStats(true);
@@ -76,11 +76,17 @@ function targetCount() {
   return forcedGrains ? Math.min(forcedGrains, sand.capacity) : sand.idealCount();
 }
 
-/** Re-derive grain size and count after a quality or viewport change. */
-function applyQuality() {
+/**
+ * Re-derive grain size and count after a quality or viewport change.
+ * `allowGrowth` is false for tuner-driven changes: the tuner may only coarsen,
+ * so a step that would add grains means something is wrong, and adding sand to
+ * a bed the user is watching is exactly the surprise we are avoiding.
+ */
+function applyQuality(allowGrowth = true) {
   radius = grainRadius(viewWidth, viewHeight);
   sand.configure(viewWidth, viewHeight, radius);
-  sand.setCount(targetCount());
+  const target = targetCount();
+  sand.setCount(allowGrowth ? target : Math.min(target, sand.n));
 }
 
 function layout(initial) {
@@ -222,11 +228,9 @@ function frame(now) {
 
   const workMs = performance.now() - t0;
 
-  // Only let the tuner judge frames where the sim actually worked. A dormant
-  // bed measures ~0 ms; tuning on that would inflate quality, spawn grains,
-  // wake the bed, and oscillate forever.
-  const active = sand.awakeCount > sand.n * 0.1;
-  if (tuner.sample(workMs, dt, active) && !forcedGrains && !forcedRadius) applyQuality();
+  if (tuner.sample(workMs, dt) && !forcedGrains && !forcedRadius) {
+    applyQuality(false);
+  }
 
   // If sensors never came alive on a touch device, offer the stick instead.
   if (touch && !gravity.sensorActive && !gravity.demo && sensorWatchdog < 3) {
@@ -239,12 +243,11 @@ function frame(now) {
     fps: tuner.fps,
     workMs,
     grains: sand.n,
-    asleep: sand.n - sand.awakeCount,
+    contacts: sand.contactCount,
     radius,
     depth: sand.depth,
     substeps: sand.substeps,
     iterations: sand.iterations,
-    pairs: sand.solvedPairs,
     scale: tuner.scale,
     gx: gravity.gx,
     gy: gravity.gy,

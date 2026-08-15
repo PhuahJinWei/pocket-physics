@@ -1,29 +1,35 @@
-// Adaptive quality. Watches a rolling frame time and scales the grain count so
-// the same page runs on a five-year-old phone and a desktop GPU without either
-// being sandbagged. Steps are small and rate-limited so the bed does not visibly
-// pop while it settles on a number.
+// Adaptive quality — a floor, not a target.
+//
+// Grain size comes from the screen size alone, and that is the look. This only
+// steps in when a device demonstrably cannot sustain it, coarsening grains
+// until it can. It never refines: the designed look is the ceiling, so the app
+// looks the same on every load and on every device that can afford it, and no
+// grain is ever spawned into a bed the user is already looking at.
 
 import { CONFIG } from './config.js';
 import { clamp } from './util.js';
 
 export class Tuner {
   constructor() {
+    // 1 = the designed grain size. Only ever decreases.
     this.scale = 1;
     this.frameMs = 16.7;
     this.fps = 60;
-    this.enabled = true;
+    this.enabled = CONFIG.tuner.enabled;
     this._accum = 0;
     this._frames = 0;
-    this._cooldown = 1;
+    this._cooldown = CONFIG.tuner.warmup;
     this._fpsAccum = 0;
     this._fpsFrames = 0;
   }
 
   /**
    * Called once per frame with the measured work time and the real delta.
-   * `eligible` marks frames where the sim actually did work — idle frames
-   * (dormant bed) still feed the fps display but never the quality decision,
-   * and they flush the sample window so stale numbers don't linger.
+   * `eligible` marks frames where the sim actually did work — a dormant bed
+   * costs almost nothing, and letting those frames into the average would hide
+   * the expensive sloshing frames this is meant to catch.
+   *
+   * Returns true when the caller should re-apply quality.
    */
   sample(workMs, dt, eligible = true) {
     this.frameMs += (workMs - this.frameMs) * 0.1;
@@ -50,11 +56,9 @@ export class Tuner {
     this._accum = 0;
     this._frames = 0;
     if (!this.enabled || this._cooldown > 0) return false;
+    if (avg <= cfg.hiMs) return false;
 
-    let next = this.scale;
-    if (avg > cfg.hiMs) next = this.scale * (1 - cfg.step);
-    else if (avg < cfg.loMs) next = this.scale * (1 + cfg.step);
-    next = clamp(next, cfg.minScale, cfg.maxScale);
+    const next = clamp(this.scale * (1 - cfg.step), cfg.minScale, 1);
     if (Math.abs(next - this.scale) < 1e-4) return false;
 
     this.scale = next;
