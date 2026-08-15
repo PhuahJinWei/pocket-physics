@@ -278,6 +278,10 @@ const CONFIG = {
     // Bottom-up sweeps treating the supported side as ground. One is usually
     // enough and it is what lets a deep bed stand up at all.
     shockIterations: 1,
+    // Approach speed (grain diameters per second) above which a contact is an
+    // impact rather than a resting stack, and is left to the momentum-
+    // conserving solver so it can spray instead of being absorbed.
+    shockMaxApproach: 5,
     positionIterations: 3,
     // Fraction of excess penetration removed per position iteration.
     positionBeta: 0.15,
@@ -299,9 +303,16 @@ const CONFIG = {
     // walls grip the entire bed and it rides out a 50° tilt as one rigid slab,
     // no matter what grain friction says.
     wallFriction: 0.12,
-    // Gentle per-second velocity decay; sand is not springy, but this is only
-    // a whisper — the contacts do the real dissipating.
-    airDrag: 0.4,
+    // Bounce on impact, and the approach speed (grain diameters per second)
+    // below which a contact counts as resting and does not bounce at all.
+    // Sand grains barely bounce individually, but with none whatsoever a slosh
+    // hits the far wall and dies instead of washing back.
+    restitution: 0.3,
+    restitutionCut: 6,
+    // Per-second velocity decay. Keep it genuinely small: at 0.4 a slosh had
+    // lost a third of its speed within a second, which flattened the rebound.
+    // Warm starting is what quiets the bed now, so this does not have to.
+    airDrag: 0.1,
     // Hard speed ceiling, in grain diameters travelled per substep.
     maxTravel: 1.0,
     // Neighbour search radius for shading, as a multiple of grain diameter.
@@ -333,9 +344,16 @@ const CONFIG = {
   },
 
   input: {
-    // Gravity direction smoothing, per second.
+    // Gravity direction smoothing, per second. Motion gets a much lighter hand
+    // than orientation: smoothing heavy enough to hide accelerometer noise also
+    // hides the flick that makes the sand slosh.
     tiltSmoothing: 14,
+    motionSmoothing: 45,
     keySmoothing: 8,
+    // How long an accelerometer reading stays trusted before falling back to
+    // orientation, and the ceiling on how many g a shake may apply.
+    accelTimeout: 0.4,
+    maxG: 4.0,
     // Fixed into-screen gravity bias for keyboard/stick/demo input, so the bed
     // leans against the back wall and the box reads as 3D on desktop too.
     zBias: 0.45,
@@ -596,6 +614,9 @@ class Grains {
     this.cfx = new Float32Array(0);
     this.cfy = new Float32Array(0);
     this.cfz = new Float32Array(0);
+    // Separation speed each contact should end the step with — restitution,
+    // computed from the approach speed before the solve touches anything.
+    this.cbounce = new Float32Array(0);
     this.active = new Int32Array(0);
     this.contactCount = 0;
     this.activeCount = 0;
@@ -661,6 +682,7 @@ class Grains {
     this.cfx = new Float32Array(cap);
     this.cfy = new Float32Array(cap);
     this.cfz = new Float32Array(cap);
+    this.cbounce = new Float32Array(cap);
     this.active = new Int32Array(cap);
     this.contactCapacity = cap;
     this.ensureHash(cap);
@@ -1171,11 +1193,29 @@ class Grains {
   solveVelocity(h) {
     const cnt = this.activeCount;
     if (cnt === 0) return;
-    const { ci, cj, cnx, cny, cnz, cgap, cjn, cfx, cfy, cfz, active, vx, vy, vz } = this;
+    const { ci, cj, cnx, cny, cnz, cgap, cjn, cfx, cfy, cfz, cbounce, active, vx, vy, vz } = this;
     const invH = 1 / h;
     const iters = CONFIG.sim.velocityIterations;
     const mu = CONFIG.sim.friction;
     const muWall = CONFIG.sim.wallFriction;
+
+    // Restitution, measured from the approach speed *before* the solve runs.
+    // Only genuine impacts bounce: below the threshold a contact is resting,
+    // and letting those bounce would make the whole bed buzz. Without any of
+    // this, sand slammed into a wall absorbs every bit of its momentum and
+    // stops dead, which is what kills the slosh-back.
+    const rest = CONFIG.sim.restitution;
+    const restCut = CONFIG.sim.restitutionCut * this.diameter;
+    for (let a = 0; a < cnt; a++) {
+      const c = active[a];
+      const i = ci[c];
+      const j = cj[c];
+      const nx = cnx[c], ny = cny[c], nz = cnz[c];
+      const vn = j >= 0
+        ? (vx[j] - vx[i]) * nx + (vy[j] - vy[i]) * ny + (vz[j] - vz[i]) * nz
+        : -(vx[i] * nx + vy[i] * ny + vz[i] * nz);
+      cbounce[c] = vn < -restCut ? -rest * vn : 0;
+    }
 
     // Warm start: re-apply what each contact was already carrying.
     for (let a = 0; a < cnt; a++) {
@@ -1197,9 +1237,10 @@ class Grains {
         const j = cj[c];
         const nx = cnx[c], ny = cny[c], nz = cnz[c];
         // Still apart: allow approach fast enough to just close the gap this
-        // step, no faster. Already overlapping: allow no approach at all.
+        // step, no faster. Already touching: separate at the bounce speed
+        // (zero for a resting contact).
         const gap = cgap[c];
-        const target = gap > 0 ? -gap * invH : 0;
+        const target = gap > 0 ? -gap * invH : cbounce[c];
 
         if (j >= 0) {
           // Two unit masses: 1/mi + 1/mj = 2, so the impulse is halved.
@@ -1280,6 +1321,13 @@ class Grains {
     const { ci, cj, cnx, cny, cnz, cgap, active, vx, vy, vz } = this;
     const invH = 1 / h;
     const passes = CONFIG.sim.shockIterations;
+    // Only quasi-static contacts get the ground treatment. Treating the
+    // supported grain as immovable is what holds a pile up, but it also dumps
+    // the incoming momentum of a fast impact into "ground" instead of passing
+    // it along the contact chain — so sand slamming into a wall is swallowed
+    // rather than spraying back. Above this approach speed the symmetric,
+    // momentum-conserving solve is left to handle it alone.
+    const gate = -CONFIG.sim.shockMaxApproach * this.diameter;
 
     for (let p = 0; p < passes; p++) {
       for (let a = 0; a < cnt; a++) {
@@ -1293,13 +1341,13 @@ class Grains {
           // ci is the deeper grain: it is the one already held up.
           const vn = (vx[j] - vx[i]) * nx + (vy[j] - vy[i]) * ny + (vz[j] - vz[i]) * nz;
           const dj = target - vn;
-          if (dj > 0) {
+          if (dj > 0 && vn > gate) {
             vx[j] += dj * nx; vy[j] += dj * ny; vz[j] += dj * nz;
           }
         } else {
           const vn = -(vx[i] * nx + vy[i] * ny + vz[i] * nz);
           const dj = target - vn;
-          if (dj > 0) {
+          if (dj > 0 && vn > gate) {
             vx[i] -= dj * nx; vy[i] -= dj * ny; vz[i] -= dj * nz;
           }
         }
@@ -1745,11 +1793,17 @@ function compile(gl, type, source) {
 }
 
 // ---- src/gravity.js ----
-// Where "down" is — now a 3D vector, since the box has depth.
+// Where "down" is — a 3D vector, since the box has depth, and one whose
+// magnitude matters as much as its direction.
 //
-// Phone: derived from deviceorientation's beta/gamma. That is more portable
-// than accelerationIncludingGravity, whose sign convention differs between
-// iOS and Android. devicemotion is still used, but only for shake detection.
+// Phone: the accelerometer's whole vector, because a box being carried is a
+// non-inertial frame. Its contents feel gravity *plus* a pseudo-force opposing
+// however the box is being accelerated, which is precisely what
+// accelerationIncludingGravity reads. Orientation alone would give only the
+// direction of down, so a flick would rotate gravity smoothly and the sand
+// would slide over and stop dead — no slosh. deviceorientation is still read,
+// as the fallback and to calibrate the accelerometer's sign (iOS and Android
+// disagree about it, and guessing wrong inverts every push).
 //
 // Desktop / no sensors: arrow keys, WASD, or the on-screen stick, with a fixed
 // into-screen bias so the bed leans against the back wall and reads as 3D.
@@ -1780,6 +1834,16 @@ class GravityInput {
     this.gamma = 0;
     this.screenAngle = 0;
     this.shakeMagnitude = 0;
+    // Raw accelerometer vector (device axes) and how stale it is. This is the
+    // *specific force*: gravity plus whatever the hand is doing to the box.
+    this.ax = 0; this.ay = 0; this.az = 0;
+    this.accelAge = 99;
+    // Platform sign for accelerationIncludingGravity, worked out by comparing
+    // it against the orientation-derived gravity while the device is still.
+    // iOS and Android disagree, and guessing wrong inverts every push.
+    this.accelSign = 0;
+    this._signVotes = 0;
+    this.gForce = 1;
     this.mode = 'keys';
     this.sensorActive = false;
     this.flipped = false;
@@ -1866,14 +1930,22 @@ class GravityInput {
     // Gravity-excluded acceleration is the cleanest shake signal. Some
     // browsers leave it null, in which case fall back to the total vector
     // minus 1g, which is close enough for a threshold test.
+    const total = event.accelerationIncludingGravity;
+    if (total && (total.x !== null || total.y !== null || total.z !== null)) {
+      this.ax = total.x || 0;
+      this.ay = total.y || 0;
+      this.az = total.z || 0;
+      this.accelAge = 0;
+      this.calibrateAccelSign();
+    }
+
     const a = event.acceleration;
     let mag;
     if (a && (a.x !== null || a.y !== null || a.z !== null)) {
       mag = Math.hypot(a.x || 0, a.y || 0, a.z || 0);
     } else {
-      const t = event.accelerationIncludingGravity;
-      if (!t) return;
-      mag = Math.abs(Math.hypot(t.x || 0, t.y || 0, t.z || 0) - 9.81);
+      if (!total) return;
+      mag = Math.abs(Math.hypot(this.ax, this.ay, this.az) - 9.81);
     }
     this.shakeMagnitude = mag;
 
@@ -1893,6 +1965,76 @@ class GravityInput {
       const strength = clamp(mag / CONFIG.input.shakeThreshold, 1, 3);
       if (this.onShake) this.onShake(strength);
     }
+  }
+
+  /**
+   * Decide which way round accelerationIncludingGravity points on this device,
+   * by comparing it with the orientation-derived gravity while the phone is
+   * near enough to still that the reading *is* gravity. Needs a few agreeing
+   * samples so one noisy frame cannot flip it.
+   */
+  calibrateAccelSign() {
+    if (this.accelSign !== 0 || !this._hasOrientation) return;
+    const mag = Math.hypot(this.ax, this.ay, this.az);
+    if (mag < 8.6 || mag > 11.0) return; // moving: this is not pure gravity
+    const b = this.beta * DEG;
+    const g = this.gamma * DEG;
+    const cb = Math.cos(b);
+    // Earth-down in device axes.
+    const dx = Math.sin(g) * cb;
+    const dy = -Math.sin(b);
+    const dz = -Math.cos(g) * cb;
+    const dot = (this.ax * dx + this.ay * dy + this.az * dz) / mag;
+    if (Math.abs(dot) < 0.75) return; // too oblique to be sure
+    this._signVotes += dot > 0 ? 1 : -1;
+    if (this._signVotes >= 4) this.accelSign = 1;
+    else if (this._signVotes <= -4) this.accelSign = -1;
+  }
+
+  /**
+   * Effective gravity in box space, in g units, from the accelerometer.
+   *
+   * A box being carried is a non-inertial frame: its contents feel gravity plus
+   * a pseudo-force opposing however the box is being accelerated — which is
+   * exactly what an accelerometer reads. Driving the sim from orientation alone
+   * gives only the direction of down, so flicking the device just rotates
+   * gravity smoothly and the sand slides over and stops. Feeding the whole
+   * vector in is what makes it slosh: the flick throws the sand, and stopping
+   * the flick throws it back.
+   */
+  accelVector() {
+    const sign = this.accelSign || -1; // spec convention until proven otherwise
+    let dx = sign * this.ax;
+    let dy = sign * this.ay;
+    let dz = sign * this.az;
+    // Device axes -> box axes: screen y runs down, box z runs into the screen.
+    let gx = dx / 9.81;
+    let gy = -dy / 9.81;
+    const gz = -dz / 9.81;
+
+    const angle = this.screenAngle * DEG;
+    if (angle) {
+      const c = Math.cos(angle);
+      const sn = Math.sin(angle);
+      const rx = gx * c + gy * sn;
+      const ry = -gx * sn + gy * c;
+      gx = rx;
+      gy = ry;
+    }
+    if (this.flipped) {
+      gx = -gx;
+      gy = -gy;
+    }
+
+    // A hard shake can read several g; allow it, but not unboundedly.
+    const m = Math.hypot(gx, gy, gz);
+    const cap = CONFIG.input.maxG;
+    if (m > cap) {
+      const k = cap / m;
+      gx *= k; gy *= k;
+      return { x: gx, y: gy, z: gz * k, mag: cap };
+    }
+    return { x: gx, y: gy, z: gz, mag: m };
   }
 
   setKey(code, down) {
@@ -1934,6 +2076,13 @@ class GravityInput {
 
     if (this.stick.active) return normalise(this.stick.x, this.stick.y, zBias, true);
 
+    // Live accelerometer: use the whole vector, motion included.
+    if (this.sensorActive && this.accelAge < CONFIG.input.accelTimeout) {
+      const v = this.accelVector();
+      this.gForce = +v.mag.toFixed(2);
+      return { x: v.x, y: v.y, z: v.z, motion: true };
+    }
+
     if (this.sensorActive && this._hasOrientation) {
       const b = this.beta * DEG;
       const g = this.gamma * DEG;
@@ -1965,12 +2114,17 @@ class GravityInput {
 
   update(dt) {
     this._age += dt;
+    this.accelAge += dt;
     if (this._shakeCooldown > 0) this._shakeCooldown -= dt;
     this.screenAngle = this.readScreenAngle();
     if (this.demo) this.demoPhase += dt * 0.9;
 
     const target = this.targetVector();
-    const rate = target.keys ? CONFIG.input.keySmoothing : CONFIG.input.tiltSmoothing;
+    // Motion needs a light hand: smoothing that hides accelerometer noise also
+    // hides the flick that makes the sand slosh.
+    const rate = target.keys
+      ? CONFIG.input.keySmoothing
+      : target.motion ? CONFIG.input.motionSmoothing : CONFIG.input.tiltSmoothing;
     this.gx = approach(this.gx, target.x, rate, dt);
     this.gy = approach(this.gy, target.y, rate, dt);
     this.gz = approach(this.gz, target.z, rate, dt);
@@ -1980,7 +2134,10 @@ class GravityInput {
     if (this.demo) return 'demo sway';
     if (this.stick.active) return 'stick';
     if (this.keys.size) return 'keys';
-    if (this.sensorActive) return this._hasOrientation ? 'tilt' : 'motion';
+    if (this.sensorActive) {
+      if (this.accelAge < CONFIG.input.accelTimeout) return 'accel ' + this.gForce.toFixed(1) + 'g';
+      return this._hasOrientation ? 'tilt' : 'motion';
+    }
     return 'idle';
   }
 }

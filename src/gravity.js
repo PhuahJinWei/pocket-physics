@@ -1,8 +1,14 @@
-// Where "down" is — now a 3D vector, since the box has depth.
+// Where "down" is — a 3D vector, since the box has depth, and one whose
+// magnitude matters as much as its direction.
 //
-// Phone: derived from deviceorientation's beta/gamma. That is more portable
-// than accelerationIncludingGravity, whose sign convention differs between
-// iOS and Android. devicemotion is still used, but only for shake detection.
+// Phone: the accelerometer's whole vector, because a box being carried is a
+// non-inertial frame. Its contents feel gravity *plus* a pseudo-force opposing
+// however the box is being accelerated, which is precisely what
+// accelerationIncludingGravity reads. Orientation alone would give only the
+// direction of down, so a flick would rotate gravity smoothly and the sand
+// would slide over and stop dead — no slosh. deviceorientation is still read,
+// as the fallback and to calibrate the accelerometer's sign (iOS and Android
+// disagree about it, and guessing wrong inverts every push).
 //
 // Desktop / no sensors: arrow keys, WASD, or the on-screen stick, with a fixed
 // into-screen bias so the bed leans against the back wall and reads as 3D.
@@ -35,6 +41,16 @@ export class GravityInput {
     this.gamma = 0;
     this.screenAngle = 0;
     this.shakeMagnitude = 0;
+    // Raw accelerometer vector (device axes) and how stale it is. This is the
+    // *specific force*: gravity plus whatever the hand is doing to the box.
+    this.ax = 0; this.ay = 0; this.az = 0;
+    this.accelAge = 99;
+    // Platform sign for accelerationIncludingGravity, worked out by comparing
+    // it against the orientation-derived gravity while the device is still.
+    // iOS and Android disagree, and guessing wrong inverts every push.
+    this.accelSign = 0;
+    this._signVotes = 0;
+    this.gForce = 1;
     this.mode = 'keys';
     this.sensorActive = false;
     this.flipped = false;
@@ -121,14 +137,22 @@ export class GravityInput {
     // Gravity-excluded acceleration is the cleanest shake signal. Some
     // browsers leave it null, in which case fall back to the total vector
     // minus 1g, which is close enough for a threshold test.
+    const total = event.accelerationIncludingGravity;
+    if (total && (total.x !== null || total.y !== null || total.z !== null)) {
+      this.ax = total.x || 0;
+      this.ay = total.y || 0;
+      this.az = total.z || 0;
+      this.accelAge = 0;
+      this.calibrateAccelSign();
+    }
+
     const a = event.acceleration;
     let mag;
     if (a && (a.x !== null || a.y !== null || a.z !== null)) {
       mag = Math.hypot(a.x || 0, a.y || 0, a.z || 0);
     } else {
-      const t = event.accelerationIncludingGravity;
-      if (!t) return;
-      mag = Math.abs(Math.hypot(t.x || 0, t.y || 0, t.z || 0) - 9.81);
+      if (!total) return;
+      mag = Math.abs(Math.hypot(this.ax, this.ay, this.az) - 9.81);
     }
     this.shakeMagnitude = mag;
 
@@ -148,6 +172,76 @@ export class GravityInput {
       const strength = clamp(mag / CONFIG.input.shakeThreshold, 1, 3);
       if (this.onShake) this.onShake(strength);
     }
+  }
+
+  /**
+   * Decide which way round accelerationIncludingGravity points on this device,
+   * by comparing it with the orientation-derived gravity while the phone is
+   * near enough to still that the reading *is* gravity. Needs a few agreeing
+   * samples so one noisy frame cannot flip it.
+   */
+  calibrateAccelSign() {
+    if (this.accelSign !== 0 || !this._hasOrientation) return;
+    const mag = Math.hypot(this.ax, this.ay, this.az);
+    if (mag < 8.6 || mag > 11.0) return; // moving: this is not pure gravity
+    const b = this.beta * DEG;
+    const g = this.gamma * DEG;
+    const cb = Math.cos(b);
+    // Earth-down in device axes.
+    const dx = Math.sin(g) * cb;
+    const dy = -Math.sin(b);
+    const dz = -Math.cos(g) * cb;
+    const dot = (this.ax * dx + this.ay * dy + this.az * dz) / mag;
+    if (Math.abs(dot) < 0.75) return; // too oblique to be sure
+    this._signVotes += dot > 0 ? 1 : -1;
+    if (this._signVotes >= 4) this.accelSign = 1;
+    else if (this._signVotes <= -4) this.accelSign = -1;
+  }
+
+  /**
+   * Effective gravity in box space, in g units, from the accelerometer.
+   *
+   * A box being carried is a non-inertial frame: its contents feel gravity plus
+   * a pseudo-force opposing however the box is being accelerated — which is
+   * exactly what an accelerometer reads. Driving the sim from orientation alone
+   * gives only the direction of down, so flicking the device just rotates
+   * gravity smoothly and the sand slides over and stops. Feeding the whole
+   * vector in is what makes it slosh: the flick throws the sand, and stopping
+   * the flick throws it back.
+   */
+  accelVector() {
+    const sign = this.accelSign || -1; // spec convention until proven otherwise
+    let dx = sign * this.ax;
+    let dy = sign * this.ay;
+    let dz = sign * this.az;
+    // Device axes -> box axes: screen y runs down, box z runs into the screen.
+    let gx = dx / 9.81;
+    let gy = -dy / 9.81;
+    const gz = -dz / 9.81;
+
+    const angle = this.screenAngle * DEG;
+    if (angle) {
+      const c = Math.cos(angle);
+      const sn = Math.sin(angle);
+      const rx = gx * c + gy * sn;
+      const ry = -gx * sn + gy * c;
+      gx = rx;
+      gy = ry;
+    }
+    if (this.flipped) {
+      gx = -gx;
+      gy = -gy;
+    }
+
+    // A hard shake can read several g; allow it, but not unboundedly.
+    const m = Math.hypot(gx, gy, gz);
+    const cap = CONFIG.input.maxG;
+    if (m > cap) {
+      const k = cap / m;
+      gx *= k; gy *= k;
+      return { x: gx, y: gy, z: gz * k, mag: cap };
+    }
+    return { x: gx, y: gy, z: gz, mag: m };
   }
 
   setKey(code, down) {
@@ -189,6 +283,13 @@ export class GravityInput {
 
     if (this.stick.active) return normalise(this.stick.x, this.stick.y, zBias, true);
 
+    // Live accelerometer: use the whole vector, motion included.
+    if (this.sensorActive && this.accelAge < CONFIG.input.accelTimeout) {
+      const v = this.accelVector();
+      this.gForce = +v.mag.toFixed(2);
+      return { x: v.x, y: v.y, z: v.z, motion: true };
+    }
+
     if (this.sensorActive && this._hasOrientation) {
       const b = this.beta * DEG;
       const g = this.gamma * DEG;
@@ -220,12 +321,17 @@ export class GravityInput {
 
   update(dt) {
     this._age += dt;
+    this.accelAge += dt;
     if (this._shakeCooldown > 0) this._shakeCooldown -= dt;
     this.screenAngle = this.readScreenAngle();
     if (this.demo) this.demoPhase += dt * 0.9;
 
     const target = this.targetVector();
-    const rate = target.keys ? CONFIG.input.keySmoothing : CONFIG.input.tiltSmoothing;
+    // Motion needs a light hand: smoothing that hides accelerometer noise also
+    // hides the flick that makes the sand slosh.
+    const rate = target.keys
+      ? CONFIG.input.keySmoothing
+      : target.motion ? CONFIG.input.motionSmoothing : CONFIG.input.tiltSmoothing;
     this.gx = approach(this.gx, target.x, rate, dt);
     this.gy = approach(this.gy, target.y, rate, dt);
     this.gz = approach(this.gz, target.z, rate, dt);
@@ -235,7 +341,10 @@ export class GravityInput {
     if (this.demo) return 'demo sway';
     if (this.stick.active) return 'stick';
     if (this.keys.size) return 'keys';
-    if (this.sensorActive) return this._hasOrientation ? 'tilt' : 'motion';
+    if (this.sensorActive) {
+      if (this.accelAge < CONFIG.input.accelTimeout) return 'accel ' + this.gForce.toFixed(1) + 'g';
+      return this._hasOrientation ? 'tilt' : 'motion';
+    }
     return 'idle';
   }
 }

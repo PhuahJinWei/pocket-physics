@@ -62,7 +62,7 @@ screenshot tools can read the canvas.
 
 ```
 main.js      frame loop, viewport → sim size, quality changes
-  gravity.js   deviceorientation / keys / tilt pad → a gravity vector
+  gravity.js   accelerometer / keys / tilt pad → an effective gravity vector
   poke.js      pointers → push impulses
   grains.js    the simulation
     grid.js      counting-sort spatial hash
@@ -114,6 +114,26 @@ Four details carry more weight than they look:
   half of them touch the glass at any moment. At sand-on-sand values the walls
   grip the whole bed and it rides out a 50° tilt as one rigid slab, whatever
   grain friction says.
+
+**Sloshing.** Gravity comes from the accelerometer's *whole* vector, not just
+the orientation-derived direction of down. A box being carried is a non-inertial
+frame: its contents feel gravity plus a pseudo-force opposing however the box is
+being accelerated, which is precisely what `accelerationIncludingGravity` reads.
+Driving the sim from orientation alone gives only which way is down, so flicking
+the phone merely rotates gravity smoothly and the sand slides over and stops
+dead. Feeding the whole vector in is what makes it slosh — the flick throws the
+sand one way, and stopping the flick throws it back.
+
+Two smaller pieces feed the same feel. Contacts have a little restitution above
+an impact threshold (resting contacts stay perfectly inelastic, or the bed
+buzzes). And the shock pass is **gated to slow contacts**: treating the
+supported grain as ground is what holds a pile up, but applied to a fast impact
+it dumps that momentum into "ground" instead of passing it along the contact
+chain, so sand hitting a wall gets swallowed rather than spraying back.
+
+The accelerometer's sign convention differs between iOS and Android, and
+guessing wrong inverts every push, so it is calibrated at runtime by comparing
+the reading against orientation-derived gravity while the device is near still.
 
 **The depth look.** Real Z plus cheap cues:
 

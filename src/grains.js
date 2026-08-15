@@ -75,6 +75,9 @@ export class Grains {
     this.cfx = new Float32Array(0);
     this.cfy = new Float32Array(0);
     this.cfz = new Float32Array(0);
+    // Separation speed each contact should end the step with — restitution,
+    // computed from the approach speed before the solve touches anything.
+    this.cbounce = new Float32Array(0);
     this.active = new Int32Array(0);
     this.contactCount = 0;
     this.activeCount = 0;
@@ -140,6 +143,7 @@ export class Grains {
     this.cfx = new Float32Array(cap);
     this.cfy = new Float32Array(cap);
     this.cfz = new Float32Array(cap);
+    this.cbounce = new Float32Array(cap);
     this.active = new Int32Array(cap);
     this.contactCapacity = cap;
     this.ensureHash(cap);
@@ -650,11 +654,29 @@ export class Grains {
   solveVelocity(h) {
     const cnt = this.activeCount;
     if (cnt === 0) return;
-    const { ci, cj, cnx, cny, cnz, cgap, cjn, cfx, cfy, cfz, active, vx, vy, vz } = this;
+    const { ci, cj, cnx, cny, cnz, cgap, cjn, cfx, cfy, cfz, cbounce, active, vx, vy, vz } = this;
     const invH = 1 / h;
     const iters = CONFIG.sim.velocityIterations;
     const mu = CONFIG.sim.friction;
     const muWall = CONFIG.sim.wallFriction;
+
+    // Restitution, measured from the approach speed *before* the solve runs.
+    // Only genuine impacts bounce: below the threshold a contact is resting,
+    // and letting those bounce would make the whole bed buzz. Without any of
+    // this, sand slammed into a wall absorbs every bit of its momentum and
+    // stops dead, which is what kills the slosh-back.
+    const rest = CONFIG.sim.restitution;
+    const restCut = CONFIG.sim.restitutionCut * this.diameter;
+    for (let a = 0; a < cnt; a++) {
+      const c = active[a];
+      const i = ci[c];
+      const j = cj[c];
+      const nx = cnx[c], ny = cny[c], nz = cnz[c];
+      const vn = j >= 0
+        ? (vx[j] - vx[i]) * nx + (vy[j] - vy[i]) * ny + (vz[j] - vz[i]) * nz
+        : -(vx[i] * nx + vy[i] * ny + vz[i] * nz);
+      cbounce[c] = vn < -restCut ? -rest * vn : 0;
+    }
 
     // Warm start: re-apply what each contact was already carrying.
     for (let a = 0; a < cnt; a++) {
@@ -676,9 +698,10 @@ export class Grains {
         const j = cj[c];
         const nx = cnx[c], ny = cny[c], nz = cnz[c];
         // Still apart: allow approach fast enough to just close the gap this
-        // step, no faster. Already overlapping: allow no approach at all.
+        // step, no faster. Already touching: separate at the bounce speed
+        // (zero for a resting contact).
         const gap = cgap[c];
-        const target = gap > 0 ? -gap * invH : 0;
+        const target = gap > 0 ? -gap * invH : cbounce[c];
 
         if (j >= 0) {
           // Two unit masses: 1/mi + 1/mj = 2, so the impulse is halved.
@@ -759,6 +782,13 @@ export class Grains {
     const { ci, cj, cnx, cny, cnz, cgap, active, vx, vy, vz } = this;
     const invH = 1 / h;
     const passes = CONFIG.sim.shockIterations;
+    // Only quasi-static contacts get the ground treatment. Treating the
+    // supported grain as immovable is what holds a pile up, but it also dumps
+    // the incoming momentum of a fast impact into "ground" instead of passing
+    // it along the contact chain — so sand slamming into a wall is swallowed
+    // rather than spraying back. Above this approach speed the symmetric,
+    // momentum-conserving solve is left to handle it alone.
+    const gate = -CONFIG.sim.shockMaxApproach * this.diameter;
 
     for (let p = 0; p < passes; p++) {
       for (let a = 0; a < cnt; a++) {
@@ -772,13 +802,13 @@ export class Grains {
           // ci is the deeper grain: it is the one already held up.
           const vn = (vx[j] - vx[i]) * nx + (vy[j] - vy[i]) * ny + (vz[j] - vz[i]) * nz;
           const dj = target - vn;
-          if (dj > 0) {
+          if (dj > 0 && vn > gate) {
             vx[j] += dj * nx; vy[j] += dj * ny; vz[j] += dj * nz;
           }
         } else {
           const vn = -(vx[i] * nx + vy[i] * ny + vz[i] * nz);
           const dj = target - vn;
-          if (dj > 0) {
+          if (dj > 0 && vn > gate) {
             vx[i] -= dj * nx; vy[i] -= dj * ny; vz[i] -= dj * nz;
           }
         }

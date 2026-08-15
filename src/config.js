@@ -60,6 +60,10 @@ export const CONFIG = {
     // Bottom-up sweeps treating the supported side as ground. One is usually
     // enough and it is what lets a deep bed stand up at all.
     shockIterations: 1,
+    // Approach speed (grain diameters per second) above which a contact is an
+    // impact rather than a resting stack, and is left to the momentum-
+    // conserving solver so it can spray instead of being absorbed.
+    shockMaxApproach: 5,
     positionIterations: 3,
     // Fraction of excess penetration removed per position iteration.
     positionBeta: 0.15,
@@ -81,9 +85,16 @@ export const CONFIG = {
     // walls grip the entire bed and it rides out a 50° tilt as one rigid slab,
     // no matter what grain friction says.
     wallFriction: 0.12,
-    // Gentle per-second velocity decay; sand is not springy, but this is only
-    // a whisper — the contacts do the real dissipating.
-    airDrag: 0.4,
+    // Bounce on impact, and the approach speed (grain diameters per second)
+    // below which a contact counts as resting and does not bounce at all.
+    // Sand grains barely bounce individually, but with none whatsoever a slosh
+    // hits the far wall and dies instead of washing back.
+    restitution: 0.3,
+    restitutionCut: 6,
+    // Per-second velocity decay. Keep it genuinely small: at 0.4 a slosh had
+    // lost a third of its speed within a second, which flattened the rebound.
+    // Warm starting is what quiets the bed now, so this does not have to.
+    airDrag: 0.1,
     // Hard speed ceiling, in grain diameters travelled per substep.
     maxTravel: 1.0,
     // Neighbour search radius for shading, as a multiple of grain diameter.
@@ -115,9 +126,16 @@ export const CONFIG = {
   },
 
   input: {
-    // Gravity direction smoothing, per second.
+    // Gravity direction smoothing, per second. Motion gets a much lighter hand
+    // than orientation: smoothing heavy enough to hide accelerometer noise also
+    // hides the flick that makes the sand slosh.
     tiltSmoothing: 14,
+    motionSmoothing: 45,
     keySmoothing: 8,
+    // How long an accelerometer reading stays trusted before falling back to
+    // orientation, and the ceiling on how many g a shake may apply.
+    accelTimeout: 0.4,
+    maxG: 4.0,
     // Fixed into-screen gravity bias for keyboard/stick/demo input, so the bed
     // leans against the back wall and the box reads as 3D on desktop too.
     zBias: 0.45,
