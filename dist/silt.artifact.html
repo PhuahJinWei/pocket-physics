@@ -634,6 +634,13 @@ const CONFIG = {
     // Room above the measured mean of ~30. Overflowing silently would drop
     // real neighbours and read as a density hole.
     maxNeighbours: 64,
+    // How much of the missing-half-space density to hand back at a wall (see
+    // Fluid.solveDensity). Full strength is what the geometry says, and once
+    // the terms are combined as a union rather than summed it is also what
+    // behaves: measured across 0 to 1 the bulk settles at 1.08x rest either
+    // way, so there is nothing to buy by weakening it, and weakening it only
+    // presses more particles flat against the glass.
+    wallDensity: 1.0,
     // Closest two particles may sit, as a fraction of rest spacing, and how
     // much of any overlap is resolved per substep. Well below rest, so normal
     // compression never touches it — this exists only to break up the welded
@@ -683,6 +690,15 @@ const CONFIG = {
     // still surface is held nearly glassy and only moving water ripples.
     calmRipple: 0.1,
     rippleGain: 2.5,
+    // Wall images are scaled by the neighbour count of the particle they
+    // mirror (see Renderer.packWater). Measured against this box: a thin film
+    // draining down the glass sits near 14 neighbours, bulk water against the
+    // same wall near 26, so the ramp runs between them. Below the floor the
+    // image never vanishes entirely, so the body still meets the glass instead
+    // of fraying away from it.
+    imageBuriedLo: 10,
+    imageBuriedHi: 24,
+    imageFloor: 0.2,
     // Coverage: alpha at the silhouette edge, and the Beer-Lambert rate at
     // which thickness turns opaque. Opacity is the strongest "gel" signal —
     // real water lets the tank show through wherever it runs thin.
@@ -1997,6 +2013,10 @@ class Fluid {
     this.ax = f32();
     this.ay = f32();
     this.az = f32();
+    // Wall-term gradient, carried from solveDensity to applyCorrection.
+    this.wgx = f32();
+    this.wgy = f32();
+    this.wgz = f32();
     // Shading channel: normalised speed, which the renderer turns into foam.
     this.speed01 = f32();
 
@@ -2342,13 +2362,14 @@ class Fluid {
    */
   solveDensity() {
     const n = this.n;
-    const { px, py, pz, nbr, nbrCount, lambda, density } = this;
+    const { px, py, pz, nbr, nbrCount, lambda, density, wgx, wgy, wgz } = this;
     const cap = this.maxNeighbours;
     const hh = this.smoothing;
     const inv = 1 / hh;
     const gradK = GRAD_K * inv;
     const rho0 = this.restDensity;
     const eps = CONFIG.fluid.relaxation;
+    const wallScale = CONFIG.fluid.wallDensity;
 
     for (let i = 0; i < n; i++) {
       const xi = px[i], yi = py[i], zi = pz[i];
@@ -2379,11 +2400,59 @@ class Fluid {
       // The glass cuts the kernel short. Add back what the fluid on the other
       // side would have contributed, or every particle near a wall reads as
       // under-dense and the body creeps into the glass and sticks there.
-      rho += rho0 * (
-        wallDensity(xi - this.bounds.x0, hh) + wallDensity(this.bounds.x1 - xi, hh) +
-        wallDensity(yi - this.bounds.y0, hh) + wallDensity(this.bounds.y1 - yi, hh) +
-        wallDensity(zi - this.bounds.z0, hh) + wallDensity(this.depth - zi, hh)
-      );
+      //
+      // Combined as a union, not a sum. Where two walls meet, the regions they
+      // cut off overlap, and adding the terms counts that corner twice — in a
+      // box only a few particles deep almost every particle touches a glass
+      // *and* a side or the floor, so the double count is the common case, not
+      // the exception. Summed, it drove bulk density to 1.5x rest, a pressure
+      // the solver can never relieve by moving anything, and the fluid extruded
+      // itself up the walls in permanent standing columns.
+      //
+      // And the term enters the *gradient*, not just the density. This is the
+      // difference between a wall the water rests against and a wall it welds
+      // to. Density alone raises C for a particle pinned on the glass, but
+      // every correction then acts along neighbour directions — pushes into
+      // the wall are clamped away, and nothing ever pushes it off, because
+      // nothing says C would drop if it moved. Measured on a live standing
+      // column: 58 particles all at exactly the wall x, static for minutes,
+      // and removing the wall term collapsed it in two seconds. With the
+      // gradient in place, an over-dense wall particle is pushed back into
+      // the fluid, which is the lateral escape hydrostatics needs.
+      // z runs from 0 (front glass) to depth (back glass). `bounds` has no z
+      // fields — an earlier version read `bounds.z0` here, and the resulting
+      // NaN was silently swallowed by wallDensity's final clamp, which meant
+      // the front glass had no density term at all.
+      const fx0 = wallDensity(xi - this.bounds.x0, hh);
+      const fx1 = wallDensity(this.bounds.x1 - xi, hh);
+      const fy0 = wallDensity(yi - this.bounds.y0, hh);
+      const fy1 = wallDensity(this.bounds.y1 - yi, hh);
+      const fz0 = wallDensity(zi, hh);
+      const fz1 = wallDensity(this.depth - zi, hh);
+      const missing =
+        (1 - fx0) * (1 - fx1) * (1 - fy0) * (1 - fy1) * (1 - fz0) * (1 - fz1);
+      rho += rho0 * (1 - missing) * wallScale;
+
+      // d(union)/dp = f'_k * PROD_{m!=k}(1-f_m); the product for wall k is
+      // missing/(1-f_k), safe because f never reaches 1 (it tops out at 0.5).
+      // A near wall's density falls as the particle leaves it and the far
+      // wall's rises, hence the signs.
+      const wk = rho0 * wallScale;
+      const gwx =
+        (-wallDensityGrad(xi - this.bounds.x0, hh) * missing) / (1 - fx0) +
+        (wallDensityGrad(this.bounds.x1 - xi, hh) * missing) / (1 - fx1);
+      const gwy =
+        (-wallDensityGrad(yi - this.bounds.y0, hh) * missing) / (1 - fy0) +
+        (wallDensityGrad(this.bounds.y1 - yi, hh) * missing) / (1 - fy1);
+      const gwz =
+        (-wallDensityGrad(zi, hh) * missing) / (1 - fz0) +
+        (wallDensityGrad(this.depth - zi, hh) * missing) / (1 - fz1);
+      wgx[i] = gwx * wk;
+      wgy[i] = gwy * wk;
+      wgz[i] = gwz * wk;
+      gx += wgx[i];
+      gy += wgy[i];
+      gz += wgz[i];
 
       density[i] = rho;
       const c = rho / rho0 - 1;
@@ -2400,7 +2469,7 @@ class Fluid {
 
   applyCorrection() {
     const n = this.n;
-    const { px, py, pz, nbr, nbrCount, lambda, dx, dy, dz } = this;
+    const { px, py, pz, nbr, nbrCount, lambda, dx, dy, dz, wgx, wgy, wgz } = this;
     const cap = this.maxNeighbours;
     const hh = this.smoothing;
     const inv = 1 / hh;
@@ -2433,6 +2502,11 @@ class Fluid {
         const c = (li + lambda[j] + s) * gm;
         ax += ox * c; ay += oy * c; az += oz * c;
       }
+      // The wall's own share of the constraint gradient. No partner lambda —
+      // the wall is static and simply absorbs the momentum.
+      ax += li * wgx[i];
+      ay += li * wgy[i];
+      az += li * wgz[i];
       const s = 1 / rho0;
       dx[i] = ax * s; dy[i] = ay * s; dz[i] = az * s;
     }
@@ -2628,6 +2702,22 @@ function wallDensity(d, smoothing) {
   const p = s - (4 / 3) * s3 + (6 / 5) * s5 - (4 / 7) * s7 + s9 / 9;
   const f = 0.5 - (315 / 256) * p;
   return f > 0 ? f : 0;
+}
+
+/**
+ * Magnitude of d(wallDensity)/d(distance): how fast the missing-half-space
+ * fraction shrinks as the particle backs away from the wall. P'(s) collapses
+ * to (1-s^2)^4, so this is exact, not fitted, like wallDensity itself.
+ */
+function wallDensityGrad(d, smoothing) {
+  const s = d / smoothing;
+  // Written so NaN also lands in the zero branch: wallDensity happens to
+  // swallow bad input via its final clamp, and this must fail the same way
+  // rather than poison the whole solve.
+  if (!(s >= 0 && s < 1)) return 0;
+  const w = 1 - s * s;
+  const w2 = w * w;
+  return ((315 / 256) * w2 * w2) / smoothing;
 }
 
 // ---- src/materials.js ----
@@ -3007,6 +3097,8 @@ precision highp float;
 
 attribute vec3 aPos;
 attribute float aSpeed;
+// 1 for a real particle; for a wall image, how solid the water it mirrors is.
+attribute float aWeight;
 
 uniform vec2 uViewport;
 uniform float uFocal;
@@ -3016,6 +3108,7 @@ uniform float uDepthRange;
 
 varying float vSpeed;
 varying float vFade;
+varying float vWeight;
 
 void main() {
   float persp = uFocal / (uFocal + aPos.z);
@@ -3024,6 +3117,7 @@ void main() {
   gl_Position = vec4(unit.x * 2.0 - 1.0, 1.0 - unit.y * 2.0, 0.0, 1.0);
   gl_PointSize = uPointSize * persp;
   vSpeed = aSpeed;
+  vWeight = aWeight;
   // Deeper water contributes a little less, so the body carries a front-to-back
   // gradient instead of reading as one flat slab of colour.
   vFade = 1.0 - 0.35 * clamp(aPos.z / max(uDepthRange, 1.0), 0.0, 1.0);
@@ -3035,6 +3129,7 @@ precision mediump float;
 
 varying float vSpeed;
 varying float vFade;
+varying float vWeight;
 
 uniform float uGain;
 
@@ -3046,7 +3141,7 @@ void main() {
   // tight enough that the body keeps an edge instead of fogging outward.
   float w = 1.0 - r2;
   w = w * w;
-  float t = w * uGain * vFade;
+  float t = w * uGain * vFade * vWeight;
   // R: thickness. G: thickness weighted by speed, so the composite can divide
   // the two back out and know how agitated the water at this pixel is.
   gl_FragColor = vec4(t, t * vSpeed, 0.0, 1.0);
@@ -3171,7 +3266,7 @@ void main() {
 
 const FLOATS_PER_GRAIN = 8; // x,y,z | light, speed, airborne | sizeJitter, hueJitter
 const STRIDE = FLOATS_PER_GRAIN * 4;
-const FLOATS_PER_DROP = 4; // x, y, z, speed
+const FLOATS_PER_DROP = 5; // x, y, z, speed, weight
 const DROP_STRIDE = FLOATS_PER_DROP * 4;
 const BUCKETS = 32;
 
@@ -3294,6 +3389,7 @@ class Renderer {
     this.fieldAttrib = {
       pos: gl.getAttribLocation(this.fieldProgram, 'aPos'),
       speed: gl.getAttribLocation(this.fieldProgram, 'aSpeed'),
+      weight: gl.getAttribLocation(this.fieldProgram, 'aWeight'),
     };
     this.fieldUniform = {
       viewport: gl.getUniformLocation(this.fieldProgram, 'uViewport'),
@@ -3584,25 +3680,44 @@ class Renderer {
    * Only the four lateral walls get ghosts. Depth needs none: thickness is the
    * count of particles along a view ray, and that ray genuinely does end at the
    * front and back glass — nothing is missing to add back.
+   *
+   * Each image is weighted by how buried the particle it mirrors is, which is
+   * what stops the correction overreaching. An image asserts "there is matching
+   * water on the far side of this wall" — true for bulk filling the tank, false
+   * for the thin film left clinging to the glass after a wave drains down it.
+   * Applied flat it thickened near-wall water by 1.8x and drew those films as
+   * solid rounded pillars standing against the glass, which is not something
+   * water does.
+   *
+   * The weight is raw neighbour count, deliberately not density. Density cannot
+   * tell the two apart and never will: an incompressible solver drives it to
+   * rest density *everywhere* it can, and measured, film and bulk-at-wall both
+   * sit at about 1.1. Neighbour count is geometry rather than a solved
+   * quantity, and it separates them cleanly — median 14 in a film against 26
+   * for bulk against the same wall.
    */
   packWater(fluid, w) {
     const cpu = this.waterCpu;
     const limit = (cpu.length / FLOATS_PER_DROP) | 0;
     const n = Math.min(fluid.n, CONFIG.fluid.maxParticles);
-    const { x, y, z, speed01 } = fluid;
+    const { x, y, z, speed01, nbrCount } = fluid;
     const wallX = fluid.bounds.x1;
     const wallY = fluid.bounds.y1;
     // A ghost only matters while its blob still overlaps the box.
     const reach = fluid.diameter * w.blobSize * 0.5;
+    const floor = CONFIG.water.imageFloor;
+    const lo = CONFIG.water.imageBuriedLo;
+    const span = Math.max(1, CONFIG.water.imageBuriedHi - lo);
 
     let count = 0;
-    const put = (px, py, pz, sp) => {
+    const put = (px, py, pz, sp, weight) => {
       if (count >= limit) return;
       const o = count * FLOATS_PER_DROP;
       cpu[o] = px;
       cpu[o + 1] = py;
       cpu[o + 2] = pz;
       cpu[o + 3] = sp;
+      cpu[o + 4] = weight;
       count++;
     };
 
@@ -3611,20 +3726,26 @@ class Renderer {
       const yi = y[i];
       const zi = z[i];
       const si = speed01[i];
-      put(xi, yi, zi, si);
+      put(xi, yi, zi, si, 1);
 
       const left = xi < reach;
       const right = wallX - xi < reach;
       const above = yi < reach;
       const below = wallY - yi < reach;
+      if (!left && !right && !above && !below) continue;
+
+      // How much of an image this particle has earned.
+      let solid = nbrCount ? (nbrCount[i] - lo) / span : 1;
+      if (solid > 1) solid = 1;
+      else if (solid < floor) solid = floor;
+
       const mx = left ? -xi : 2 * wallX - xi;
       const my = above ? -yi : 2 * wallY - yi;
-
-      if (left || right) put(mx, yi, zi, si);
-      if (above || below) put(xi, my, zi, si);
+      if (left || right) put(mx, yi, zi, si, solid);
+      if (above || below) put(xi, my, zi, si, solid);
       // Corners lose a quadrant, not just a half-space, so they need the
       // diagonal image too or they stay pinched.
-      if ((left || right) && (above || below)) put(mx, my, zi, si);
+      if ((left || right) && (above || below)) put(mx, my, zi, si, solid);
     }
     this.waterGhosts = count - n;
     return count;
@@ -3657,8 +3778,10 @@ class Renderer {
     }
     gl.enableVertexAttribArray(this.fieldAttrib.pos);
     gl.enableVertexAttribArray(this.fieldAttrib.speed);
+    gl.enableVertexAttribArray(this.fieldAttrib.weight);
     gl.vertexAttribPointer(this.fieldAttrib.pos, 3, gl.FLOAT, false, DROP_STRIDE, 0);
     gl.vertexAttribPointer(this.fieldAttrib.speed, 1, gl.FLOAT, false, DROP_STRIDE, 12);
+    gl.vertexAttribPointer(this.fieldAttrib.weight, 1, gl.FLOAT, false, DROP_STRIDE, 16);
 
     gl.uniform2f(this.fieldUniform.viewport, this.width, this.height);
     gl.uniform1f(this.fieldUniform.focal, focal);
@@ -3674,6 +3797,7 @@ class Renderer {
     gl.drawArrays(gl.POINTS, 0, n);
     gl.disableVertexAttribArray(this.fieldAttrib.pos);
     gl.disableVertexAttribArray(this.fieldAttrib.speed);
+    gl.disableVertexAttribArray(this.fieldAttrib.weight);
 
     // ---- pass 2: shade the field as a surface, over the box
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);

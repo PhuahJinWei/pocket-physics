@@ -92,6 +92,10 @@ export class Fluid {
     this.ax = f32();
     this.ay = f32();
     this.az = f32();
+    // Wall-term gradient, carried from solveDensity to applyCorrection.
+    this.wgx = f32();
+    this.wgy = f32();
+    this.wgz = f32();
     // Shading channel: normalised speed, which the renderer turns into foam.
     this.speed01 = f32();
 
@@ -437,13 +441,14 @@ export class Fluid {
    */
   solveDensity() {
     const n = this.n;
-    const { px, py, pz, nbr, nbrCount, lambda, density } = this;
+    const { px, py, pz, nbr, nbrCount, lambda, density, wgx, wgy, wgz } = this;
     const cap = this.maxNeighbours;
     const hh = this.smoothing;
     const inv = 1 / hh;
     const gradK = GRAD_K * inv;
     const rho0 = this.restDensity;
     const eps = CONFIG.fluid.relaxation;
+    const wallScale = CONFIG.fluid.wallDensity;
 
     for (let i = 0; i < n; i++) {
       const xi = px[i], yi = py[i], zi = pz[i];
@@ -474,11 +479,59 @@ export class Fluid {
       // The glass cuts the kernel short. Add back what the fluid on the other
       // side would have contributed, or every particle near a wall reads as
       // under-dense and the body creeps into the glass and sticks there.
-      rho += rho0 * (
-        wallDensity(xi - this.bounds.x0, hh) + wallDensity(this.bounds.x1 - xi, hh) +
-        wallDensity(yi - this.bounds.y0, hh) + wallDensity(this.bounds.y1 - yi, hh) +
-        wallDensity(zi - this.bounds.z0, hh) + wallDensity(this.depth - zi, hh)
-      );
+      //
+      // Combined as a union, not a sum. Where two walls meet, the regions they
+      // cut off overlap, and adding the terms counts that corner twice — in a
+      // box only a few particles deep almost every particle touches a glass
+      // *and* a side or the floor, so the double count is the common case, not
+      // the exception. Summed, it drove bulk density to 1.5x rest, a pressure
+      // the solver can never relieve by moving anything, and the fluid extruded
+      // itself up the walls in permanent standing columns.
+      //
+      // And the term enters the *gradient*, not just the density. This is the
+      // difference between a wall the water rests against and a wall it welds
+      // to. Density alone raises C for a particle pinned on the glass, but
+      // every correction then acts along neighbour directions — pushes into
+      // the wall are clamped away, and nothing ever pushes it off, because
+      // nothing says C would drop if it moved. Measured on a live standing
+      // column: 58 particles all at exactly the wall x, static for minutes,
+      // and removing the wall term collapsed it in two seconds. With the
+      // gradient in place, an over-dense wall particle is pushed back into
+      // the fluid, which is the lateral escape hydrostatics needs.
+      // z runs from 0 (front glass) to depth (back glass). `bounds` has no z
+      // fields — an earlier version read `bounds.z0` here, and the resulting
+      // NaN was silently swallowed by wallDensity's final clamp, which meant
+      // the front glass had no density term at all.
+      const fx0 = wallDensity(xi - this.bounds.x0, hh);
+      const fx1 = wallDensity(this.bounds.x1 - xi, hh);
+      const fy0 = wallDensity(yi - this.bounds.y0, hh);
+      const fy1 = wallDensity(this.bounds.y1 - yi, hh);
+      const fz0 = wallDensity(zi, hh);
+      const fz1 = wallDensity(this.depth - zi, hh);
+      const missing =
+        (1 - fx0) * (1 - fx1) * (1 - fy0) * (1 - fy1) * (1 - fz0) * (1 - fz1);
+      rho += rho0 * (1 - missing) * wallScale;
+
+      // d(union)/dp = f'_k * PROD_{m!=k}(1-f_m); the product for wall k is
+      // missing/(1-f_k), safe because f never reaches 1 (it tops out at 0.5).
+      // A near wall's density falls as the particle leaves it and the far
+      // wall's rises, hence the signs.
+      const wk = rho0 * wallScale;
+      const gwx =
+        (-wallDensityGrad(xi - this.bounds.x0, hh) * missing) / (1 - fx0) +
+        (wallDensityGrad(this.bounds.x1 - xi, hh) * missing) / (1 - fx1);
+      const gwy =
+        (-wallDensityGrad(yi - this.bounds.y0, hh) * missing) / (1 - fy0) +
+        (wallDensityGrad(this.bounds.y1 - yi, hh) * missing) / (1 - fy1);
+      const gwz =
+        (-wallDensityGrad(zi, hh) * missing) / (1 - fz0) +
+        (wallDensityGrad(this.depth - zi, hh) * missing) / (1 - fz1);
+      wgx[i] = gwx * wk;
+      wgy[i] = gwy * wk;
+      wgz[i] = gwz * wk;
+      gx += wgx[i];
+      gy += wgy[i];
+      gz += wgz[i];
 
       density[i] = rho;
       const c = rho / rho0 - 1;
@@ -495,7 +548,7 @@ export class Fluid {
 
   applyCorrection() {
     const n = this.n;
-    const { px, py, pz, nbr, nbrCount, lambda, dx, dy, dz } = this;
+    const { px, py, pz, nbr, nbrCount, lambda, dx, dy, dz, wgx, wgy, wgz } = this;
     const cap = this.maxNeighbours;
     const hh = this.smoothing;
     const inv = 1 / hh;
@@ -528,6 +581,11 @@ export class Fluid {
         const c = (li + lambda[j] + s) * gm;
         ax += ox * c; ay += oy * c; az += oz * c;
       }
+      // The wall's own share of the constraint gradient. No partner lambda —
+      // the wall is static and simply absorbs the momentum.
+      ax += li * wgx[i];
+      ay += li * wgy[i];
+      az += li * wgz[i];
       const s = 1 / rho0;
       dx[i] = ax * s; dy[i] = ay * s; dz[i] = az * s;
     }
@@ -723,4 +781,20 @@ function wallDensity(d, smoothing) {
   const p = s - (4 / 3) * s3 + (6 / 5) * s5 - (4 / 7) * s7 + s9 / 9;
   const f = 0.5 - (315 / 256) * p;
   return f > 0 ? f : 0;
+}
+
+/**
+ * Magnitude of d(wallDensity)/d(distance): how fast the missing-half-space
+ * fraction shrinks as the particle backs away from the wall. P'(s) collapses
+ * to (1-s^2)^4, so this is exact, not fitted, like wallDensity itself.
+ */
+function wallDensityGrad(d, smoothing) {
+  const s = d / smoothing;
+  // Written so NaN also lands in the zero branch: wallDensity happens to
+  // swallow bad input via its final clamp, and this must fail the same way
+  // rather than poison the whole solve.
+  if (!(s >= 0 && s < 1)) return 0;
+  const w = 1 - s * s;
+  const w2 = w * w;
+  return ((315 / 256) * w2 * w2) / smoothing;
 }

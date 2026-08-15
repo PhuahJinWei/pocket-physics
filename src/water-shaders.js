@@ -19,6 +19,8 @@ precision highp float;
 
 attribute vec3 aPos;
 attribute float aSpeed;
+// 1 for a real particle; for a wall image, how solid the water it mirrors is.
+attribute float aWeight;
 
 uniform vec2 uViewport;
 uniform float uFocal;
@@ -28,6 +30,7 @@ uniform float uDepthRange;
 
 varying float vSpeed;
 varying float vFade;
+varying float vWeight;
 
 void main() {
   float persp = uFocal / (uFocal + aPos.z);
@@ -36,6 +39,7 @@ void main() {
   gl_Position = vec4(unit.x * 2.0 - 1.0, 1.0 - unit.y * 2.0, 0.0, 1.0);
   gl_PointSize = uPointSize * persp;
   vSpeed = aSpeed;
+  vWeight = aWeight;
   // Deeper water contributes a little less, so the body carries a front-to-back
   // gradient instead of reading as one flat slab of colour.
   vFade = 1.0 - 0.35 * clamp(aPos.z / max(uDepthRange, 1.0), 0.0, 1.0);
@@ -47,6 +51,7 @@ precision mediump float;
 
 varying float vSpeed;
 varying float vFade;
+varying float vWeight;
 
 uniform float uGain;
 
@@ -58,7 +63,7 @@ void main() {
   // tight enough that the body keeps an edge instead of fogging outward.
   float w = 1.0 - r2;
   w = w * w;
-  float t = w * uGain * vFade;
+  float t = w * uGain * vFade * vWeight;
   // R: thickness. G: thickness weighted by speed, so the composite can divide
   // the two back out and know how agitated the water at this pixel is.
   gl_FragColor = vec4(t, t * vSpeed, 0.0, 1.0);

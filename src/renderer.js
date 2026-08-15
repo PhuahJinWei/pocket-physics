@@ -12,7 +12,7 @@ import { WATER_FIELD_VERTEX, WATER_FIELD_FRAGMENT, WATER_COMPOSITE_VERTEX, WATER
 
 const FLOATS_PER_GRAIN = 8; // x,y,z | light, speed, airborne | sizeJitter, hueJitter
 const STRIDE = FLOATS_PER_GRAIN * 4;
-const FLOATS_PER_DROP = 4; // x, y, z, speed
+const FLOATS_PER_DROP = 5; // x, y, z, speed, weight
 const DROP_STRIDE = FLOATS_PER_DROP * 4;
 const BUCKETS = 32;
 
@@ -135,6 +135,7 @@ export class Renderer {
     this.fieldAttrib = {
       pos: gl.getAttribLocation(this.fieldProgram, 'aPos'),
       speed: gl.getAttribLocation(this.fieldProgram, 'aSpeed'),
+      weight: gl.getAttribLocation(this.fieldProgram, 'aWeight'),
     };
     this.fieldUniform = {
       viewport: gl.getUniformLocation(this.fieldProgram, 'uViewport'),
@@ -425,25 +426,44 @@ export class Renderer {
    * Only the four lateral walls get ghosts. Depth needs none: thickness is the
    * count of particles along a view ray, and that ray genuinely does end at the
    * front and back glass — nothing is missing to add back.
+   *
+   * Each image is weighted by how buried the particle it mirrors is, which is
+   * what stops the correction overreaching. An image asserts "there is matching
+   * water on the far side of this wall" — true for bulk filling the tank, false
+   * for the thin film left clinging to the glass after a wave drains down it.
+   * Applied flat it thickened near-wall water by 1.8x and drew those films as
+   * solid rounded pillars standing against the glass, which is not something
+   * water does.
+   *
+   * The weight is raw neighbour count, deliberately not density. Density cannot
+   * tell the two apart and never will: an incompressible solver drives it to
+   * rest density *everywhere* it can, and measured, film and bulk-at-wall both
+   * sit at about 1.1. Neighbour count is geometry rather than a solved
+   * quantity, and it separates them cleanly — median 14 in a film against 26
+   * for bulk against the same wall.
    */
   packWater(fluid, w) {
     const cpu = this.waterCpu;
     const limit = (cpu.length / FLOATS_PER_DROP) | 0;
     const n = Math.min(fluid.n, CONFIG.fluid.maxParticles);
-    const { x, y, z, speed01 } = fluid;
+    const { x, y, z, speed01, nbrCount } = fluid;
     const wallX = fluid.bounds.x1;
     const wallY = fluid.bounds.y1;
     // A ghost only matters while its blob still overlaps the box.
     const reach = fluid.diameter * w.blobSize * 0.5;
+    const floor = CONFIG.water.imageFloor;
+    const lo = CONFIG.water.imageBuriedLo;
+    const span = Math.max(1, CONFIG.water.imageBuriedHi - lo);
 
     let count = 0;
-    const put = (px, py, pz, sp) => {
+    const put = (px, py, pz, sp, weight) => {
       if (count >= limit) return;
       const o = count * FLOATS_PER_DROP;
       cpu[o] = px;
       cpu[o + 1] = py;
       cpu[o + 2] = pz;
       cpu[o + 3] = sp;
+      cpu[o + 4] = weight;
       count++;
     };
 
@@ -452,20 +472,26 @@ export class Renderer {
       const yi = y[i];
       const zi = z[i];
       const si = speed01[i];
-      put(xi, yi, zi, si);
+      put(xi, yi, zi, si, 1);
 
       const left = xi < reach;
       const right = wallX - xi < reach;
       const above = yi < reach;
       const below = wallY - yi < reach;
+      if (!left && !right && !above && !below) continue;
+
+      // How much of an image this particle has earned.
+      let solid = nbrCount ? (nbrCount[i] - lo) / span : 1;
+      if (solid > 1) solid = 1;
+      else if (solid < floor) solid = floor;
+
       const mx = left ? -xi : 2 * wallX - xi;
       const my = above ? -yi : 2 * wallY - yi;
-
-      if (left || right) put(mx, yi, zi, si);
-      if (above || below) put(xi, my, zi, si);
+      if (left || right) put(mx, yi, zi, si, solid);
+      if (above || below) put(xi, my, zi, si, solid);
       // Corners lose a quadrant, not just a half-space, so they need the
       // diagonal image too or they stay pinched.
-      if ((left || right) && (above || below)) put(mx, my, zi, si);
+      if ((left || right) && (above || below)) put(mx, my, zi, si, solid);
     }
     this.waterGhosts = count - n;
     return count;
@@ -498,8 +524,10 @@ export class Renderer {
     }
     gl.enableVertexAttribArray(this.fieldAttrib.pos);
     gl.enableVertexAttribArray(this.fieldAttrib.speed);
+    gl.enableVertexAttribArray(this.fieldAttrib.weight);
     gl.vertexAttribPointer(this.fieldAttrib.pos, 3, gl.FLOAT, false, DROP_STRIDE, 0);
     gl.vertexAttribPointer(this.fieldAttrib.speed, 1, gl.FLOAT, false, DROP_STRIDE, 12);
+    gl.vertexAttribPointer(this.fieldAttrib.weight, 1, gl.FLOAT, false, DROP_STRIDE, 16);
 
     gl.uniform2f(this.fieldUniform.viewport, this.width, this.height);
     gl.uniform1f(this.fieldUniform.focal, focal);
@@ -515,6 +543,7 @@ export class Renderer {
     gl.drawArrays(gl.POINTS, 0, n);
     gl.disableVertexAttribArray(this.fieldAttrib.pos);
     gl.disableVertexAttribArray(this.fieldAttrib.speed);
+    gl.disableVertexAttribArray(this.fieldAttrib.weight);
 
     // ---- pass 2: shade the field as a surface, over the box
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);

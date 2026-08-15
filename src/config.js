@@ -307,6 +307,13 @@ export const CONFIG = {
     // Room above the measured mean of ~30. Overflowing silently would drop
     // real neighbours and read as a density hole.
     maxNeighbours: 64,
+    // How much of the missing-half-space density to hand back at a wall (see
+    // Fluid.solveDensity). Full strength is what the geometry says, and once
+    // the terms are combined as a union rather than summed it is also what
+    // behaves: measured across 0 to 1 the bulk settles at 1.08x rest either
+    // way, so there is nothing to buy by weakening it, and weakening it only
+    // presses more particles flat against the glass.
+    wallDensity: 1.0,
     // Closest two particles may sit, as a fraction of rest spacing, and how
     // much of any overlap is resolved per substep. Well below rest, so normal
     // compression never touches it — this exists only to break up the welded
@@ -356,6 +363,15 @@ export const CONFIG = {
     // still surface is held nearly glassy and only moving water ripples.
     calmRipple: 0.1,
     rippleGain: 2.5,
+    // Wall images are scaled by the neighbour count of the particle they
+    // mirror (see Renderer.packWater). Measured against this box: a thin film
+    // draining down the glass sits near 14 neighbours, bulk water against the
+    // same wall near 26, so the ramp runs between them. Below the floor the
+    // image never vanishes entirely, so the body still meets the glass instead
+    // of fraying away from it.
+    imageBuriedLo: 10,
+    imageBuriedHi: 24,
+    imageFloor: 0.2,
     // Coverage: alpha at the silhouette edge, and the Beer-Lambert rate at
     // which thickness turns opaque. Opacity is the strongest "gel" signal —
     // real water lets the tank show through wherever it runs thin.
