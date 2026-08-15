@@ -27,6 +27,12 @@ export const CONFIG = {
     divisor: 76,
     minRadius: 2.8,
     maxRadius: 9.5,
+    // Ceiling for the tuner only. maxRadius caps the size the app *chooses*;
+    // this caps how far a struggling device may coarsen past it. Since sand is
+    // drawn as a mass, a bigger grain is nearly invisible while fewer grains
+    // is visibly less sand — so coarsening is the right lever and it needs
+    // somewhere to go. See Grains.preferredRadius.
+    coarseRadius: 16,
     // Radius spread around the mean. Identical spheres crystallise into a
     // regular lattice as they settle — visible as a woven grid across the bed —
     // and real sand never does exactly because its grains all differ.
@@ -143,35 +149,6 @@ export const CONFIG = {
 
   render: {
     maxDpr: 2,
-    // Sprite sizes as multiples of grain diameter. The grain sprite draws a
-    // cluster of small matte specks rather than one ball, which is what makes
-    // the sand look finer than the physics actually is — visual grain size is
-    // speckRadius * clusterSize * diameter, not the physics diameter.
-    clusterSize: 1.5,
-    // Speck size on screen, in CSS px — held constant across devices. The
-    // physics grain scales with the viewport (and is clamped), so on a wide
-    // screen each sprite is nearly twice the phone's size; a fixed speck count
-    // and ratio made the sand coarsest exactly where there was most room to
-    // see it. The renderer picks the per-sprite speck count from this and
-    // speckCoverage, rebuilding the shader when it changes.
-    speckPx: 3.4,
-    speckCoverage: 0.72,
-    speckSpread: 1.2,
-    // Airborne grains barely shrink now: the fragment shader draws them as a
-    // single grain-sized speck, so shrinking the sprite on top would make a
-    // flying grain smaller than it physically is.
-    airShrink: 0.05,
-    // Brightness scatter between specks; the grain-to-grain variation that
-    // stops a bed reading as one smooth surface.
-    speckVariation: 0.3,
-    // Spatial patchiness: real sand varies in correlated patches (minerals,
-    // moisture), not grain by grain. Scale is the patch size in CSS px.
-    patchScale: 52,
-    patchAmp: 0.09,
-    // Sand glints as facets catch the light. Brief flashes on a few specks at
-    // a time — cheap, and it does a lot of the work of selling the material.
-    glintStrength: 0.16,
-    glintRate: 1.2,
     // Perspective: focal length as a multiple of min(viewport w, h). Smaller =
     // more dramatic depth. Parallax shifts the eye against tilt, in px.
     // Shorter focal = more aggressive convergence toward the back. Parallax is
@@ -195,11 +172,116 @@ export const CONFIG = {
     wallShade: { floor: 1.0, ceiling: 0.42, left: 0.5, right: 0.58, back: 0.55 },
     wallBackFalloff: 0.55,
     background: [0.02, 0.017, 0.014],
-    // Dry quartz: crevice-shadow brown for buried grains, tan through the
-    // body, pale warm cream where the surface catches the light.
-    deep: [0.21, 0.16, 0.115],
-    mid: [0.55, 0.44, 0.30],
-    lit: [0.91, 0.83, 0.66],
+    // Dry quartz: shadowed brown for buried sand, warm tan through the body,
+    // pale cream where the surface catches the light. Buried sand is only a
+    // little darker than the surface — against the glass, real sand is nearly
+    // one tone — so the deep end stays well up from black.
+    deep: [0.30, 0.22, 0.14],
+    mid: [0.64, 0.52, 0.36],
+    lit: [0.94, 0.86, 0.68],
+  },
+
+  // The sand look. See src/shaders.js for the idea: the pile is drawn as one
+  // continuous mass from a coverage field, and the grain texture comes from
+  // tiny independent specks on top. Physics grains are never drawn as such.
+  sand: {
+    // Fraction of the canvas the coverage field is rendered at. Half res is
+    // cheaper and doubles as the blur that turns blobs into a mass.
+    fieldScale: 0.5,
+    // Blob radius as a multiple of the grain radius. This is what smooths the
+    // silhouette: at 1.6 every surface grain stood out of the pile as its own
+    // rounded lump — a metaball outline at physics-grain scale, which is
+    // exactly the scale sand must not have. Wide blobs low-pass the surface
+    // over a couple of grains, so it reads as a slope with fuzz on it.
+    blob: 2.3,
+    // Peak contribution of one blob. The interior sums twenty-odd overlapping
+    // blobs and the field is 8-bit, so this has to keep that sum below 1 —
+    // a clipped coverage channel would drag the light average up with it.
+    gain: 0.11,
+    // How much less a grain at the back of the box contributes to the field
+    // than one against the glass.
+    depthWeight: 0.55,
+    // A grain touching nothing draws its blob this much NARROWER (graded by
+    // how few contacts it has). This is a width, not a brightness: a narrow
+    // blob cannot bridge to the mass and hang off it as a drip. Its peak is
+    // solved for separately — see uSoloSize and the field vertex shader.
+    looseShrink: 0.35,
+    // Where a lone grain's silhouette lands, as a fraction of its true radius.
+    // The physics grain is many real grains' worth of sand, so drawing a
+    // flying one slightly under size reads as spray rather than as a boulder —
+    // but only slightly: drawn at a quarter size, thousands of them are a dust
+    // cloud even while the simulation is perfectly sane. It also sets how hard
+    // a lone grain has to shout to clear the threshold, and therefore how many
+    // may overlap before the 8-bit field clips, so it is cheap to keep modest.
+    // Deliberately well inside the grain: a grain in flight is drawn by its
+    // SPECKS (which spread to speckAirSpread), and the field only supplies a
+    // soft core underneath them. Drawn as a full-size blob instead, a flying
+    // grain is a smooth 20px disc — a bead — because a lone blob's level set
+    // is a clean circle that nothing breaks up.
+    soloSize: 0.5,
+    // How much wider the silhouette's soft band gets for sand in flight, so
+    // that core fades out instead of ending on a hard rim.
+    airSoft: 6.0,
+    // Ceiling on the colour ramp for sand in flight. The top of the ramp is
+    // the pale cream of a sunlit surface, which a lone grain has not earned —
+    // left there, a splash is a scatter of glowing beads.
+    airLight: 0.45,
+    // Coverage at which sand starts, and the width of the anti-aliased edge.
+    // A lone grain's blob peaks at `gain`; this threshold draws it a little
+    // *under* its physical size (about 0.8 of its radius), which tightens the
+    // grains protruding from a surface into small bumps rather than domes.
+    surface: 0.085,
+    soft: 0.012,
+    // The threshold wanders by this much at grain scale, so the silhouette
+    // breaks into fuzz instead of a smooth contour.
+    dither: 0.02,
+    ditherPx: 3.0,
+    // Form shading from the field gradient along the free surface (brighten
+    // only — see the shader): how strongly the gradient tilts the normal, and
+    // how much of the result the colour is allowed to see.
+    relief: 4.0,
+    form: 0.25,
+    // Fast sand pales a little toward dust.
+    pale: 0.15,
+    // Spatial patchiness: real sand varies in correlated patches (minerals,
+    // moisture), not grain by grain. Scale is the patch size in CSS px.
+    patchScale: 52,
+    patchAmp: 0.09,
+    // Grain relief: embossed noise at grain scale over the whole mass, the
+    // lit-side/shadow-side of every grain. Screen-anchored (see the shader).
+    grainPx: 2.6,
+    grainAmp: 0.09,
+
+    // Specks: the visible grain. Diameter on screen in CSS px, held constant
+    // across devices; how far each grain scatters its specks (multiple of
+    // its radius); and how much of a grain's projected disc its own specks
+    // cover — the per-grain count follows from that and the grain size.
+    speckPx: 2.4,
+    speckSpread: 0.85,
+    // Spread for a grain in flight, which is drawn by its specks rather than
+    // by the field. The clump has to cover the sand the grain stands for, or
+    // a splash reads as dust however many specks it has.
+    speckAirSpread: 1.15,
+    speckCoverage: 0.32,
+    // Headroom for coarsened grains: the per-grain count scales with the
+    // grain's area so the sand keeps the same fineness on screen, and the
+    // tuner's lever is now grain size, so this has to reach.
+    speckMax: 48,
+    speckAlpha: 0.85,
+    // Mineral mix. Fractions of specks that are dark grains and bright quartz,
+    // their tones relative to the body, and the spread of everything else.
+    speckDark: 0.10,
+    speckDarkTone: 0.6,
+    speckBright: 0.10,
+    speckBrightTone: 1.16,
+    speckVary: 0.16,
+    // Specks toward the back of the box fade, so the front layer reads as
+    // the surface against the glass.
+    speckDepthFade: 0.6,
+    // Sand glints as facets catch the light: brief, sparse, on the bright
+    // specks only, more readily when moving.
+    glintStrength: 0.35,
+    glintRate: 1.6,
   },
 
   input: {

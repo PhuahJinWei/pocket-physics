@@ -59,12 +59,14 @@ export class Grains {
     this.sizeJitter = f32();
     this.hueJitter = f32();
     this.contacts = new Uint8Array(capacity);
-    // 1 when a grain is touching nothing at all. The renderer collapses a
-    // grain's speck cluster to a single speck when this is high — keyed on
-    // isolation rather than speed, because a *speed* threshold fires on any
-    // grain that has fallen a few tens of pixels, which turns an entire moving
-    // bed into dust specks.
+    // 1 when a grain is touching nothing at all, and a graded version of the
+    // same: how far short of a full set of contacts it is. Both smoothed. The
+    // renderer draws loosely held grains a little smaller than packed ones —
+    // keyed on contact, not speed, because a *speed* threshold fires on any
+    // grain that has fallen a few tens of pixels and would shrink an entire
+    // moving bed.
     this.airborne = f32();
+    this.loose = f32();
     this.cover = f32();
     this.litAbove = f32();
 
@@ -193,28 +195,27 @@ export class Grains {
   }
 
   /**
-   * Sand wants the finest grain the device can hold: every grain is visible,
-   * so grain size *is* the look. Performance headroom buys a finer grain, never
-   * a deeper bed — count always fills the same volume, so the amount of sand
-   * looks constant per device. Count goes with 1/r^3, hence the cube root.
+   * Grain size is chosen from the screen, and the tuner coarsens from there.
+   *
+   * `maxRadius` caps the *designed* size only — the tuner may push past it,
+   * and it is the one lever that should be used. Sand is drawn as a mass now
+   * (see src/shaders.js), so the physics grain size is no longer the look:
+   * doubling it is nearly invisible. Grain *count*, on the other hand, is the
+   * volume of sand in the box, and taking that away is the most visible change
+   * the app can make — measured, a short play session on a wide screen used to
+   * lose a third of the bed, permanently, because the tuner never adds back.
+   * Count is derived from the bed volume, so coarsening keeps the box just as
+   * full; it is only made of fewer, larger grains.
    */
   preferredRadius(width, height, qualityScale = 1) {
     const g = CONFIG.grain;
     const base = clamp(Math.min(width, height) / g.divisor, g.minRadius, g.maxRadius);
-    return clamp(base / Math.cbrt(qualityScale), g.minRadius, g.maxRadius);
+    return clamp(base / Math.cbrt(qualityScale), g.minRadius, g.coarseRadius);
   }
 
-  /**
-   * On a large screen the wanted radius exceeds maxRadius and gets pinned
-   * there — and since the tuner coarsens by *growing* grains, pinning leaves it
-   * with no lever at all: it drops quality, nothing changes, and the device
-   * just runs slow forever. When that happens, trade bed depth instead.
-   */
-  targetCount(width, height, qualityScale = 1) {
-    const ideal = this.idealCount();
-    const g = CONFIG.grain;
-    const pinned = Math.min(width, height) / g.divisor >= g.maxRadius;
-    return pinned ? Math.round(ideal * Math.min(1, qualityScale)) : ideal;
+  /** Always fill the bed. Quality is spent on grain size, never on volume. */
+  targetCount() {
+    return this.idealCount();
   }
 
   /** Grain count that fills `CONFIG.bed.fill` of the front view when settled. */
@@ -252,6 +253,7 @@ export class Grains {
     this.cover[i] = 0;
     this.litAbove[i] = 0;
     this.airborne[i] = 0;
+    this.loose[i] = 0;
   }
 
   /**
@@ -1039,7 +1041,7 @@ export class Grains {
   updateShading(dt) {
     const n = this.n;
     const cfg = CONFIG.sim;
-    const { light, cover, contacts, litAbove, speed01, airborne, vx, vy, vz } = this;
+    const { light, cover, contacts, litAbove, speed01, airborne, loose, vx, vy, vz } = this;
     const invCover = 1 / cfg.coverNorm;
     const invSpeed = 1 / this.speedNorm;
     const blend = 1 - Math.exp(-cfg.lightSmoothing * dt);
@@ -1047,17 +1049,20 @@ export class Grains {
 
     for (let i = 0; i < n; i++) {
       const buried = clamp(cover[i] * invCover, 0, 1);
-      const loose = 1 - clamp(contacts[i] / 6, 0, 1);
+      const looseNow = 1 - clamp(contacts[i] / 6, 0, 1);
       // Lit if nothing is above you, or if you are barely touching anything...
-      const exposed = Math.max(1 - buried, loose * 0.95);
+      const exposed = Math.max(1 - buried, looseNow * 0.95);
       // ...otherwise take what filters down from the grain above you.
       const target = Math.max(exposed, litAbove[i] * transmit);
       light[i] += (target - light[i]) * blend;
       speed01[i] = clamp(Math.hypot(vx[i], vy[i], vz[i]) * invSpeed, 0, 1);
       // Touching nothing means genuinely in flight. Smoothed so a grain
-      // entering or leaving the mass fades rather than pops.
+      // entering or leaving the mass fades rather than pops; the graded
+      // version is smoothed for the same reason, since contact counts at a
+      // surface flicker from step to step.
       const air = contacts[i] === 0 ? 1 : 0;
       airborne[i] += (air - airborne[i]) * blend;
+      loose[i] += (looseNow - loose[i]) * blend;
     }
   }
 }

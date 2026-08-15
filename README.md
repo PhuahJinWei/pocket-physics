@@ -71,8 +71,8 @@ main.js        frame loop, viewport → sim size, quality changes
     grains.js      sand — sequential impulses
     fluid.js       water — position based fluids
     grid.js        counting-sort spatial hash, shared by both
-  renderer.js    WebGL: point sprites for sand, a screen-space pass for water
-    shaders.js
+  renderer.js    WebGL: both materials as a screen-space field, sand plus specks
+    shaders.js       sand field, composite, specks, and the box walls
     water-shaders.js
   tuner.js       adaptive quality
   hud.js         stats panel, hint line, permission prompt, tilt pad
@@ -161,41 +161,78 @@ The accelerometer's sign convention differs between iOS and Android, and
 guessing wrong inverts every push, so it is calibrated at runtime by comparing
 the reading against orientation-derived gravity while the device is near still.
 
-**The grain look.** Each physics grain is one point sprite, and the sprite draws
-a small *cluster* of matte specks rather than a single lit ball. That decouples
-visual grain size from physics grain size: the sand renders about three times
-finer than the solver's grains, for free. Making the physics that fine instead
-would roughly quintuple simulation cost (count scales with 1/r²); the cluster
-costs a few ALU per fragment and no extra geometry.
+**The sand look.** The physics grain is 10–16 px across — far too big to be a
+grain of sand — and every renderer that gave it a shape of its own drew
+something else: shiny beads first, then, dressed as a rigid cluster of small
+specks, popcorn. The scale a viewer locks onto is the scale that *moves*, and a
+puff of specks travelling as one body is a puff however fine the specks. So the
+grains are no longer drawn at all. Sand is drawn as a **mass**, the way water
+already was:
 
-A grain touching nothing draws as a **single speck the size of the grain
-itself**, rather than as a cluster. Two failure modes sit either side of that:
-spread the cluster and a flying grain reads as a flower of specks stuck
-together; collapse it to the fine bed-speck size and the grain is drawn several
-times smaller than it physically is — thousands of those look exactly like a
-dust cloud, even while the simulation is behaving perfectly. It is keyed on
-isolation rather than speed, because a speed threshold fires on any grain that
-has fallen a few tens of pixels.
+- **Field pass.** Every grain splats a wide soft blob into an offscreen
+  half-resolution buffer, summed: a smooth coverage field, plus the sim's
+  bed-level light and speed carried along as weighted averages. Blobs are
+  about 2.3 grain radii wide on purpose — at 1.6 every surface grain still stood
+  out of the pile as its own rounded lump, a metaball outline at exactly the
+  scale sand must not have. Wide blobs low-pass the surface over a couple of
+  grains, and it reads as a slope with fuzz on it.
+- **Composite.** The level set of that field is the silhouette, jittered by
+  grain-scale noise so the edge is fuzz rather than a clean clay contour. The
+  light channel colours the mass (open surface toward cream, buried sand toward
+  brown); the coverage gradient brightens crests that face the light — brighten
+  only, because darkening the lee side as well drew a dark rim along every
+  shadowed edge, which reads as an outline. Over the whole mass sits embossed
+  noise at grain scale, a lit side and shadowed side for every grain: real
+  sand is grains all the way down, and that fine *agreeing* relief is what
+  reads as sand rather than felt. It is screen-anchored, so it fades wherever
+  the sand is moving — still sand keeps its grain, flowing sand blurs.
+- **Speck pass.** The visible grain: a few tiny (2.4 px) specks per physics
+  grain, drawn as their own points on top — mostly near the body tone, some
+  dark mineral, some bright quartz that glints. They are real particles riding
+  the sim, so texture moves exactly with the sand, and they are far too small
+  and sparse to give away which grain owns them. They fade past the silhouette
+  so a surface is fringed with texture rather than beside it.
 
-Speck size targets a constant number of *on-screen* pixels (`speckPx`), with
-the per-sprite count adapting to keep coverage — the physics grain scales with
-the viewport, so without this a wide screen showed coarse sand exactly where
-there was most room to see it. Fast free-flying grains collapse their cluster
-onto a single speck and shrink; inside the bed the cluster trick is invisible,
-but an airborne grain drawn as a bundle reads as a little flower of balls.
+**Sand in flight** is the one case the mass render cannot handle on its own,
+and it takes three separate corrections. All of them are keyed on *contact*
+rather than speed — a speed threshold fires on any grain that has fallen a few
+tens of pixels, which would catch an entire moving bed.
 
-Nearly all of the realism is **micro-relief**: every speck gets a gentle fake
-normal lit by one global light — lit crest up-left, shade down-right — and the
-webbing between specks falls into crevice shadow. Thousands of tiny highlights
-and shadows all agreeing about the light direction is what reads as sand;
-per-speck random brightness alone reads as static. Variation is layered on top
-at two scales: a little per-speck mineral scatter, and slow value-noise patches
-over world position, because real sand varies in patches, not grain by grain.
-Dry-sand glints — brief, warm, sparse — finish the material.
+- **It has to clear the threshold alone.** A grain in the mass never has to:
+  hundreds of blobs sum together and the level set falls where it falls. A
+  grain by itself gets one blob, and with a fixed peak it usually lost — the
+  depth weighting alone put it under. Measured, **75% of the grains in a splash
+  drew literally nothing**, every one of them past the front of the box. So an
+  isolated grain is given exactly the peak that lands its level set on a
+  known fraction of its own radius, with no depth attenuation. Solving for the
+  peak rather than just turning the gain up is what keeps it safe: a narrow
+  blob with a tall peak is compact and cannot bridge, and because the target
+  size sits inside the blob radius the peak stays low enough that several may
+  overlap before the 8-bit field clips (measured max 186/255 through a splash).
+- **The specks draw it, not the field.** A lone blob's level set is a clean
+  circle that nothing breaks up — the threshold dither moves it less than a
+  pixel — so a full-size blob renders a flying grain as a smooth bead. Instead
+  the field only supplies a soft core at half the radius, the specks spread out
+  to the grain's true size, and they are exempt from the fade that normally
+  keeps specks inside the silhouette. What is left is a porous clump, which is
+  what a clod of sand in the air actually is. The extent stays honest: drawn
+  much under size, thousands of these are a dust cloud even while the
+  simulation is behaving perfectly.
+- **It is not sunlit.** A grain in the air is fully exposed, but that is not
+  the same as being the lit crest of a pile — the top of the colour ramp is a
+  pale cream earned by a whole surface facing the light. Left there, a splash
+  is a scatter of glowing beads, so flying sand is capped partway up the ramp.
 
-There is no glow pass and nothing additive: real sand does not emit. The gaps a
-cluster leaves show the grain drawn behind, which is deeper and darker — free
-crevices.
+Separately, loosely held grains (as opposed to fully isolated ones) draw a
+*narrower* blob, graded by how few contacts they have. A blob wide enough to
+smooth the packed surface otherwise bridges the gap to a grain that is barely
+attached and hangs it off the pile as a drip. This is a width only, never a
+brightness: blending an ordinary surface grain toward the isolated-grain peak
+bulges it out of the surface as its own lump and fringes the whole bed with
+grain-sized nubs — exactly the scale the field render exists to hide.
+
+None of it is additive and nothing glows. The whole thing costs one to two
+milliseconds against a simulation that costs ten or more.
 
 **The depth look.** Real Z plus cheap cues:
 
@@ -212,22 +249,19 @@ crevices.
 - a pinhole projection in the vertex shader — deeper grains shrink and converge
   toward the eye point, which slides against the tilt for a parallax peek.
 - depth fog — the back of the box falls into shadow.
-- back-to-front draw order via a 32-bucket counting sort on z (point sprites
-  with blending fight a real depth buffer over the alpha edges).
+- grains at the back of the box count for less in the coverage field, so the
+  front layer against the glass is what the averages describe.
 - *how buried* a grain is — how much of its neighbourhood sits on the
   anti-gravity side. Grains with nothing above them are the lit surface.
 - *light seeping down* — each grain takes the brightest value from neighbours
   above it, attenuated, one layer per frame: a real depth gradient through the
   bed instead of a flat dark slab.
-- *speed* — airborne grains pale toward dust, which is what makes a splash
-  read.
+- *speed* — moving sand pales a little, and loses its still-grain relief.
 
 This bed-level shading is the shading that earns its place. It is computed in
 the sim, costs nothing extra (it rides along in the contact scan the solver
 already does), and it is what makes the pile read as a solid 3D mass rather than
-a field of dots — which matters *more*, not less, as the grains get finer.
-
-Rendering is one interleaved buffer and a single draw call, back-to-front.
+a flat cut-out.
 
 ## Tuning it
 
@@ -242,16 +276,36 @@ Everything lives in [`src/config.js`](src/config.js). The knobs worth knowing:
 | `sim.friction` / `wallFriction` | angle of repose; wall value must stay low |
 | `bed.fill` (again) | pile depth is the solver's hardest constraint — deeper beds sink |
 | `tuner.enabled` / `hiMs` | the low-end safety net; off means the look never changes, at any cost |
+| `grain.coarseRadius` | how far the tuner may coarsen — it never removes sand |
 | `bed.depthLayers` | how deep the box is, in grain diameters |
 | `render.focal` / `depthDim` / `parallax` | how dramatic the depth looks |
 | `render.wallColor` / `wallShade` | the box interior |
-| `render.speckPx` / `speckCoverage` | on-screen speck size and density — independent of physics cost |
-| `render.glintStrength` / `glintRate` | sparkle |
-| `render.deep` / `mid` / `lit` | the colour ramp from crevice to sunlit |
+| `sand.blob` / `surface` | how smooth the silhouette is, and how tight it sits on the grains |
+| `sand.speckPx` / `speckCoverage` | on-screen speck size and density — independent of physics cost |
+| `sand.grainAmp` / `grainPx` | the fine grain relief over the mass |
+| `sand.looseShrink` | how much narrower a barely-attached grain's blob is |
+| `sand.soloSize` / `speckAirSpread` | how big sand in flight draws, and how far its specks spread |
+| `sand.airSoft` / `airLight` | how soft and how pale flying sand is |
+| `sand.glintStrength` / `glintRate` | sparkle |
+| `render.deep` / `mid` / `lit` | the colour ramp from buried to sunlit |
 
 The three notes above are the ones that cost real debugging time, and each is
-commented where it lives. One more worth knowing: **bed depth is the binding
-constraint on everything.** Pile depth is what the contact solver has to hold
+commented where it lives.
+
+**Quality is spent on grain size, never on how much sand there is.** The tuner
+coarsens grains and may push past `grain.maxRadius` to do it, up to
+`coarseRadius`; the count always follows from the bed volume, so the box stays
+just as full and is only made of fewer, larger grains. It used to trade the
+other way on wide screens — where the wanted radius is pinned at the cap and
+coarsening had nowhere to go — and that reads as the sand quietly draining
+away: measured, a short play session lost a third of the bed, permanently,
+because the tuner never adds back. The trade flipped because the renderer did.
+Grain size used to *be* the look; now sand is drawn as a mass and doubling the
+grain is nearly invisible, while taking grains away is the most visible change
+the app can make. Measured across the full quality range, the settled bed holds
+206–223 px of screen while the count falls from 4565 to 1664.
+
+One more worth knowing: **bed depth is the binding constraint on everything.** Pile depth is what the contact solver has to hold
 up, and a bed much deeper than the default starts sinking into itself no matter
 how many iterations it gets — which in turn caps how small grains can be, since
 finer grains mean a deeper pile for the same bed.
