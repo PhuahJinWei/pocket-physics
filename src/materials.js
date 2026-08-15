@@ -34,9 +34,27 @@ import { CONFIG } from './config.js';
 import { Grains } from './grains.js';
 import { Fluid } from './fluid.js';
 
+/**
+ * The registry. Adding a material here is the whole job: the picker builds
+ * itself from this list, so a new entry appears in the UI with its swatch and
+ * needs no markup, no styling and no wiring.
+ *
+ * `tint` is only for the swatch dot in the menu — it is not used to render
+ * anything in the box.
+ */
 export const MATERIALS = [
-  { id: 'sand', label: 'Sand', create: () => new Grains(CONFIG.bed.maxGrains) },
-  { id: 'water', label: 'Water', create: () => new Fluid(CONFIG.fluid.maxParticles) },
+  {
+    id: 'sand',
+    label: 'Sand',
+    tint: '#c8a97a',
+    create: () => new Grains(CONFIG.bed.maxGrains),
+  },
+  {
+    id: 'water',
+    label: 'Water',
+    tint: '#4e9fc4',
+    create: () => new Fluid(CONFIG.fluid.maxParticles),
+  },
 ];
 
 /**

@@ -16,7 +16,11 @@
 
 <div id="ui">
   <div id="vignette"></div>
-  <button id="material" type="button" aria-label="Change material">Sand</button>
+  <div id="material-picker">
+    <button id="material" type="button" aria-haspopup="listbox" aria-expanded="false"
+            aria-label="Material">Sand</button>
+    <div id="material-menu" role="listbox" aria-label="Choose material" hidden></div>
+  </div>
   <div id="hint"></div>
   <div id="stats"></div>
 

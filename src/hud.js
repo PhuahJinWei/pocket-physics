@@ -13,25 +13,94 @@ export class Hud {
     this.knob = root.querySelector('#knob');
     this.fatal = root.querySelector('#fatal');
     this.material = root.querySelector('#material');
+    this.materialPicker = root.querySelector('#material-picker');
+    this.materialMenu = root.querySelector('#material-menu');
 
     this.statsVisible = false;
     this.onStick = null;
     this.onMaterial = null;
+    // True while the material list is open. The frame loop reads this so the
+    // movement keys do not tilt the box out from under someone who is choosing.
+    this.materialOpen = false;
+    this._materialButtons = new Map();
     this._hintTimer = 0;
     this._statsTimer = 0;
     this.bindStick();
-    if (this.material) {
-      this.material.addEventListener('click', (e) => {
+    this.bindMaterial();
+  }
+
+  bindMaterial() {
+    if (!this.material) return;
+    this.material.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleMaterialMenu();
+    });
+    // The picker sits in an overlay, so a tap on it never reaches the canvas —
+    // but a stray pointerdown would still start a drag, so stop it here.
+    this.materialPicker.addEventListener('pointerdown', (e) => e.stopPropagation());
+    // Anywhere else dismisses, which is what every menu everywhere does.
+    window.addEventListener('pointerdown', (e) => {
+      if (this.materialOpen && !this.materialPicker.contains(e.target)) {
+        this.showMaterialMenu(false);
+      }
+    });
+    window.addEventListener('keydown', (e) => {
+      if (this.materialOpen && e.code === 'Escape') {
+        this.showMaterialMenu(false);
+        this.material.focus();
+      }
+    });
+  }
+
+  /**
+   * Build one row per material. Called once with the registry, so materials
+   * added later appear here without touching the markup or this file.
+   */
+  setMaterials(list, currentId) {
+    if (!this.materialMenu) return;
+    this.materialMenu.innerHTML = '';
+    this._materialButtons.clear();
+    for (const m of list) {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'material-option';
+      row.setAttribute('role', 'option');
+      row.dataset.id = m.id;
+
+      const dot = document.createElement('span');
+      dot.className = 'material-swatch';
+      dot.style.background = m.tint || '#888';
+      row.append(dot, document.createTextNode(m.label));
+
+      row.addEventListener('click', (e) => {
         e.stopPropagation();
-        if (this.onMaterial) this.onMaterial();
+        this.showMaterialMenu(false);
+        if (this.onMaterial) this.onMaterial(m.id);
       });
-      // Otherwise the tap that switches material also pokes the sand under it.
-      this.material.addEventListener('pointerdown', (e) => e.stopPropagation());
+      this.materialMenu.append(row);
+      this._materialButtons.set(m.id, row);
+    }
+    const current = list.find((m) => m.id === currentId);
+    this.setMaterial(currentId, current ? current.label : '');
+  }
+
+  setMaterial(id, label) {
+    // The caret is a ::after pseudo-element, so replacing the text leaves it be.
+    if (this.material) this.material.textContent = label;
+    for (const [key, row] of this._materialButtons) {
+      row.setAttribute('aria-selected', key === id ? 'true' : 'false');
     }
   }
 
-  setMaterial(label) {
-    if (this.material) this.material.textContent = label;
+  toggleMaterialMenu() {
+    this.showMaterialMenu(!this.materialOpen);
+  }
+
+  showMaterialMenu(open) {
+    if (!this.materialMenu) return;
+    this.materialOpen = open;
+    this.materialMenu.hidden = !open;
+    this.material.setAttribute('aria-expanded', open ? 'true' : 'false');
   }
 
   setHint(text) {

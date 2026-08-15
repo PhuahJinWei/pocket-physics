@@ -1,7 +1,7 @@
 // Wiring: viewport -> box size, input -> gravity, frame loop, adaptive quality.
 
 import { CONFIG } from './config.js';
-import { MaterialSet } from './materials.js';
+import { MaterialSet, MATERIALS } from './materials.js';
 import { Renderer } from './renderer.js';
 import { GravityInput } from './gravity.js';
 import { PokeInput } from './poke.js';
@@ -120,27 +120,34 @@ function reset() {
  * material being seen for the first time has to be sized and filled here,
  * since layout() only ever ran for whichever one was current at load.
  */
-function switchMaterial() {
-  // Asked before advancing, so it is about the material we are moving to.
-  const fresh = materials.isFresh(materials.nextId);
-  sand = materials.next();
+function selectMaterial(id) {
+  if (id === materials.id) return;
+  // Asked before selecting, because reading `current` is what builds it.
+  const fresh = materials.isFresh(id);
+  if (!materials.select(id)) return;
+  sand = materials.current;
   gravity.zBias = sand.zBias;
   radius = grainRadius(viewWidth, viewHeight);
   sand.configure(viewWidth, viewHeight, radius);
   if (fresh || sand.n === 0) sand.fill(targetCount());
   else sand.clampToBounds();
-  hud.setMaterial(materials.label);
+  hud.setMaterial(materials.id, materials.label);
   hud.setHint(HINT);
+}
+
+/** Keyboard shortcut: step to the next material in the registry. */
+function switchMaterial() {
+  selectMaterial(materials.nextId);
 }
 
 layout(true);
 gravity.zBias = sand.zBias;
-hud.setMaterial(materials.label);
+hud.setMaterials(MATERIALS, materials.id);
 
 // ---------------------------------------------------------------- input setup
 
 gravity.onShake = (strength) => sand.splash(strength);
-hud.onMaterial = switchMaterial;
+hud.onMaterial = selectMaterial;
 
 hud.onStick = (x, y, active) => {
   gravity.stick.x = x;
@@ -177,6 +184,9 @@ poke.onFirstTouch = () => {
 // WASD is reserved for tilting, so stats sits on backquote rather than D.
 window.addEventListener('keydown', (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
+  // While the material list is open the keyboard belongs to it — otherwise
+  // arrowing through the options also tilts the box, and space splashes it.
+  if (hud.materialOpen) return;
   gravity.setKey(e.code, true);
   // Before the switch: the movement keys fall through to `default` and would
   // otherwise never get here.

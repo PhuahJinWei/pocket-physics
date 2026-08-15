@@ -80,15 +80,29 @@ html, body {
 }
 #hint.faded { opacity: 0; }
 
-/* Material switch. Sits opposite the stats panel and stays put — this is the
+/* Material picker. Sits opposite the stats panel and stays put — this is the
    one control that has to be reachable on a phone, where there is no key to
-   press. #ui ignores pointers, so it has to opt back in. */
-#material {
+   press. #ui ignores pointers, so it has to opt back in.
+
+   The menu is built from the registry in materials.js, so it grows on its own
+   as materials are added; nothing here is per-material. */
+#material-picker {
   position: absolute;
   top: calc(12px + env(safe-area-inset-top));
   right: calc(12px + env(safe-area-inset-right));
   pointer-events: auto;
-  min-width: 74px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  min-width: 132px;
+}
+
+#material {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   padding: 8px 14px;
   border: 1px solid var(--edge);
   border-radius: 999px;
@@ -102,13 +116,85 @@ html, body {
   -webkit-tap-highlight-color: transparent;
   transition: color 180ms ease, border-color 180ms ease;
 }
+/* Caret, so the pill reads as something that opens rather than a label. */
+#material::after {
+  content: "";
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid currentColor;
+  opacity: 0.7;
+  transition: transform 180ms ease;
+}
+#material[aria-expanded="true"]::after { transform: rotate(180deg); }
 #material:hover,
-#material:focus-visible {
-  color: var(--bright, #f0e4cc);
+#material:focus-visible,
+#material[aria-expanded="true"] {
+  color: var(--ink);
   border-color: rgba(230, 205, 160, 0.36);
   outline: none;
 }
-#material:active { transform: scale(0.96); }
+#material:active { transform: scale(0.98); }
+
+#material-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 5px;
+  border: 1px solid var(--edge);
+  border-radius: 14px;
+  background: var(--panel);
+  backdrop-filter: blur(8px);
+}
+#material-menu[hidden] { display: none; }
+
+.material-option {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 140ms ease, color 140ms ease;
+}
+.material-option:hover,
+.material-option:focus-visible {
+  background: rgba(226, 213, 189, 0.09);
+  color: var(--ink);
+  outline: none;
+}
+.material-option[aria-selected="true"] { color: var(--ink); }
+
+.material-swatch {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
+}
+/* Tick only on the current one, and it holds its column either way so the
+   labels do not shuffle sideways as the selection moves. */
+.material-option::after {
+  content: "";
+  margin-left: auto;
+  width: 5px;
+  height: 9px;
+  border: solid currentColor;
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg) translate(-1px, -1px);
+  opacity: 0;
+}
+.material-option[aria-selected="true"]::after { opacity: 0.85; }
 
 #stats {
   position: absolute;

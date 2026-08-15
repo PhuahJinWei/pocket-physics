@@ -46,7 +46,7 @@ python tools/bundle.py
 | Gravity        | tilt the device           | arrow keys / WASD              |
 | Push the sand  | touch and drag (multi-touch) | click and drag              |
 | Splash         | shake                     | space                          |
-| Material       | tap the Sand/Water pill   | `M`                            |
+| Material       | tap the pill, pick one    | pill, or `M` to cycle          |
 | Reset the bed  | —                         | `R`                            |
 | Stats panel    | —                         | `` ` ``                        |
 | Tilt pad       | shown automatically       | `J`                            |
@@ -80,7 +80,9 @@ config.js      every tunable, in one place
 ```
 
 **Materials.** Sand and water are separate solvers behind one interface
-(`materials.js` documents it in full). They share the spatial hash, the fixed
+(`materials.js` documents it in full). Adding one is a single entry in the
+`MATERIALS` registry: the picker builds itself from that list, so a new material
+appears in the UI with its swatch and needs no markup, styling or wiring. They share the spatial hash, the fixed
 timestep, the tilt input, the shake pulse and the box; they share nothing else,
 because water is not sand with the friction turned off. A Coulomb contact solver
 with `mu = 0` is a *frictionless granular gas* — it resists penetration and
