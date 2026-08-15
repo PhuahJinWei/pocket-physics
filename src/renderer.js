@@ -1,13 +1,13 @@
-// WebGL point-sprite renderer. One interleaved buffer, two draw calls per
-// frame (halo then beads). Prefers a WebGL2 context but the shaders are ES 1.00
-// so a WebGL1 fallback is identical in output.
+// WebGL point-sprite renderer: one interleaved buffer, one draw call. Prefers
+// a WebGL2 context but the shaders are ES 1.00 so a WebGL1 fallback is
+// identical in output.
 //
 // Grains are packed back-to-front (a 32-bucket counting sort on z), so nearer
 // beads paint over deeper ones and no depth buffer is needed — point sprites
 // with blending and a depth buffer fight over the alpha edges anyway.
 
 import { CONFIG } from './config.js';
-import { VERTEX_SHADER, FRAGMENT_SHADER } from './shaders.js';
+import { VERTEX_SHADER, buildFragmentShader } from './shaders.js';
 
 const FLOATS_PER_GRAIN = 7; // x, y, z, light, speed, sizeJitter, hueJitter
 const STRIDE = FLOATS_PER_GRAIN * 4;
@@ -33,6 +33,7 @@ export class Renderer {
     // Parallax offset for the projection eye, in CSS px; set from the tilt.
     this.eyeX = 0;
     this.eyeY = 0;
+    this.t0 = performance.now();
     this.contextLost = false;
 
     const opts = {
@@ -67,7 +68,7 @@ export class Renderer {
 
   initGL() {
     const gl = this.gl;
-    this.program = buildProgram(gl, VERTEX_SHADER, FRAGMENT_SHADER);
+    this.program = buildProgram(gl, VERTEX_SHADER, buildFragmentShader(CONFIG.render.speckCount));
     gl.useProgram(this.program);
 
     this.attrib = {
@@ -85,9 +86,15 @@ export class Renderer {
       depthDim: gl.getUniformLocation(this.program, 'uDepthDim'),
       deep: gl.getUniformLocation(this.program, 'uDeep'),
       mid: gl.getUniformLocation(this.program, 'uMid'),
-      ice: gl.getUniformLocation(this.program, 'uIce'),
-      mode: gl.getUniformLocation(this.program, 'uMode'),
-      glow: gl.getUniformLocation(this.program, 'uGlow'),
+      lit: gl.getUniformLocation(this.program, 'uLit'),
+      patchScale: gl.getUniformLocation(this.program, 'uPatchScale'),
+      patchAmp: gl.getUniformLocation(this.program, 'uPatchAmp'),
+      spread: gl.getUniformLocation(this.program, 'uSpread'),
+      speck: gl.getUniformLocation(this.program, 'uSpeck'),
+      vary: gl.getUniformLocation(this.program, 'uVary'),
+      glint: gl.getUniformLocation(this.program, 'uGlint'),
+      glintRate: gl.getUniformLocation(this.program, 'uGlintRate'),
+      time: gl.getUniformLocation(this.program, 'uTime'),
     };
 
     this.buffer = gl.createBuffer();
@@ -106,9 +113,17 @@ export class Renderer {
     gl.disable(gl.DEPTH_TEST);
     gl.enable(gl.BLEND);
 
-    gl.uniform3fv(this.uniform.deep, CONFIG.render.deep);
-    gl.uniform3fv(this.uniform.mid, CONFIG.render.mid);
-    gl.uniform3fv(this.uniform.ice, CONFIG.render.ice);
+    const r = CONFIG.render;
+    gl.uniform1f(this.uniform.spread, r.speckSpread);
+    gl.uniform1f(this.uniform.speck, r.speckRadius);
+    gl.uniform1f(this.uniform.vary, r.speckVariation);
+    gl.uniform1f(this.uniform.patchScale, r.patchScale);
+    gl.uniform1f(this.uniform.patchAmp, r.patchAmp);
+    gl.uniform1f(this.uniform.glint, r.glintStrength);
+    gl.uniform1f(this.uniform.glintRate, r.glintRate);
+    gl.uniform3fv(this.uniform.deep, r.deep);
+    gl.uniform3fv(this.uniform.mid, r.mid);
+    gl.uniform3fv(this.uniform.lit, r.lit);
   }
 
   /** Returns true when the backing store changed size. */
@@ -180,23 +195,17 @@ export class Renderer {
 
     const px = sand.diameter * this.dpr;
     gl.uniform2f(this.uniform.viewport, this.width, this.height);
+    gl.uniform1f(this.uniform.time, (performance.now() - this.t0) * 0.001);
     gl.uniform1f(this.uniform.speedBoost, 0.35);
     gl.uniform1f(this.uniform.focal, CONFIG.render.focal * Math.min(this.width, this.height));
     gl.uniform2f(this.uniform.eye, this.width * 0.5 + this.eyeX, this.height * 0.5 + this.eyeY);
     gl.uniform1f(this.uniform.depthRange, sand.depth);
     gl.uniform1f(this.uniform.depthDim, CONFIG.render.depthDim);
 
-    // Halo pass: additive, premultiplied.
-    gl.blendFunc(gl.ONE, gl.ONE);
-    gl.uniform1f(this.uniform.mode, 0);
-    gl.uniform1f(this.uniform.glow, CONFIG.render.glowStrength);
-    gl.uniform1f(this.uniform.pointSize, px * CONFIG.render.glowSize);
-    gl.drawArrays(gl.POINTS, 0, n);
-
-    // Bead pass: straight alpha over the halo, back-to-front.
+    // Single grain pass, back-to-front. No additive halo: real sand does not
+    // glow, and the crevices between specks are supposed to be dark.
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-    gl.uniform1f(this.uniform.mode, 1);
-    gl.uniform1f(this.uniform.pointSize, px * CONFIG.render.beadSize);
+    gl.uniform1f(this.uniform.pointSize, px * CONFIG.render.clusterSize);
     gl.drawArrays(gl.POINTS, 0, n);
   }
 }

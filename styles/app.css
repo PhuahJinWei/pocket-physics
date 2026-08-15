@@ -2,10 +2,10 @@
    showing and hiding never triggers a layout fight over 100vh. */
 
 :root {
-  --ink: #dceaff;
-  --dim: rgba(190, 214, 255, 0.55);
-  --panel: rgba(8, 16, 34, 0.78);
-  --edge: rgba(120, 170, 255, 0.18);
+  --ink: #e8e0d0;
+  --dim: rgba(226, 213, 189, 0.55);
+  --panel: rgba(24, 20, 15, 0.78);
+  --edge: rgba(214, 190, 150, 0.16);
   color-scheme: dark;
 }
 
@@ -16,7 +16,7 @@ html, body {
   padding: 0;
   height: 100%;
   overflow: hidden;
-  background: #03060d;
+  background: #050403;
   color: var(--ink);
   font: 500 13px/1.45 ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   overscroll-behavior: none;
@@ -47,14 +47,14 @@ html, body {
   inset: 0;
   background:
     radial-gradient(125% 85% at 50% 45%, transparent 62%, rgba(0, 0, 0, 0.38) 100%),
-    linear-gradient(to bottom, rgba(80, 140, 255, 0.05), transparent 22%);
+    linear-gradient(to bottom, rgba(255, 226, 170, 0.04), transparent 22%);
   mix-blend-mode: multiply;
 }
 #vignette::after {
   content: "";
   position: absolute;
   inset: 0;
-  box-shadow: inset 0 0 1px rgba(150, 200, 255, 0.22);
+  box-shadow: inset 0 0 1px rgba(230, 205, 160, 0.2);
   mix-blend-mode: screen;
 }
 
@@ -107,7 +107,7 @@ html, body {
   align-items: center;
   justify-content: center;
   gap: 14px;
-  background: rgba(3, 6, 13, 0.72);
+  background: rgba(5, 4, 3, 0.72);
   backdrop-filter: blur(3px);
   pointer-events: auto;
 }
@@ -115,15 +115,15 @@ html, body {
 
 #gate-button {
   padding: 14px 26px;
-  border: 1px solid rgba(140, 190, 255, 0.4);
+  border: 1px solid rgba(224, 194, 140, 0.4);
   border-radius: 999px;
-  background: linear-gradient(180deg, rgba(30, 90, 200, 0.55), rgba(12, 34, 90, 0.55));
-  color: #eaf3ff;
+  background: linear-gradient(180deg, rgba(160, 120, 60, 0.55), rgba(80, 58, 28, 0.55));
+  color: #f6eedd;
   font: inherit;
   font-size: 15px;
   letter-spacing: 0.03em;
   cursor: pointer;
-  box-shadow: 0 0 32px rgba(60, 130, 255, 0.25);
+  box-shadow: 0 0 32px rgba(220, 170, 90, 0.22);
 }
 #gate-button:disabled { opacity: 0.5; }
 #gate-note {
@@ -145,7 +145,7 @@ html, body {
   display: none;
   border: 1px solid var(--edge);
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(20, 40, 80, 0.5), rgba(6, 12, 26, 0.35));
+  background: radial-gradient(circle, rgba(66, 52, 32, 0.5), rgba(20, 16, 10, 0.35));
   pointer-events: auto;
   touch-action: none;
 }
@@ -158,8 +158,8 @@ html, body {
   height: 42px;
   margin: -21px 0 0 -21px;
   border-radius: 50%;
-  background: radial-gradient(circle at 35% 30%, #cfe6ff, #2f6fd0 60%, #16305e);
-  box-shadow: 0 0 18px rgba(80, 150, 255, 0.5);
+  background: radial-gradient(circle at 35% 30%, #f2e3c2, #b98a45 60%, #5e421e);
+  box-shadow: 0 0 18px rgba(230, 180, 100, 0.45);
   transition: transform 80ms ease-out;
 }
 

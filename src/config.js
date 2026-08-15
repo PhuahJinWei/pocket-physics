@@ -109,20 +109,39 @@ export const CONFIG = {
 
   render: {
     maxDpr: 2,
-    // Sprite sizes as multiples of grain diameter.
-    beadSize: 1.15,
-    glowSize: 3.2,
-    glowStrength: 0.1,
+    // Sprite sizes as multiples of grain diameter. The grain sprite draws a
+    // cluster of small matte specks rather than one ball, which is what makes
+    // the sand look finer than the physics actually is — visual grain size is
+    // speckRadius * clusterSize * diameter, not the physics diameter.
+    clusterSize: 1.35,
+    // Specks per grain, how far they scatter across the sprite, and their
+    // radius in sprite units. Spread + radius must stay under 1.0 or specks get
+    // clipped by the sprite's edge.
+    speckCount: 9,
+    speckSpread: 1.2,
+    speckRadius: 0.28,
+    // Brightness scatter between specks; the grain-to-grain variation that
+    // stops a bed reading as one smooth surface.
+    speckVariation: 0.3,
+    // Spatial patchiness: real sand varies in correlated patches (minerals,
+    // moisture), not grain by grain. Scale is the patch size in CSS px.
+    patchScale: 52,
+    patchAmp: 0.09,
+    // Sand glints as facets catch the light. Brief flashes on a few specks at
+    // a time — cheap, and it does a lot of the work of selling the material.
+    glintStrength: 0.4,
+    glintRate: 1.9,
     // Perspective: focal length as a multiple of min(viewport w, h). Smaller =
     // more dramatic depth. Parallax shifts the eye against tilt, in px.
     focal: 1.4,
     depthDim: 0.45,
     parallax: 40,
-    background: [0.008, 0.016, 0.035],
-    // Deep (buried) -> mid -> ice (surface). Fast grains blow out to white.
-    deep: [0.035, 0.11, 0.42],
-    mid: [0.1, 0.45, 0.96],
-    ice: [0.68, 0.9, 1.0],
+    background: [0.02, 0.017, 0.014],
+    // Dry quartz: crevice-shadow brown for buried grains, tan through the
+    // body, pale warm cream where the surface catches the light.
+    deep: [0.21, 0.16, 0.115],
+    mid: [0.55, 0.44, 0.30],
+    lit: [0.91, 0.83, 0.66],
   },
 
   input: {

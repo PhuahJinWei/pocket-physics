@@ -1,9 +1,10 @@
 # Silt
 
-Thousands of glowing grains in a shallow 3D box behind the glass, pouring,
-piling and splashing as you tilt your phone. A recreation of
-[this ESP32-S3 demo](https://www.instagram.com/p/DbtqKz3jssZ/), built for
-phones first and desktop second.
+A shallow 3D box of sand behind the glass: thousands of simulated grains that
+pour, pile and splash as you tilt your phone. Started as a recreation of
+[this ESP32-S3 demo](https://www.instagram.com/p/DbtqKz3jssZ/) and later steered
+toward realism — warm quartz rather than the reference's glowing blue. Built for
+phones first, desktop second.
 
 No build step, no dependencies. Plain ES modules and WebGL — open `index.html`
 from any static server and it runs.
@@ -135,6 +136,26 @@ The accelerometer's sign convention differs between iOS and Android, and
 guessing wrong inverts every push, so it is calibrated at runtime by comparing
 the reading against orientation-derived gravity while the device is near still.
 
+**The grain look.** Each physics grain is one point sprite, and the sprite draws
+a small *cluster* of matte specks rather than a single lit ball. That decouples
+visual grain size from physics grain size: the sand renders about three times
+finer than the solver's grains, for free. Making the physics that fine instead
+would roughly quintuple simulation cost (count scales with 1/r²); the cluster
+costs a few ALU per fragment and no extra geometry.
+
+Nearly all of the realism is **micro-relief**: every speck gets a gentle fake
+normal lit by one global light — lit crest up-left, shade down-right — and the
+webbing between specks falls into crevice shadow. Thousands of tiny highlights
+and shadows all agreeing about the light direction is what reads as sand;
+per-speck random brightness alone reads as static. Variation is layered on top
+at two scales: a little per-speck mineral scatter, and slow value-noise patches
+over world position, because real sand varies in patches, not grain by grain.
+Dry-sand glints — brief, warm, sparse — finish the material.
+
+There is no glow pass and nothing additive: real sand does not emit. The gaps a
+cluster leaves show the grain drawn behind, which is deeper and darker — free
+crevices.
+
 **The depth look.** Real Z plus cheap cues:
 
 - a pinhole projection in the vertex shader — deeper grains shrink and converge
@@ -147,13 +168,15 @@ the reading against orientation-derived gravity while the device is near still.
 - *light seeping down* — each grain takes the brightest value from neighbours
   above it, attenuated, one layer per frame: a real depth gradient through the
   bed instead of a flat dark slab.
-- *speed* — fast grains blow out toward white, which is what makes a splash
+- *speed* — airborne grains pale toward dust, which is what makes a splash
   read.
 
-Rendering is one interleaved buffer and two draw calls: a wide additive halo,
-then the beads over the top. The bead's spherical look is a fake normal
-reconstructed from `gl_PointCoord` and lit per fragment, so a flat point sprite
-reads as a little glass ball.
+This bed-level shading is the shading that earns its place. It is computed in
+the sim, costs nothing extra (it rides along in the contact scan the solver
+already does), and it is what makes the pile read as a solid 3D mass rather than
+a field of dots — which matters *more*, not less, as the grains get finer.
+
+Rendering is one interleaved buffer and a single draw call, back-to-front.
 
 ## Tuning it
 
@@ -170,7 +193,9 @@ Everything lives in [`src/config.js`](src/config.js). The knobs worth knowing:
 | `bed.fill` (again) | pile depth is the solver's hardest constraint — deeper beds sink |
 | `tuner.enabled` / `hiMs` | the low-end safety net; off means the look never changes, at any cost |
 | `render.focal` / `depthDim` / `parallax` | how dramatic the depth looks |
-| `render.deep` / `mid` / `ice` | the colour ramp from buried to surface |
+| `render.speckCount` / `speckRadius` | how fine the sand looks — independent of physics cost |
+| `render.glintStrength` / `glintRate` | sparkle |
+| `render.deep` / `mid` / `lit` | the colour ramp from crevice to sunlit |
 
 The three notes above are the ones that cost real debugging time, and each is
 commented where it lives. One more worth knowing: **bed depth is the binding
