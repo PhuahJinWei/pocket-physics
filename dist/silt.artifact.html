@@ -82,6 +82,36 @@ html, body {
 }
 #hint.faded { opacity: 0; }
 
+/* Material switch. Sits opposite the stats panel and stays put — this is the
+   one control that has to be reachable on a phone, where there is no key to
+   press. #ui ignores pointers, so it has to opt back in. */
+#material {
+  position: absolute;
+  top: calc(12px + env(safe-area-inset-top));
+  right: calc(12px + env(safe-area-inset-right));
+  pointer-events: auto;
+  min-width: 74px;
+  padding: 8px 14px;
+  border: 1px solid var(--edge);
+  border-radius: 999px;
+  background: var(--panel);
+  backdrop-filter: blur(8px);
+  color: var(--dim);
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: color 180ms ease, border-color 180ms ease;
+}
+#material:hover,
+#material:focus-visible {
+  color: var(--bright, #f0e4cc);
+  border-color: rgba(230, 205, 160, 0.36);
+  outline: none;
+}
+#material:active { transform: scale(0.96); }
+
 #stats {
   position: absolute;
   top: calc(12px + env(safe-area-inset-top));
@@ -188,6 +218,7 @@ html, body {
 
 <div id="ui">
   <div id="vignette"></div>
+  <button id="material" type="button" aria-label="Change material">Sand</button>
   <div id="hint"></div>
   <div id="stats"></div>
 
@@ -471,6 +502,113 @@ const CONFIG = {
     // Coarsest allowed, as a fraction of the designed grain count.
     minScale: 0.22,
   },
+
+  // --------------------------------------------------------------- water
+  // Position Based Fluids. See fluid.js for why this is a separate solver
+  // rather than the granular one with friction set to zero.
+  fluid: {
+    // Water particles are far coarser than sand grains, and deliberately so:
+    // sand needs a high count because every grain is visible, while water is
+    // drawn as a surface and hides its particles entirely. Coarser particles
+    // mean the same volume of liquid for a quarter of the work.
+    divisor: 62,
+    minRadius: 5,
+    maxRadius: 15,
+    depthLayers: 4,
+    fill: 0.24,
+    minParticles: 200,
+    maxParticles: 6000,
+
+    // Kernel support as a multiple of rest spacing. 2.0 gives ~30 neighbours,
+    // which is the usual working point: fewer and the density estimate is too
+    // noisy to hold a flat surface, more and the cost climbs as the cube.
+    smoothingRatio: 2.0,
+    // Poly6 for density, Spiky for its gradient, both normalised to W(0)=1.
+    // Their ratio is the only constant that has to survive that normalisation:
+    // (45/pi h^4) / (315/64 pi h^3) = 2880/315/h, which is GRAD_K in fluid.js.
+    solverIterations: 4,
+    // Constraint force mixing. Stops lambda blowing up where a particle has
+    // almost no neighbours (a lone drop of spray) and the denominator vanishes.
+    relaxation: 0.0008,
+    // Artificial pressure: strength, and the distance it peaks at as a
+    // fraction of the smoothing radius. Counteracts the tensile instability
+    // that otherwise pulls surface particles into beads and strands.
+    surfacePressure: 0.0004,
+    surfaceDistance: 0.2,
+    // Ceilings, both as fractions of rest spacing. A single solver iteration
+    // may not shove a particle further than maxCorrection, and a substep may
+    // not move one further than maxTravel — past a cell width the neighbour
+    // list it was solved against is no longer the one it lands in.
+    maxCorrection: 0.35,
+    maxTravel: 0.9,
+    // Room above the measured mean of ~30. Overflowing silently would drop
+    // real neighbours and read as a density hole.
+    maxNeighbours: 64,
+    // Closest two particles may sit, as a fraction of rest spacing, and how
+    // much of any overlap is resolved per substep. Well below rest, so normal
+    // compression never touches it — this exists only to break up the welded
+    // beads described in Fluid.separate, which the density constraint cannot.
+    minSeparation: 0.62,
+    separationStiffness: 0.8,
+
+    // XSPH velocity smoothing. This is the whole of the viscosity model, and
+    // it is what makes water pour rather than shatter.
+    viscosity: 0.12,
+    drag: 0.05,
+    fixedHz: 60,
+    maxSubsteps: 2,
+    foamSmoothing: 9,
+  },
+
+  water: {
+    // Sprite size as a multiple of particle diameter. Generous on purpose: the
+    // blobs have to overlap heavily or the field is lumpy and the surface
+    // inherits the lumps.
+    // Well above the 2.0 that would merely make blobs touch. Particles at rest
+    // sit on a lattice, and a kernel only as wide as the spacing leaves a
+    // ripple at exactly that frequency — the body came out visibly striped.
+    // Wide blobs average the lattice away.
+    blobSize: 3.6,
+    // Per-particle peak contribution to the thickness field. Moves inversely
+    // with blobSize (wider blobs overlap more), and tuned so a full body sits
+    // below saturation — once the field clips at 1.0 its gradient goes flat and
+    // the surface loses every ripple.
+    gain: 0.058,
+    // Fraction of the canvas the field is rendered at. Half res is cheaper and
+    // doubles as the blur that turns blobs into a surface.
+    fieldScale: 0.5,
+    // Thickness at which water starts, and the width of the soft edge. Low on
+    // purpose: a higher threshold pulls the level set inward from the glass and
+    // rounds off the corners, which reads as a block of gel rather than a tank
+    // of water. Low, and the water meets the wall square.
+    surface: 0.055,
+    soft: 0.055,
+    // Beer-Lambert absorption: how fast colour deepens with thickness.
+    absorb: 4.2,
+    // How strongly the thickness gradient tilts the surface normal.
+    relief: 7.0,
+    // Fraction of that relief a *calm* body keeps, and how fast agitation
+    // restores the rest. The particle lattice leaves a permanent fine ripple
+    // in the field; shaded at full relief it reads as wrinkled plastic, so a
+    // still surface is held nearly glassy and only moving water ripples.
+    calmRipple: 0.1,
+    rippleGain: 2.5,
+    // Coverage: alpha at the silhouette edge, and the Beer-Lambert rate at
+    // which thickness turns opaque. Opacity is the strongest "gel" signal —
+    // real water lets the tank show through wherever it runs thin.
+    alphaMin: 0.35,
+    opacify: 5.0,
+    specular: 0.9,
+    fresnel: 0.10,
+    // Foam wants to be rare. Keyed on speed, it fired across the whole crest of
+    // every wave and turned the water white; it should only catch the fastest
+    // thin edges, so the bias sits well up the speed range.
+    foamAmount: 1.4,
+    foamBias: 0.42,
+    shallow: [0.32, 0.62, 0.68],
+    deep: [0.03, 0.16, 0.30],
+    foam: [0.90, 0.95, 0.97],
+  },
 };
 
 // ---- src/grid.js ----
@@ -652,6 +790,11 @@ function isIOS() {
 
 class Grains {
   constructor(capacity) {
+    this.kind = 'sand';
+    this.label = 'Sand';
+    // Lean the bed against the back wall: a granular pile holds whatever slope
+    // it is given, and the lean is a strong 3D cue on a desktop with no sensor.
+    this.zBias = CONFIG.input.zBias;
     this.capacity = capacity;
     this.n = 0;
 
@@ -800,6 +943,31 @@ class Grains {
     this.active = new Int32Array(cap);
     this.contactCapacity = cap;
     this.ensureHash(cap);
+  }
+
+  /**
+   * Sand wants the finest grain the device can hold: every grain is visible,
+   * so grain size *is* the look. Performance headroom buys a finer grain, never
+   * a deeper bed — count always fills the same volume, so the amount of sand
+   * looks constant per device. Count goes with 1/r^3, hence the cube root.
+   */
+  preferredRadius(width, height, qualityScale = 1) {
+    const g = CONFIG.grain;
+    const base = clamp(Math.min(width, height) / g.divisor, g.minRadius, g.maxRadius);
+    return clamp(base / Math.cbrt(qualityScale), g.minRadius, g.maxRadius);
+  }
+
+  /**
+   * On a large screen the wanted radius exceeds maxRadius and gets pinned
+   * there — and since the tuner coarsens by *growing* grains, pinning leaves it
+   * with no lever at all: it drops quality, nothing changes, and the device
+   * just runs slow forever. When that happens, trade bed depth instead.
+   */
+  targetCount(width, height, qualityScale = 1) {
+    const ideal = this.idealCount();
+    const g = CONFIG.grain;
+    const pinned = Math.min(width, height) / g.divisor >= g.maxRadius;
+    return pinned ? Math.round(ideal * Math.min(1, qualityScale)) : ideal;
   }
 
   /** Grain count that fills `CONFIG.bed.fill` of the front view when settled. */
@@ -1647,6 +1815,822 @@ class Grains {
   }
 }
 
+// ---- src/fluid.js ----
+// Water: Position Based Fluids (Macklin & Müller, 2013).
+//
+// Why not reuse the granular solver with friction turned off: a Coulomb contact
+// solver with mu = 0 is not a liquid, it is a frictionless granular gas. It
+// resists penetration but nothing else, so it stays compressible, bounces, and
+// never develops the pressure gradient that makes water level itself out. A
+// fluid needs a *density* constraint instead of a non-penetration one — every
+// particle wants the same number of neighbours around it, which is what makes
+// it flow, fill corners, and hold a flat surface.
+//
+// PBF solves that constraint the same way the sand solves contacts: predict,
+// project, then read the velocity back out of the position change. So the
+// expensive parts of the project carry straight over — the spatial hash, the
+// fixed timestep, the tilt input, the shake pulse. What is different is the
+// constraint itself and everything downstream of it.
+//
+// The one piece of real subtlety here is the boundary correction. This box is
+// only a few particles deep, so most of the water is within a smoothing radius
+// of the front or back glass. A particle there sees fewer neighbours than one
+// in open fluid, reads as under-dense, and gets sucked into the wall — the
+// whole body would creep into the glass and stick. `wallDensity` below adds
+// back exactly the mass the missing half-space would have contributed.
+
+
+// Poly6 is used for density and Spiky for its gradient (Poly6's gradient
+// vanishes at r=0, so particles on top of each other would never separate).
+// Both are written normalised to W(0) = 1, which drops h^9-sized constants out
+// of the arithmetic; the only thing that has to survive is their *ratio*, and
+// that is this number. See CONFIG.fluid for the derivation.
+const GRAD_K = 2880 / 315;
+
+// Scratch for the coincident-particle fallback. Module level so the inner
+// loops stay allocation-free.
+const SEP = new Float64Array(3);
+
+/**
+ * A separation direction for a pair that has collapsed onto the same point,
+ * where the geometry offers none. Derived from the two indices, so it is the
+ * same every frame (a random one would jitter the pair in place), and negated
+ * for the partner so both halves of the pair push the same way apart.
+ */
+function scatterDir(i, j) {
+  const lo = i < j ? i : j;
+  const hi = i < j ? j : i;
+  let h = (Math.imul(lo, 73856093) ^ Math.imul(hi, 19349663)) >>> 0;
+  h = (h ^ (h >>> 13)) >>> 0;
+  const uz = ((h & 2047) / 2047) * 2 - 1;
+  const phi = (((h >>> 11) & 2047) / 2047) * 6.283185307179586;
+  const s = Math.sqrt(Math.max(0, 1 - uz * uz));
+  const sign = i < j ? 1 : -1;
+  SEP[0] = s * Math.cos(phi) * sign;
+  SEP[1] = s * Math.sin(phi) * sign;
+  SEP[2] = uz * sign;
+}
+
+class Fluid {
+  constructor(capacity) {
+    this.kind = 'water';
+    this.label = 'Water';
+    // No into-screen lean. Sand uses one to pile against the back wall, but a
+    // liquid answers a tilted gravity with a tilted surface: measured, the
+    // sand's 0.45 put the back of the water 22px higher than the front, which
+    // perspective then widened into a visible shelf. Water fills the box on its
+    // own, so it does not need the cue.
+    this.zBias = 0;
+    this.capacity = capacity;
+    this.n = 0;
+
+    const f32 = () => new Float32Array(capacity);
+    // Committed state.
+    this.x = f32();
+    this.y = f32();
+    this.z = f32();
+    this.vx = f32();
+    this.vy = f32();
+    this.vz = f32();
+    // Predicted positions the constraint is solved against.
+    this.px = f32();
+    this.py = f32();
+    this.pz = f32();
+    // Per-iteration scratch.
+    this.lambda = f32();
+    this.dx = f32();
+    this.dy = f32();
+    this.dz = f32();
+    this.density = f32();
+    // Velocity smoothing target (XSPH) — written in one pass, applied in the
+    // next, so particles all see the same velocity field.
+    this.ax = f32();
+    this.ay = f32();
+    this.az = f32();
+    // Shading channel: normalised speed, which the renderer turns into foam.
+    this.speed01 = f32();
+
+    this.grid = new Grid(capacity);
+    this.random = makeRandom(0x51F7);
+
+    // Flat neighbour list, rebuilt once per substep and reused by every solver
+    // iteration. Gathering is the expensive half, and it does not change while
+    // the positions are only being nudged.
+    this.maxNeighbours = CONFIG.fluid.maxNeighbours;
+    this.nbr = new Int32Array(0);
+    this.nbrCount = new Int32Array(capacity);
+
+    this.radius = 8;
+    this.diameter = 16;
+    this.spacing = 16;
+    this.smoothing = 32;
+    this.restDensity = 1;
+    this.depth = 32;
+    this.bounds = { x0: 0, y0: 0, x1: 1, y1: 1 };
+    this.inner = { x0: 0, y0: 0, z0: 0, x1: 1, y1: 1, z1: 1 };
+    this.gravityMagnitude = 4000;
+    this.speedNorm = 600;
+    this.pokeRadius = 60;
+    // Unit gravity from the last step, so a splash throws away from whichever
+    // wall the water is currently lying against.
+    this.gdx = 0;
+    this.gdy = 1;
+    this.gdz = 0;
+
+    // Shake pulse, identical in shape to the sand's: an acceleration added to
+    // gravity for a moment rather than a velocity handed to each particle.
+    this.kickX = 0;
+    this.kickY = 0;
+    this.kickZ = 0;
+    this.kickTime = 0;
+
+    this.substeps = 1;
+    this.iterations = CONFIG.fluid.solverIterations;
+    this.contactCount = 0;
+    this._carry = 0;
+  }
+
+  /**
+   * Water picks a coarser particle than sand on purpose. Sand needs many
+   * particles because every one of them is visible; water is drawn as a
+   * surface, so its particles are hidden and can be several times larger for
+   * the same amount of stuff in the box.
+   */
+  preferredRadius(width, height, qualityScale = 1) {
+    const f = CONFIG.fluid;
+    const base = clamp(Math.min(width, height) / f.divisor, f.minRadius, f.maxRadius);
+    return clamp(base / Math.cbrt(qualityScale), f.minRadius, f.maxRadius);
+  }
+
+  configure(width, height, radius) {
+    this.radius = radius;
+    this.diameter = radius * 2;
+    // Rest spacing is one diameter: the particle count and the fill volume are
+    // derived from the same number in idealCount, so the body settles at the
+    // fill level asked for instead of drifting to whatever the solver likes.
+    this.spacing = this.diameter;
+    this.smoothing = this.spacing * CONFIG.fluid.smoothingRatio;
+
+    this.depth = Math.max(
+      this.diameter * 2,
+      Math.min(CONFIG.fluid.depthLayers * this.diameter, Math.min(width, height) * 0.22),
+    );
+    this.bounds = { x0: 0, y0: 0, x1: width, y1: height };
+    this.inner = {
+      x0: radius,
+      y0: radius,
+      z0: radius,
+      x1: Math.max(radius, width - radius),
+      y1: Math.max(radius, height - radius),
+      z1: Math.max(radius, this.depth - radius),
+    };
+    // One cell per smoothing radius, so the 3x3x3 scan is exactly the kernel
+    // support and nothing inside it is missed.
+    this.grid.configure(width, height, this.depth, this.smoothing);
+
+    this.restDensity = latticeDensity(this.spacing, this.smoothing);
+    this.gravityMagnitude = CONFIG.sim.gravityScale * Math.hypot(width, height);
+    this.speedNorm = 0.35 * Math.sqrt(2 * this.gravityMagnitude * height);
+    this.pokeRadius = Math.max(
+      CONFIG.input.pokeRadiusMin,
+      Math.min(width, height) * CONFIG.input.pokeRadiusFrac,
+    );
+  }
+
+  /** Same pinned-radius problem the sand has; same lever. */
+  targetCount(width, height, qualityScale = 1) {
+    const ideal = this.idealCount();
+    const f = CONFIG.fluid;
+    const pinned = Math.min(width, height) / f.divisor >= f.maxRadius;
+    return pinned ? Math.round(ideal * Math.min(1, qualityScale)) : ideal;
+  }
+
+  /** Particle count that fills `CONFIG.fluid.fill` of the front view. */
+  idealCount(fill = CONFIG.fluid.fill) {
+    const { x1, y1 } = this.bounds;
+    const volume = x1 * (fill * y1) * this.depth;
+    const ideal = volume / (this.spacing * this.spacing * this.spacing);
+    return Math.round(clamp(ideal, CONFIG.fluid.minParticles, Math.min(CONFIG.fluid.maxParticles, this.capacity)));
+  }
+
+  ensureNeighbourCapacity(n) {
+    const need = n * this.maxNeighbours;
+    if (this.nbr.length >= need) return;
+    this.nbr = new Int32Array(need);
+  }
+
+  fill(count) {
+    const n = Math.min(count, this.capacity);
+    this.n = n;
+    this.grid.ensureCapacity(n);
+    this.ensureNeighbourCapacity(n);
+    this.kickTime = 0;
+
+    const rand = this.random;
+    const b = this.inner;
+    // Start on a lattice at rest spacing, jittered a little. Starting at rest
+    // spacing matters: dropping water in over-packed hands the solver a large
+    // density error on frame one and it answers with an explosion.
+    const pitch = this.spacing;
+    const perX = Math.max(1, Math.floor((b.x1 - b.x0) / pitch));
+    const perZ = Math.max(1, Math.floor((b.z1 - b.z0) / pitch) + 1);
+    const perLayer = perX * perZ;
+    const rows = Math.ceil(n / perLayer);
+    const surface = b.y1 - rows * pitch;
+
+    for (let i = 0; i < n; i++) {
+      const row = Math.floor(i / perLayer);
+      const rem = i % perLayer;
+      const j = rem % perX;
+      const k = Math.floor(rem / perX);
+      this.x[i] = clamp(b.x0 + (j + 0.5) * pitch + (rand() - 0.5) * pitch * 0.2, b.x0, b.x1);
+      this.y[i] = clamp(surface + row * pitch + (rand() - 0.5) * pitch * 0.2, b.y0, b.y1);
+      this.z[i] = clamp(b.z0 + k * pitch + (rand() - 0.5) * pitch * 0.2, b.z0, b.z1);
+      this.vx[i] = 0;
+      this.vy[i] = 0;
+      this.vz[i] = 0;
+      this.speed01[i] = 0;
+    }
+  }
+
+  setCount(count) {
+    const target = Math.min(Math.max(count, 0), this.capacity);
+    if (target === this.n) return;
+    if (target < this.n) {
+      this.n = target;
+      return;
+    }
+    // Growing: refill rather than sprinkling particles into a settled body,
+    // where they would land inside their neighbours and blow the density
+    // constraint apart.
+    this.fill(target);
+  }
+
+  clampToBounds() {
+    const b = this.inner;
+    for (let i = 0; i < this.n; i++) {
+      this.x[i] = clamp(this.x[i], b.x0, b.x1);
+      this.y[i] = clamp(this.y[i], b.y0, b.y1);
+      this.z[i] = clamp(this.z[i], b.z0, b.z1);
+    }
+  }
+
+  /** Shake: jerk the container, exactly as the sand does. See Grains.splash. */
+  splash(strength) {
+    const rand = this.random;
+    const cfg = CONFIG.sim;
+    const g = this.gravityMagnitude || 1;
+    let ux = -this.gdx;
+    let uy = -this.gdy;
+    let uz = -this.gdz;
+    const lean = (rand() - 0.5) * 2 * cfg.splashLean;
+    const tx = -uy * lean;
+    const ty = ux * lean;
+    ux += tx;
+    uy += ty;
+    const inv = 1 / (Math.hypot(ux, uy, uz) || 1);
+    ux *= inv; uy *= inv; uz *= inv;
+    const a = g * (cfg.splashAccel + cfg.splashGain * Math.max(0, strength - 1));
+    this.kickX = ux * a;
+    this.kickY = uy * a;
+    this.kickZ = uz * a;
+    this.kickTime = cfg.splashDuration;
+  }
+
+  poke(cx, cy, dragX, dragY, dt) {
+    const r = this.pokeRadius;
+    const r2 = r * r;
+    const push = this.gravityMagnitude * CONFIG.input.pokeAccel * dt;
+    const dragScale = CONFIG.input.pokeDrag;
+    const { x, y, vx, vy } = this;
+    for (let i = 0; i < this.n; i++) {
+      const ox = x[i] - cx;
+      const oy = y[i] - cy;
+      const d2 = ox * ox + oy * oy;
+      if (d2 > r2) continue;
+      const d = Math.sqrt(d2) || 1e-4;
+      const falloff = 1 - d / r;
+      const k = (push * falloff) / d;
+      vx[i] += ox * k + dragX * dragScale * falloff;
+      vy[i] += oy * k + dragY * dragScale * falloff;
+    }
+  }
+
+  // ------------------------------------------------------------------ stepping
+
+  step(dtFrame, gx, gy, gz) {
+    const n = this.n;
+    if (n === 0) return;
+    const cfg = CONFIG.fluid;
+
+    const h = 1 / cfg.fixedHz;
+    this._carry += dtFrame;
+    let steps = Math.floor(this._carry / h);
+    if (steps > cfg.maxSubsteps) steps = cfg.maxSubsteps;
+    if (steps < 1) {
+      if (this._carry < h) return;
+      steps = 1;
+    }
+    this._carry -= steps * h;
+    if (this._carry > h * cfg.maxSubsteps) this._carry = 0;
+    this.substeps = steps;
+    this.iterations = cfg.solverIterations;
+
+    const gmag = Math.hypot(gx, gy, gz) || 1;
+    this.gdx = gx / gmag;
+    this.gdy = gy / gmag;
+    this.gdz = gz / gmag;
+
+    for (let s = 0; s < steps; s++) {
+      let ax = gx;
+      let ay = gy;
+      let az = gz;
+      if (this.kickTime > 0) {
+        ax += this.kickX;
+        ay += this.kickY;
+        az += this.kickZ;
+        this.kickTime -= h;
+      }
+      this.predict(h, ax, ay, az);
+      this.grid.build(this.px, this.py, this.pz, n);
+      this.gatherNeighbours();
+      for (let it = 0; it < this.iterations; it++) {
+        this.solveDensity();
+        this.applyCorrection();
+      }
+      this.commit(h);
+      // After commit, so the separation shows up in the next frame's velocity
+      // rather than being read back as a spurious impulse this one.
+      this.separate();
+      this.viscosity();
+    }
+    this.updateShading(dtFrame);
+  }
+
+  predict(h, gx, gy, gz) {
+    const n = this.n;
+    const { x, y, z, px, py, pz, vx, vy, vz } = this;
+    const damp = Math.exp(-CONFIG.fluid.drag * h);
+    for (let i = 0; i < n; i++) {
+      const nvx = (vx[i] + gx * h) * damp;
+      const nvy = (vy[i] + gy * h) * damp;
+      const nvz = (vz[i] + gz * h) * damp;
+      vx[i] = nvx; vy[i] = nvy; vz[i] = nvz;
+      px[i] = x[i] + nvx * h;
+      py[i] = y[i] + nvy * h;
+      pz[i] = z[i] + nvz * h;
+    }
+    this.project(px, py, pz, n);
+  }
+
+  /** Keep predicted positions inside the glass. */
+  project(px, py, pz, n) {
+    const b = this.inner;
+    for (let i = 0; i < n; i++) {
+      if (px[i] < b.x0) px[i] = b.x0; else if (px[i] > b.x1) px[i] = b.x1;
+      if (py[i] < b.y0) py[i] = b.y0; else if (py[i] > b.y1) py[i] = b.y1;
+      if (pz[i] < b.z0) pz[i] = b.z0; else if (pz[i] > b.z1) pz[i] = b.z1;
+    }
+  }
+
+  gatherNeighbours() {
+    const n = this.n;
+    const grid = this.grid;
+    const { px, py, pz, nbr, nbrCount } = this;
+    const cap = this.maxNeighbours;
+    const hh = this.smoothing;
+    const h2 = hh * hh;
+    const cols = grid.cols;
+    const rows = grid.rows;
+    const slabs = grid.slabs;
+    const layer = cols * rows;
+    const start = grid.cellStart;
+    const order = grid.order;
+    const inv = 1 / grid.cellSize;
+    let total = 0;
+
+    for (let i = 0; i < n; i++) {
+      const xi = px[i], yi = py[i], zi = pz[i];
+      let cx = (xi * inv) | 0, cy = (yi * inv) | 0, cz = (zi * inv) | 0;
+      if (cx < 0) cx = 0; else if (cx >= cols) cx = cols - 1;
+      if (cy < 0) cy = 0; else if (cy >= rows) cy = rows - 1;
+      if (cz < 0) cz = 0; else if (cz >= slabs) cz = slabs - 1;
+
+      let count = 0;
+      const base = i * cap;
+      const z0 = cz > 0 ? cz - 1 : 0, z1 = cz < slabs - 1 ? cz + 1 : slabs - 1;
+      const y0 = cy > 0 ? cy - 1 : 0, y1 = cy < rows - 1 ? cy + 1 : rows - 1;
+      const x0 = cx > 0 ? cx - 1 : 0, x1 = cx < cols - 1 ? cx + 1 : cols - 1;
+      for (let bz = z0; bz <= z1; bz++) {
+        for (let by = y0; by <= y1; by++) {
+          const rowBase = bz * layer + by * cols;
+          const from = start[rowBase + x0];
+          const to = start[rowBase + x1 + 1];
+          for (let s = from; s < to; s++) {
+            const j = order[s];
+            if (j === i) continue;
+            const dx = xi - px[j], dy = yi - py[j], dz = zi - pz[j];
+            if (dx * dx + dy * dy + dz * dz >= h2) continue;
+            if (count >= cap) break;
+            nbr[base + count++] = j;
+          }
+          if (count >= cap) break;
+        }
+        if (count >= cap) break;
+      }
+      nbrCount[i] = count;
+      total += count;
+    }
+    this.contactCount = total >> 1;
+  }
+
+  /**
+   * Density, then the Lagrange multiplier that will correct it. Both loops run
+   * over the whole fluid before anything moves (Jacobi, not Gauss-Seidel) —
+   * with a shared constraint like density, solving in place makes the result
+   * depend on particle ordering and the surface ends up visibly striped.
+   */
+  solveDensity() {
+    const n = this.n;
+    const { px, py, pz, nbr, nbrCount, lambda, density } = this;
+    const cap = this.maxNeighbours;
+    const hh = this.smoothing;
+    const inv = 1 / hh;
+    const gradK = GRAD_K * inv;
+    const rho0 = this.restDensity;
+    const eps = CONFIG.fluid.relaxation;
+
+    for (let i = 0; i < n; i++) {
+      const xi = px[i], yi = py[i], zi = pz[i];
+      let rho = 1; // self contribution: W(0) = 1
+      // Gradient with respect to this particle, and the sum of squared
+      // gradients with respect to every neighbour.
+      let gx = 0, gy = 0, gz = 0, sumSq = 0;
+      const base = i * cap;
+      const count = nbrCount[i];
+      for (let k = 0; k < count; k++) {
+        const j = nbr[base + k];
+        const dx = xi - px[j], dy = yi - py[j], dz = zi - pz[j];
+        const r = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (r <= 1e-6 || r >= hh) continue;
+        const q = r * inv;
+        const w = 1 - q * q;
+        rho += w * w * w;
+        // Spiky falls off with distance, so its gradient points *toward* the
+        // neighbour: dW/dr is negative. Dropping that minus sign inverts the
+        // whole solver — over-dense particles pull together instead of pushing
+        // apart, and the fluid collapses to a point.
+        const gm = -(gradK * (1 - q) * (1 - q)) / r;
+        const cx = dx * gm, cy = dy * gm, cz = dz * gm;
+        gx += cx; gy += cy; gz += cz;
+        sumSq += cx * cx + cy * cy + cz * cz;
+      }
+
+      // The glass cuts the kernel short. Add back what the fluid on the other
+      // side would have contributed, or every particle near a wall reads as
+      // under-dense and the body creeps into the glass and sticks there.
+      rho += rho0 * (
+        wallDensity(xi - this.bounds.x0, hh) + wallDensity(this.bounds.x1 - xi, hh) +
+        wallDensity(yi - this.bounds.y0, hh) + wallDensity(this.bounds.y1 - yi, hh) +
+        wallDensity(zi - this.bounds.z0, hh) + wallDensity(this.depth - zi, hh)
+      );
+
+      density[i] = rho;
+      const c = rho / rho0 - 1;
+      if (c <= 0) {
+        // Free surface: let it expand. Clamping here is what stops the surface
+        // being pulled flat and lets waves and spray exist at all.
+        lambda[i] = 0;
+        continue;
+      }
+      sumSq += gx * gx + gy * gy + gz * gz;
+      lambda[i] = -c / (sumSq / (rho0 * rho0) + eps);
+    }
+  }
+
+  applyCorrection() {
+    const n = this.n;
+    const { px, py, pz, nbr, nbrCount, lambda, dx, dy, dz } = this;
+    const cap = this.maxNeighbours;
+    const hh = this.smoothing;
+    const inv = 1 / hh;
+    const gradK = GRAD_K * inv;
+    const rho0 = this.restDensity;
+    const k = CONFIG.fluid.surfacePressure;
+    const dq = CONFIG.fluid.surfaceDistance;
+    const wq = Math.pow(1 - dq * dq, 3);
+
+    for (let i = 0; i < n; i++) {
+      const xi = px[i], yi = py[i], zi = pz[i];
+      const li = lambda[i];
+      let ax = 0, ay = 0, az = 0;
+      const base = i * cap;
+      const count = nbrCount[i];
+      for (let m = 0; m < count; m++) {
+        const j = nbr[base + m];
+        const ox = xi - px[j], oy = yi - py[j], oz = zi - pz[j];
+        const r = Math.sqrt(ox * ox + oy * oy + oz * oz);
+        if (r <= 1e-6 || r >= hh) continue;
+        const q = r * inv;
+        const w = 1 - q * q;
+        // Artificial pressure. Without it particles clump into strands and
+        // beads under the free surface (tensile instability) instead of
+        // holding a sheet; with it they keep a small standoff and the surface
+        // behaves as if it had surface tension.
+        const s = -k * Math.pow((w * w * w) / wq, 4);
+        const gm = -(gradK * (1 - q) * (1 - q)) / r; // see solveDensity
+
+        const c = (li + lambda[j] + s) * gm;
+        ax += ox * c; ay += oy * c; az += oz * c;
+      }
+      const s = 1 / rho0;
+      dx[i] = ax * s; dy[i] = ay * s; dz[i] = az * s;
+    }
+
+    const maxMove = this.spacing * CONFIG.fluid.maxCorrection;
+    for (let i = 0; i < n; i++) {
+      let mx = dx[i], my = dy[i], mz = dz[i];
+      const m = Math.hypot(mx, my, mz);
+      if (m > maxMove) {
+        const t = maxMove / m;
+        mx *= t; my *= t; mz *= t;
+      }
+      px[i] += mx; py[i] += my; pz[i] += mz;
+    }
+    this.project(px, py, pz, n);
+  }
+
+  /**
+   * A hard floor on how close two particles may sit.
+   *
+   * The density constraint does not provide one, and cannot. A handful of
+   * particles driven together by a splash forms a group that is *locally*
+   * packed but *globally* under-dense — it has lost the neighbours that used
+   * to surround it — so C comes out negative, lambda is clamped to zero at the
+   * free surface, and no correction is ever generated. The group is welded
+   * into a bead that survives forever, and because several particles are then
+   * stacked on one point the thickness field spikes and draws it as a dark
+   * blob. Left alone they accumulate: every splash makes a few more.
+   *
+   * So this is separate from the fluid pressure on purpose. It is unconditional
+   * — it does not care what the density says — and it only ever acts on pairs
+   * far closer than rest spacing, which normal compression never reaches.
+   */
+  separate() {
+    const n = this.n;
+    const { x, y, z, nbr, nbrCount, dx, dy, dz } = this;
+    const cap = this.maxNeighbours;
+    const minDist = this.spacing * CONFIG.fluid.minSeparation;
+    const stiffness = CONFIG.fluid.separationStiffness;
+
+    for (let i = 0; i < n; i++) {
+      const xi = x[i], yi = y[i], zi = z[i];
+      let ax = 0, ay = 0, az = 0;
+      const base = i * cap;
+      const count = nbrCount[i];
+      for (let k = 0; k < count; k++) {
+        const j = nbr[base + k];
+        let ox = xi - x[j], oy = yi - y[j], oz = zi - z[j];
+        const r = Math.sqrt(ox * ox + oy * oy + oz * oz);
+        if (r >= minDist) continue;
+        if (r > 1e-4) {
+          const inv = 1 / r;
+          ox *= inv; oy *= inv; oz *= inv;
+        } else {
+          // Exactly coincident, which the wall clamp produces readily: every
+          // particle pushed past a wall lands on precisely the same plane.
+          // There is no direction to separate along, so take a fixed one.
+          scatterDir(i, j);
+          ox = SEP[0]; oy = SEP[1]; oz = SEP[2];
+        }
+        // Each side of the pair sees this and takes half, so the neighbour's
+        // own pass supplies the opposite push.
+        const push = (minDist - r) * 0.5 * stiffness;
+        ax += ox * push; ay += oy * push; az += oz * push;
+      }
+      dx[i] = ax; dy[i] = ay; dz[i] = az;
+    }
+
+    for (let i = 0; i < n; i++) {
+      x[i] += dx[i]; y[i] += dy[i]; z[i] += dz[i];
+    }
+    this.project(x, y, z, n);
+  }
+
+  /** Read the velocity back out of the position change, PBD style. */
+  commit(h) {
+    const n = this.n;
+    const { x, y, z, px, py, pz, vx, vy, vz } = this;
+    const invH = 1 / h;
+    const maxV = (this.spacing * CONFIG.fluid.maxTravel) / h;
+    for (let i = 0; i < n; i++) {
+      let ux = (px[i] - x[i]) * invH;
+      let uy = (py[i] - y[i]) * invH;
+      let uz = (pz[i] - z[i]) * invH;
+      const m = Math.hypot(ux, uy, uz);
+      if (m > maxV) {
+        const t = maxV / m;
+        ux *= t; uy *= t; uz *= t;
+      }
+      vx[i] = ux; vy[i] = uy; vz[i] = uz;
+      x[i] = px[i]; y[i] = py[i]; z[i] = pz[i];
+    }
+  }
+
+  /**
+   * XSPH: nudge each particle toward the average velocity of its neighbours.
+   * This is the whole of the fluid's viscosity — without it PBF is glassy and
+   * every splash shatters instead of pouring.
+   */
+  viscosity() {
+    const n = this.n;
+    const { x, y, z, vx, vy, vz, ax, ay, az, nbr, nbrCount } = this;
+    const cap = this.maxNeighbours;
+    const hh = this.smoothing;
+    const inv = 1 / hh;
+    const c = CONFIG.fluid.viscosity;
+    if (c <= 0) return;
+
+    for (let i = 0; i < n; i++) {
+      const xi = x[i], yi = y[i], zi = z[i];
+      let sx = 0, sy = 0, sz = 0, wsum = 0;
+      const base = i * cap;
+      const count = nbrCount[i];
+      for (let k = 0; k < count; k++) {
+        const j = nbr[base + k];
+        const dx = xi - x[j], dy = yi - y[j], dz = zi - z[j];
+        const r2 = dx * dx + dy * dy + dz * dz;
+        if (r2 >= hh * hh) continue;
+        const q = Math.sqrt(r2) * inv;
+        const w = 1 - q * q;
+        const ww = w * w * w;
+        sx += (vx[j] - vx[i]) * ww;
+        sy += (vy[j] - vy[i]) * ww;
+        sz += (vz[j] - vz[i]) * ww;
+        wsum += ww;
+      }
+      if (wsum > 1e-6) {
+        const s = c / wsum;
+        ax[i] = vx[i] + sx * s;
+        ay[i] = vy[i] + sy * s;
+        az[i] = vz[i] + sz * s;
+      } else {
+        ax[i] = vx[i]; ay[i] = vy[i]; az[i] = vz[i];
+      }
+    }
+    for (let i = 0; i < n; i++) {
+      vx[i] = ax[i]; vy[i] = ay[i]; vz[i] = az[i];
+    }
+  }
+
+  updateShading(dt) {
+    const n = this.n;
+    const { vx, vy, vz, speed01 } = this;
+    const invSpeed = 1 / this.speedNorm;
+    const blend = 1 - Math.exp(-CONFIG.fluid.foamSmoothing * dt);
+    for (let i = 0; i < n; i++) {
+      const s = clamp(Math.hypot(vx[i], vy[i], vz[i]) * invSpeed, 0, 1);
+      speed01[i] += (s - speed01[i]) * blend;
+    }
+  }
+}
+
+/**
+ * Density of a particle sitting in an infinite lattice at `spacing`, measured
+ * with the same kernel the solver uses. Deriving rest density this way rather
+ * than picking a number means the fluid settles at exactly the spacing that
+ * idealCount assumed, so the body fills the fraction of the box that was asked
+ * for instead of swelling or collapsing to find its own level.
+ */
+function latticeDensity(spacing, smoothing) {
+  const reach = Math.ceil(smoothing / spacing);
+  let rho = 0;
+  for (let a = -reach; a <= reach; a++) {
+    for (let b = -reach; b <= reach; b++) {
+      for (let c = -reach; c <= reach; c++) {
+        const r = Math.sqrt(a * a + b * b + c * c) * spacing;
+        if (r >= smoothing) continue;
+        const w = 1 - (r / smoothing) ** 2;
+        rho += w * w * w;
+      }
+    }
+  }
+  return rho;
+}
+
+/**
+ * Fraction of a Poly6 kernel's mass lying beyond a flat wall at distance `d`.
+ *
+ * Exact, not fitted: the kernel integral over the cap past the plane works out
+ * to 0.5 - (315/256) * P(s) with s = d/h. Multiplying this by the rest density
+ * gives back exactly the contribution of the fluid that would have been there
+ * if the wall were not.
+ */
+function wallDensity(d, smoothing) {
+  const s = d / smoothing;
+  if (s >= 1) return 0;
+  if (s <= 0) return 0.5;
+  const s2 = s * s;
+  const s3 = s2 * s;
+  const s5 = s3 * s2;
+  const s7 = s5 * s2;
+  const s9 = s7 * s2;
+  const p = s - (4 / 3) * s3 + (6 / 5) * s5 - (4 / 7) * s7 + s9 / 9;
+  const f = 0.5 - (315 / 256) * p;
+  return f > 0 ? f : 0;
+}
+
+// ---- src/materials.js ----
+// What can go in the box.
+//
+// A material owns its own solver *and* its own idea of how big a particle
+// should be and how many of them belong in the box, because those answers are
+// not shared: sand wants the finest grain the device can afford since every
+// grain is visible, while water wants a coarse particle because it is drawn as
+// a surface and its particles never are. Pushing both decisions behind the
+// interface is what keeps main.js from growing a branch per material.
+//
+// The contract, in full:
+//
+//   kind, label                       identity; the renderer switches on kind
+//   capacity, n                       allocated / live particle count
+//   radius, diameter, depth           geometry, in sim pixels
+//   bounds, inner                     box, and the box inset by radius
+//   gravityMagnitude                  px/s^2, so callers can scale forces
+//   substeps, iterations, contactCount  read by the stats panel only
+//   x, y, z                           positions, read by the renderer
+//
+//   preferredRadius(w, h, qualityScale)   particle size this material wants
+//   targetCount(w, h, qualityScale)       how many of them belong in the box
+//   configure(w, h, radius)               box or particle size changed
+//   fill(count)                           (re)build from scratch
+//   setCount(count)                       grow or shrink in place
+//   clampToBounds()                       after a viewport change
+//   step(dt, gx, gy, gz)                  advance
+//   poke(cx, cy, dragX, dragY, dt)        finger
+//   splash(strength)                      shake
+//
+// Anything beyond that is the material's own business, and the renderer reads
+// it only through the branch for that kind.
+
+
+const MATERIALS = [
+  { id: 'sand', label: 'Sand', create: () => new Grains(CONFIG.bed.maxGrains) },
+  { id: 'water', label: 'Water', create: () => new Fluid(CONFIG.fluid.maxParticles) },
+];
+
+/**
+ * Holds one instance per material, built on first use. Keeping them alive
+ * costs a few megabytes and means switching back is instant and lands on the
+ * state you left, rather than re-running a settle every time.
+ */
+class MaterialSet {
+  constructor() {
+    this.instances = new Map();
+    this.index = 0;
+  }
+
+  get current() {
+    const def = MATERIALS[this.index];
+    let inst = this.instances.get(def.id);
+    if (!inst) {
+      inst = def.create();
+      this.instances.set(def.id, inst);
+    }
+    return inst;
+  }
+
+  get label() {
+    return MATERIALS[this.index].label;
+  }
+
+  get id() {
+    return MATERIALS[this.index].id;
+  }
+
+  /** Which material `next()` would move to, without moving to it. */
+  get nextId() {
+    return MATERIALS[(this.index + 1) % MATERIALS.length].id;
+  }
+
+  /** True if the instance had not been built yet, i.e. it needs filling. */
+  isFresh(id) {
+    return !this.instances.has(id);
+  }
+
+  select(id) {
+    const i = MATERIALS.findIndex((m) => m.id === id);
+    if (i < 0) return false;
+    this.index = i;
+    return true;
+  }
+
+  next() {
+    this.index = (this.index + 1) % MATERIALS.length;
+    return this.current;
+  }
+}
+
 // ---- src/shaders.js ----
 // GLSL ES 1.00 so one shader pair works on both WebGL1 and WebGL2 contexts.
 //
@@ -1893,6 +2877,180 @@ void main() {
 }
 `;
 
+// ---- src/water-shaders.js ----
+// Water is drawn in two passes, because drawing the particles directly cannot
+// work: a liquid has no visible particles, only a surface. Sprites blended one
+// on top of another read as a heap of blue beads no matter how they are shaded.
+//
+// Pass one throws every particle into an offscreen buffer as a soft blob, added
+// together, which gives a smooth scalar field — how much water is in front of
+// each pixel. Pass two never sees a particle at all: it reads that field, takes
+// its level set as the surface, its gradient as a normal, and its magnitude as
+// the distance light had to travel through water. That is where the colour,
+// the highlights and the edges come from.
+//
+// The field is deliberately a plain RGBA8 texture at half resolution. Half res
+// is not only cheaper, it is a free blur — it smooths the blobs into a surface,
+// which is exactly the step a full screen-space fluid renderer spends a
+// separate bilateral filter on.
+
+const WATER_FIELD_VERTEX = `
+precision highp float;
+
+attribute vec3 aPos;
+attribute float aSpeed;
+
+uniform vec2 uViewport;
+uniform float uFocal;
+uniform vec2 uEye;
+uniform float uPointSize;
+uniform float uDepthRange;
+
+varying float vSpeed;
+varying float vFade;
+
+void main() {
+  float persp = uFocal / (uFocal + aPos.z);
+  vec2 p = uEye + (aPos.xy - uEye) * persp;
+  vec2 unit = p / uViewport;
+  gl_Position = vec4(unit.x * 2.0 - 1.0, 1.0 - unit.y * 2.0, 0.0, 1.0);
+  gl_PointSize = uPointSize * persp;
+  vSpeed = aSpeed;
+  // Deeper water contributes a little less, so the body carries a front-to-back
+  // gradient instead of reading as one flat slab of colour.
+  vFade = 1.0 - 0.35 * clamp(aPos.z / max(uDepthRange, 1.0), 0.0, 1.0);
+}
+`;
+
+const WATER_FIELD_FRAGMENT = `
+precision mediump float;
+
+varying float vSpeed;
+varying float vFade;
+
+uniform float uGain;
+
+void main() {
+  vec2 uv = gl_PointCoord * 2.0 - 1.0;
+  float r2 = dot(uv, uv);
+  if (r2 > 1.0) discard;
+  // Squared falloff: smooth enough that overlapping blobs merge without a seam,
+  // tight enough that the body keeps an edge instead of fogging outward.
+  float w = 1.0 - r2;
+  w = w * w;
+  float t = w * uGain * vFade;
+  // R: thickness. G: thickness weighted by speed, so the composite can divide
+  // the two back out and know how agitated the water at this pixel is.
+  gl_FragColor = vec4(t, t * vSpeed, 0.0, 1.0);
+}
+`;
+
+const WATER_COMPOSITE_VERTEX = `
+precision highp float;
+attribute vec2 aCorner;
+varying vec2 vUV;
+void main() {
+  vUV = aCorner * 0.5 + 0.5;
+  gl_Position = vec4(aCorner, 0.0, 1.0);
+}
+`;
+
+const WATER_COMPOSITE_FRAGMENT = `
+precision mediump float;
+
+varying vec2 vUV;
+
+uniform sampler2D uField;
+uniform vec2 uTexel;
+uniform vec3 uShallow;
+uniform vec3 uDeep;
+uniform vec3 uFoamColor;
+uniform float uSurface;
+uniform float uSoft;
+uniform float uAbsorb;
+uniform float uRelief;
+uniform float uSpecular;
+uniform float uFresnel;
+uniform float uFoamAmount;
+uniform float uFoamBias;
+uniform float uAlphaMin;
+uniform float uOpacify;
+uniform float uCalmRipple;
+uniform float uRippleGain;
+
+void main() {
+  vec4 c = texture2D(uField, vUV);
+  float t = c.x;
+  // The level set of the thickness field is the water's silhouette. Everything
+  // below the threshold is air, and the soft band across it is the anti-aliased
+  // edge — a hard cutoff crawls with visible stair-steps as the body moves.
+  float mask = smoothstep(uSurface, uSurface + uSoft, t);
+  if (mask <= 0.004) discard;
+
+  float agitation = c.y / max(c.x, 1e-4);
+
+  // Normal from the gradient of thickness. At the waterline thickness ramps up
+  // from nothing, so the normal tips over and catches the light there — which
+  // is exactly where a real surface shows its edge.
+  float l = texture2D(uField, vUV - vec2(uTexel.x, 0.0)).x;
+  float r = texture2D(uField, vUV + vec2(uTexel.x, 0.0)).x;
+  float d = texture2D(uField, vUV - vec2(0.0, uTexel.y)).x;
+  float u = texture2D(uField, vUV + vec2(0.0, uTexel.y)).x;
+
+  // Calm water is glass. The particle lattice leaves a permanent fine ripple
+  // in the thickness field, and at full strength the normal shades it like
+  // wrinkled plastic — so agitation (speed, carried per-pixel in G) decides
+  // how much of the gradient the interior normal is allowed to see.
+  //
+  // The silhouette band is exempt. Measured, its gradients are the *same
+  // size* as the lattice noise (both p90 = 0.07/texel in the half-res field),
+  // so no magnitude test can tell them apart — but they live at opposite ends
+  // of the thickness ramp. Thin pixels are the waterline and the rim; keeping
+  // them at full relief is what preserves the specular band along the surface
+  // of a resting body, which gating by agitation alone wiped out.
+  float edgeBand = 1.0 - smoothstep(uSurface * 1.6, uSurface * 4.5, t);
+  float ripple = clamp(uCalmRipple + agitation * uRippleGain, 0.0, 1.0);
+  float relief = uRelief * max(ripple, edgeBand);
+  vec3 nrm = normalize(vec3((l - r) * relief, (d - u) * relief, 1.0));
+
+  // Beer-Lambert: colour is how much water the light had to cross, so thin
+  // edges stay pale and the body deepens toward the middle. This single term
+  // does most of the work of making it read as a volume rather than a shape.
+  float travel = 1.0 - exp(-uAbsorb * t);
+  vec3 color = mix(uShallow, uDeep, travel);
+
+  // +y is up the screen in this pass, unlike gl_PointCoord in the grain
+  // shader where it points down. Getting that backwards lights the water from
+  // underneath and puts a bright rim along the floor instead of the surface.
+  vec3 lightDir = normalize(vec3(-0.35, 0.62, 0.70));
+  vec3 view = vec3(0.0, 0.0, 1.0);
+  vec3 half3 = normalize(lightDir + view);
+  float spec = pow(max(dot(nrm, half3), 0.0), 60.0) * uSpecular;
+  // Grazing angles reflect more than head-on ones; on a body this shallow the
+  // rim is the only place that happens, and it is what stops the edge looking
+  // like cut paper.
+  float fresnel = pow(1.0 - clamp(nrm.z, 0.0, 1.0), 3.0) * uFresnel;
+
+  color += spec + fresnel;
+
+  // Foam where the water is both moving and thin — the crest of a wave and the
+  // spray off a splash, not the calm mass underneath it.
+  float foam = clamp((agitation - uFoamBias) * uFoamAmount, 0.0, 1.0)
+    * smoothstep(1.0, 0.35, t);
+  color = mix(color, uFoamColor, foam);
+
+  // Water is transparent; gel is not. Coverage follows thickness by the same
+  // Beer-Lambert law as the colour: a thin crest lets the box show through,
+  // the deep body blocks it. Glints and foam stay opaque regardless — a
+  // reflection does not care what is behind the surface.
+  float body = 1.0 - exp(-uOpacify * t);
+  float alpha = mask * mix(uAlphaMin, 1.0, body);
+  alpha = clamp(alpha + spec + foam * 0.6, 0.0, 1.0);
+
+  gl_FragColor = vec4(color, alpha);
+}
+`;
+
 // ---- src/renderer.js ----
 // WebGL point-sprite renderer: one interleaved buffer, one draw call for the
 // sand plus a tiny one for the box. Prefers a WebGL2 context but the shaders
@@ -1905,6 +3063,8 @@ void main() {
 
 const FLOATS_PER_GRAIN = 8; // x,y,z | light, speed, airborne | sizeJitter, hueJitter
 const STRIDE = FLOATS_PER_GRAIN * 4;
+const FLOATS_PER_DROP = 4; // x, y, z, speed
+const DROP_STRIDE = FLOATS_PER_DROP * 4;
 const BUCKETS = 32;
 
 class Renderer {
@@ -1937,6 +3097,19 @@ class Renderer {
     this.speckRadius = 0.28;
     this._styleKey = '';
     this.contextLost = false;
+
+    // Water pass: its own interleaved buffer, and the offscreen thickness field
+    // it accumulates into. No z-sort here — the field is built with additive
+    // blending, which does not care what order the particles arrive in.
+    //
+    // Sized at 3x the particle count to leave room for the wall images packWater
+    // adds; a particle in a corner can contribute three of them.
+    this.waterCpu = new Float32Array(CONFIG.fluid.maxParticles * 3 * FLOATS_PER_DROP);
+    this.waterGhosts = 0;
+    this.fieldTex = null;
+    this.fieldFbo = null;
+    this.fieldW = 0;
+    this.fieldH = 0;
 
     const opts = {
       alpha: false,
@@ -1997,11 +3170,95 @@ class Renderer {
     gl.disable(gl.DEPTH_TEST);
     gl.enable(gl.BLEND);
 
+    this.setupWaterPrograms();
+
     // Grain program is built lazily by ensureGrainStyle on the first draw,
     // because the speck count depends on the sprite's on-screen size.
     this.program = null;
     this.speckCount = 0;
     this._styleKey = '';
+  }
+
+  setupWaterPrograms() {
+    const gl = this.gl;
+
+    this.fieldProgram = buildProgram(gl, WATER_FIELD_VERTEX, WATER_FIELD_FRAGMENT);
+    this.fieldAttrib = {
+      pos: gl.getAttribLocation(this.fieldProgram, 'aPos'),
+      speed: gl.getAttribLocation(this.fieldProgram, 'aSpeed'),
+    };
+    this.fieldUniform = {
+      viewport: gl.getUniformLocation(this.fieldProgram, 'uViewport'),
+      focal: gl.getUniformLocation(this.fieldProgram, 'uFocal'),
+      eye: gl.getUniformLocation(this.fieldProgram, 'uEye'),
+      pointSize: gl.getUniformLocation(this.fieldProgram, 'uPointSize'),
+      depthRange: gl.getUniformLocation(this.fieldProgram, 'uDepthRange'),
+      gain: gl.getUniformLocation(this.fieldProgram, 'uGain'),
+    };
+    this.waterBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.waterBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, this.waterCpu.byteLength, gl.DYNAMIC_DRAW);
+
+    this.compositeProgram = buildProgram(gl, WATER_COMPOSITE_VERTEX, WATER_COMPOSITE_FRAGMENT);
+    this.compositeAttrib = { corner: gl.getAttribLocation(this.compositeProgram, 'aCorner') };
+    this.compositeUniform = {
+      field: gl.getUniformLocation(this.compositeProgram, 'uField'),
+      texel: gl.getUniformLocation(this.compositeProgram, 'uTexel'),
+      shallow: gl.getUniformLocation(this.compositeProgram, 'uShallow'),
+      deep: gl.getUniformLocation(this.compositeProgram, 'uDeep'),
+      foamColor: gl.getUniformLocation(this.compositeProgram, 'uFoamColor'),
+      surface: gl.getUniformLocation(this.compositeProgram, 'uSurface'),
+      soft: gl.getUniformLocation(this.compositeProgram, 'uSoft'),
+      absorb: gl.getUniformLocation(this.compositeProgram, 'uAbsorb'),
+      relief: gl.getUniformLocation(this.compositeProgram, 'uRelief'),
+      specular: gl.getUniformLocation(this.compositeProgram, 'uSpecular'),
+      fresnel: gl.getUniformLocation(this.compositeProgram, 'uFresnel'),
+      foamAmount: gl.getUniformLocation(this.compositeProgram, 'uFoamAmount'),
+      foamBias: gl.getUniformLocation(this.compositeProgram, 'uFoamBias'),
+      alphaMin: gl.getUniformLocation(this.compositeProgram, 'uAlphaMin'),
+      opacify: gl.getUniformLocation(this.compositeProgram, 'uOpacify'),
+      calmRipple: gl.getUniformLocation(this.compositeProgram, 'uCalmRipple'),
+      rippleGain: gl.getUniformLocation(this.compositeProgram, 'uRippleGain'),
+    };
+    // One oversized triangle rather than a quad: same coverage, no seam down
+    // the diagonal, one fewer vertex.
+    this.quadBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+
+    this.fieldTex = null;
+    this.fieldFbo = null;
+    this.fieldW = 0;
+    this.fieldH = 0;
+  }
+
+  /** Offscreen buffer the thickness field accumulates into, at reduced size. */
+  ensureField(deviceW, deviceH) {
+    const scale = CONFIG.water.fieldScale;
+    const w = Math.max(1, Math.round(deviceW * scale));
+    const h = Math.max(1, Math.round(deviceH * scale));
+    if (w === this.fieldW && h === this.fieldH && this.fieldTex) return;
+    const gl = this.gl;
+
+    if (this.fieldTex) gl.deleteTexture(this.fieldTex);
+    if (this.fieldFbo) gl.deleteFramebuffer(this.fieldFbo);
+
+    this.fieldW = w;
+    this.fieldH = h;
+    this.fieldTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this.fieldTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    // Linear sampling is doing real work here: it is the second half of the
+    // blur that turns discrete blobs into a continuous surface.
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    this.fieldFbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.fieldFbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.fieldTex, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
   /**
@@ -2155,16 +3412,11 @@ class Renderer {
     gl.uniform3fv(this.wallUniform.color, CONFIG.render.wallColor);
     gl.drawArrays(gl.TRIANGLES, 0, 30);
 
-    // Hand the pipeline back to the grain program.
+    // Leave nothing enabled behind us. Attribute arrays are global state in
+    // WebGL1, so a location left on from one program points a later program's
+    // draw at a stale buffer.
+    gl.disableVertexAttribArray(this.wallAttrib.pos);
     gl.disableVertexAttribArray(this.wallAttrib.shade);
-    gl.useProgram(this.program);
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
-    for (const loc of Object.values(this.attrib)) {
-      if (loc >= 0) gl.enableVertexAttribArray(loc);
-    }
-    gl.vertexAttribPointer(this.attrib.pos, 3, gl.FLOAT, false, STRIDE, 0);
-    gl.vertexAttribPointer(this.attrib.shade, 3, gl.FLOAT, false, STRIDE, 12);
-    gl.vertexAttribPointer(this.attrib.jitter, 2, gl.FLOAT, false, STRIDE, 24);
   }
 
   /** Returns true when the backing store changed size. */
@@ -2182,19 +3434,187 @@ class Renderer {
     return true;
   }
 
-  draw(sand) {
+  /**
+   * One entry point for every material. The box is shared; what fills it is
+   * not, so each material owns its own pass from here down.
+   */
+  draw(material) {
     const gl = this.gl;
     if (this.contextLost) return;
 
-    this.ensureGrainStyle(sand.diameter);
-
     gl.clear(gl.COLOR_BUFFER_BIT);
     const focal = CONFIG.render.focal * Math.min(this.width, this.height);
-    // Box first: the sand always lives inside it, so no depth test is needed.
-    this.drawWalls(sand.depth, focal, this.eyeX, this.eyeY);
+    // Box first: the contents always live inside it, so no depth test is needed.
+    this.drawWalls(material.depth, focal, this.eyeX, this.eyeY);
+
+    if (material.n === 0) return;
+    if (material.kind === 'water') this.drawWater(material, focal);
+    else this.drawGrains(material, focal);
+  }
+
+  /**
+   * Pack the water into the field buffer, mirroring anything close to the
+   * glass back across it.
+   *
+   * Without this the water visibly shrinks away from its container: a blob
+   * reaching past the wall spends half its mass outside the box, so the
+   * thickness field sags to roughly half strength within one blob radius of
+   * every wall, drops under the surface threshold, and the level set retreats.
+   * The result reads as a slab of jelly sitting in the middle of the tank
+   * rather than water filling it — pale margins down both sides and rounded-off
+   * corners.
+   *
+   * It is the same half-space truncation the solver hits (see Fluid.solveDensity),
+   * on a different field, and it takes the same answer: method of images. A
+   * mirrored particle contributes exactly what the water on the far side would
+   * have, so the gradient across the wall goes to zero and the field stays flat
+   * right up to the glass. Reflecting in *sim* space rather than screen space
+   * means perspective carries the ghosts to the right place on its own — which
+   * matters here, because the box walls converge with depth and are not a fixed
+   * line on screen.
+   *
+   * Only the four lateral walls get ghosts. Depth needs none: thickness is the
+   * count of particles along a view ray, and that ray genuinely does end at the
+   * front and back glass — nothing is missing to add back.
+   */
+  packWater(fluid, w) {
+    const cpu = this.waterCpu;
+    const limit = (cpu.length / FLOATS_PER_DROP) | 0;
+    const n = Math.min(fluid.n, CONFIG.fluid.maxParticles);
+    const { x, y, z, speed01 } = fluid;
+    const wallX = fluid.bounds.x1;
+    const wallY = fluid.bounds.y1;
+    // A ghost only matters while its blob still overlaps the box.
+    const reach = fluid.diameter * w.blobSize * 0.5;
+
+    let count = 0;
+    const put = (px, py, pz, sp) => {
+      if (count >= limit) return;
+      const o = count * FLOATS_PER_DROP;
+      cpu[o] = px;
+      cpu[o + 1] = py;
+      cpu[o + 2] = pz;
+      cpu[o + 3] = sp;
+      count++;
+    };
+
+    for (let i = 0; i < n; i++) {
+      const xi = x[i];
+      const yi = y[i];
+      const zi = z[i];
+      const si = speed01[i];
+      put(xi, yi, zi, si);
+
+      const left = xi < reach;
+      const right = wallX - xi < reach;
+      const above = yi < reach;
+      const below = wallY - yi < reach;
+      const mx = left ? -xi : 2 * wallX - xi;
+      const my = above ? -yi : 2 * wallY - yi;
+
+      if (left || right) put(mx, yi, zi, si);
+      if (above || below) put(xi, my, zi, si);
+      // Corners lose a quadrant, not just a half-space, so they need the
+      // diagonal image too or they stay pinched.
+      if ((left || right) && (above || below)) put(mx, my, zi, si);
+    }
+    this.waterGhosts = count - n;
+    return count;
+  }
+
+  drawWater(fluid, focal) {
+    const gl = this.gl;
+    const w = CONFIG.water;
+    const deviceW = this.canvas.width;
+    const deviceH = this.canvas.height;
+    this.ensureField(deviceW, deviceH);
+
+    const n = this.packWater(fluid, w);
+    const cpu = this.waterCpu;
+
+    // ---- pass 1: accumulate thickness offscreen
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.fieldFbo);
+    gl.viewport(0, 0, this.fieldW, this.fieldH);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.blendFunc(gl.ONE, gl.ONE);
+
+    gl.useProgram(this.fieldProgram);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.waterBuffer);
+    const floats = n * FLOATS_PER_DROP;
+    if (this.isWebGL2) {
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, cpu, 0, floats);
+    } else {
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, cpu.subarray(0, floats));
+    }
+    gl.enableVertexAttribArray(this.fieldAttrib.pos);
+    gl.enableVertexAttribArray(this.fieldAttrib.speed);
+    gl.vertexAttribPointer(this.fieldAttrib.pos, 3, gl.FLOAT, false, DROP_STRIDE, 0);
+    gl.vertexAttribPointer(this.fieldAttrib.speed, 1, gl.FLOAT, false, DROP_STRIDE, 12);
+
+    gl.uniform2f(this.fieldUniform.viewport, this.width, this.height);
+    gl.uniform1f(this.fieldUniform.focal, focal);
+    gl.uniform2f(this.fieldUniform.eye, this.width * 0.5 + this.eyeX, this.height * 0.5 + this.eyeY);
+    gl.uniform1f(this.fieldUniform.depthRange, fluid.depth);
+    gl.uniform1f(this.fieldUniform.gain, w.gain);
+    // Sprite size is in field pixels, so it carries both the device ratio and
+    // the field's own downscale.
+    gl.uniform1f(
+      this.fieldUniform.pointSize,
+      fluid.diameter * w.blobSize * this.dpr * CONFIG.water.fieldScale,
+    );
+    gl.drawArrays(gl.POINTS, 0, n);
+    gl.disableVertexAttribArray(this.fieldAttrib.pos);
+    gl.disableVertexAttribArray(this.fieldAttrib.speed);
+
+    // ---- pass 2: shade the field as a surface, over the box
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, deviceW, deviceH);
+    const bg = CONFIG.render.background;
+    gl.clearColor(bg[0], bg[1], bg[2], 1);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+    gl.useProgram(this.compositeProgram);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuffer);
+    gl.enableVertexAttribArray(this.compositeAttrib.corner);
+    gl.vertexAttribPointer(this.compositeAttrib.corner, 2, gl.FLOAT, false, 0, 0);
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.fieldTex);
+    gl.uniform1i(this.compositeUniform.field, 0);
+    gl.uniform2f(this.compositeUniform.texel, 1 / this.fieldW, 1 / this.fieldH);
+    gl.uniform3fv(this.compositeUniform.shallow, w.shallow);
+    gl.uniform3fv(this.compositeUniform.deep, w.deep);
+    gl.uniform3fv(this.compositeUniform.foamColor, w.foam);
+    gl.uniform1f(this.compositeUniform.surface, w.surface);
+    gl.uniform1f(this.compositeUniform.soft, w.soft);
+    gl.uniform1f(this.compositeUniform.absorb, w.absorb);
+    gl.uniform1f(this.compositeUniform.relief, w.relief);
+    gl.uniform1f(this.compositeUniform.specular, w.specular);
+    gl.uniform1f(this.compositeUniform.fresnel, w.fresnel);
+    gl.uniform1f(this.compositeUniform.foamAmount, w.foamAmount);
+    gl.uniform1f(this.compositeUniform.foamBias, w.foamBias);
+    gl.uniform1f(this.compositeUniform.alphaMin, w.alphaMin);
+    gl.uniform1f(this.compositeUniform.opacify, w.opacify);
+    gl.uniform1f(this.compositeUniform.calmRipple, w.calmRipple);
+    gl.uniform1f(this.compositeUniform.rippleGain, w.rippleGain);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.disableVertexAttribArray(this.compositeAttrib.corner);
+  }
+
+  drawGrains(sand, focal) {
+    const gl = this.gl;
+    this.ensureGrainStyle(sand.diameter);
+    gl.useProgram(this.program);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+    for (const loc of Object.values(this.attrib)) {
+      if (loc >= 0) gl.enableVertexAttribArray(loc);
+    }
+    gl.vertexAttribPointer(this.attrib.pos, 3, gl.FLOAT, false, STRIDE, 0);
+    gl.vertexAttribPointer(this.attrib.shade, 3, gl.FLOAT, false, STRIDE, 12);
+    gl.vertexAttribPointer(this.attrib.jitter, 2, gl.FLOAT, false, STRIDE, 24);
 
     const n = sand.n;
-    if (n === 0) return;
 
     // Counting sort by z bucket, deepest first, so the pack order is
     // back-to-front for the grain pass.
@@ -2324,7 +3744,13 @@ class GravityInput {
     // Smoothed unit-ish vector in box space, consumed by the sim.
     this.gx = 0;
     this.gy = 1;
-    this.gz = CONFIG.input.zBias;
+    // How hard gravity leans into the screen when there is no live sensor.
+    // Owned by the material, not by this class: sand wants to pile against the
+    // back wall because that is what makes the box read as 3D, but the same
+    // lean tips a *liquid* surface, and a tilted water line is exactly the
+    // thing water is not allowed to do. Set from the current material.
+    this.zBias = CONFIG.input.zBias;
+    this.gz = this.zBias;
     // Raw sensor readings, surfaced in the stats panel for on-device debugging.
     this.beta = 0;
     this.gamma = 0;
@@ -2549,7 +3975,7 @@ class GravityInput {
 
   /** Target direction from tilt, keys, stick, or the demo sway. */
   targetVector() {
-    const zBias = CONFIG.input.zBias;
+    const zBias = this.zBias;
 
     if (this.demo) {
       // Roughly what a hand does: a lazy roll, never fully on its side.
@@ -2798,12 +4224,26 @@ class Hud {
     this.stick = root.querySelector('#stick');
     this.knob = root.querySelector('#knob');
     this.fatal = root.querySelector('#fatal');
+    this.material = root.querySelector('#material');
 
     this.statsVisible = false;
     this.onStick = null;
+    this.onMaterial = null;
     this._hintTimer = 0;
     this._statsTimer = 0;
     this.bindStick();
+    if (this.material) {
+      this.material.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (this.onMaterial) this.onMaterial();
+      });
+      // Otherwise the tap that switches material also pokes the sand under it.
+      this.material.addEventListener('pointerdown', (e) => e.stopPropagation());
+    }
+  }
+
+  setMaterial(label) {
+    if (this.material) this.material.textContent = label;
   }
 
   setHint(text) {
@@ -2895,8 +4335,9 @@ class Hud {
     const rows = [
       ['fps', info.fps.toFixed(0)],
       ['work', info.workMs.toFixed(1) + ' ms'],
-      ['grains', String(info.grains)],
-      ['contacts', formatCount(info.contacts)],
+      ['material', info.material],
+      [info.material === 'Water' ? 'particles' : 'grains', String(info.grains)],
+      [info.material === 'Water' ? 'neighbours' : 'contacts', formatCount(info.contacts)],
       ['radius', info.radius.toFixed(2) + ' px'],
       ['depth', Math.round(info.depth) + ' px'],
       ['solve', `${info.substeps}×${info.iterations}`],
@@ -2943,7 +4384,9 @@ try {
   throw err;
 }
 
-const sand = new Grains(CONFIG.bed.maxGrains);
+const materials = new MaterialSet();
+if (params.has('material')) materials.select(params.get('material'));
+let sand = materials.current;
 const gravity = new GravityInput();
 const poke = new PokeInput(canvas);
 const tuner = new Tuner();
@@ -2983,27 +4426,18 @@ function measureViewport() {
   };
 }
 
+// Both of these are the material's call now: sand wants the finest grain the
+// device can afford because every grain is visible, water wants a coarse
+// particle because it is drawn as a surface. See materials.js.
 function grainRadius(width, height) {
   if (forcedRadiusOverride) return forcedRadiusOverride;
   if (forcedRadius) return forcedRadius;
-  const g = CONFIG.grain;
-  const base = clamp(Math.min(width, height) / g.divisor, g.minRadius, g.maxRadius);
-  // Performance headroom buys *finer* grains, never a deeper bed: count always
-  // fills the same volume, so the amount of sand looks constant per device.
-  // Count goes with 1/r^3 in a 3D box, hence the cube root.
-  return clamp(base / Math.cbrt(tuner.scale), g.minRadius, g.maxRadius);
+  return sand.preferredRadius(width, height, tuner.scale);
 }
 
 function targetCount() {
   if (forcedGrains) return Math.min(forcedGrains, sand.capacity);
-  const ideal = sand.idealCount();
-  // On a large screen the wanted grain radius exceeds maxRadius and gets
-  // pinned there — and since the tuner coarsens by *growing* grains, pinning
-  // leaves it with no lever at all: it drops quality, nothing changes, and the
-  // device just runs slow forever. When that happens, trade bed depth instead.
-  const g = CONFIG.grain;
-  const pinned = Math.min(viewWidth, viewHeight) / g.divisor >= g.maxRadius;
-  return pinned ? Math.round(ideal * Math.min(1, tuner.scale)) : ideal;
+  return sand.targetCount(viewWidth, viewHeight, tuner.scale);
 }
 
 /**
@@ -3043,11 +4477,33 @@ function reset() {
   sand.fill(targetCount());
 }
 
+/**
+ * Switch what is in the box. Each material keeps its own state, so coming back
+ * to one lands on the pile you left rather than re-running a settle — but a
+ * material being seen for the first time has to be sized and filled here,
+ * since layout() only ever ran for whichever one was current at load.
+ */
+function switchMaterial() {
+  // Asked before advancing, so it is about the material we are moving to.
+  const fresh = materials.isFresh(materials.nextId);
+  sand = materials.next();
+  gravity.zBias = sand.zBias;
+  radius = grainRadius(viewWidth, viewHeight);
+  sand.configure(viewWidth, viewHeight, radius);
+  if (fresh || sand.n === 0) sand.fill(targetCount());
+  else sand.clampToBounds();
+  hud.setMaterial(materials.label);
+  hud.setHint(HINT);
+}
+
 layout(true);
+gravity.zBias = sand.zBias;
+hud.setMaterial(materials.label);
 
 // ---------------------------------------------------------------- input setup
 
 gravity.onShake = (strength) => sand.splash(strength);
+hud.onMaterial = switchMaterial;
 
 hud.onStick = (x, y, active) => {
   gravity.stick.x = x;
@@ -3069,8 +4525,8 @@ if (touch && gravity.supportsSensors && !gravity.demo) {
 }
 
 const HINT = touch
-  ? 'Tilt to pour · touch to push · shake to splash'
-  : 'Arrows / WASD to tilt · drag to push · space to splash · ` for stats';
+  ? 'Tilt to pour · touch to push · shake to splash · tap Sand/Water to switch'
+  : 'Arrows / WASD to tilt · drag to push · space to splash · M for material · ` for stats';
 hud.setHint(HINT);
 
 poke.onFirstTouch = () => {
@@ -3091,6 +4547,7 @@ window.addEventListener('keydown', (e) => {
   switch (e.code) {
     case 'Space': sand.splash(1.4); break;
     case 'KeyR': reset(); break;
+    case 'KeyM': switchMaterial(); break;
     case 'Backquote': hud.toggleStats(); break;
     case 'KeyH': hud.setHint(HINT); break;
     case 'KeyF': gravity.flipped = !gravity.flipped; break;
@@ -3172,6 +4629,7 @@ function frame(now) {
   hud.update(dt, {
     fps: tuner.fps,
     workMs,
+    material: materials.label,
     grains: sand.n,
     contacts: sand.contactCount,
     radius,
@@ -3199,7 +4657,13 @@ function frame(now) {
 requestAnimationFrame(frame);
 
 // Handy from a console or a remote debugger: window.SILT.sand.splash(2) etc.
-window.SILT = { sand, gravity, poke, tuner, renderer, hud, reset, applyQuality, CONFIG };
+// `sand` is whichever material is current — the name is historical.
+window.SILT = {
+  get sand() { return sand; },
+  get material() { return sand; },
+  materials, switchMaterial,
+  gravity, poke, tuner, renderer, hud, reset, applyQuality, CONFIG,
+};
 
 })();
 </script>

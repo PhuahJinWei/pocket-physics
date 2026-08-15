@@ -80,6 +80,36 @@ html, body {
 }
 #hint.faded { opacity: 0; }
 
+/* Material switch. Sits opposite the stats panel and stays put — this is the
+   one control that has to be reachable on a phone, where there is no key to
+   press. #ui ignores pointers, so it has to opt back in. */
+#material {
+  position: absolute;
+  top: calc(12px + env(safe-area-inset-top));
+  right: calc(12px + env(safe-area-inset-right));
+  pointer-events: auto;
+  min-width: 74px;
+  padding: 8px 14px;
+  border: 1px solid var(--edge);
+  border-radius: 999px;
+  background: var(--panel);
+  backdrop-filter: blur(8px);
+  color: var(--dim);
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: color 180ms ease, border-color 180ms ease;
+}
+#material:hover,
+#material:focus-visible {
+  color: var(--bright, #f0e4cc);
+  border-color: rgba(230, 205, 160, 0.36);
+  outline: none;
+}
+#material:active { transform: scale(0.96); }
+
 #stats {
   position: absolute;
   top: calc(12px + env(safe-area-inset-top));

@@ -1,0 +1,726 @@
+// Water: Position Based Fluids (Macklin & Müller, 2013).
+//
+// Why not reuse the granular solver with friction turned off: a Coulomb contact
+// solver with mu = 0 is not a liquid, it is a frictionless granular gas. It
+// resists penetration but nothing else, so it stays compressible, bounces, and
+// never develops the pressure gradient that makes water level itself out. A
+// fluid needs a *density* constraint instead of a non-penetration one — every
+// particle wants the same number of neighbours around it, which is what makes
+// it flow, fill corners, and hold a flat surface.
+//
+// PBF solves that constraint the same way the sand solves contacts: predict,
+// project, then read the velocity back out of the position change. So the
+// expensive parts of the project carry straight over — the spatial hash, the
+// fixed timestep, the tilt input, the shake pulse. What is different is the
+// constraint itself and everything downstream of it.
+//
+// The one piece of real subtlety here is the boundary correction. This box is
+// only a few particles deep, so most of the water is within a smoothing radius
+// of the front or back glass. A particle there sees fewer neighbours than one
+// in open fluid, reads as under-dense, and gets sucked into the wall — the
+// whole body would creep into the glass and stick. `wallDensity` below adds
+// back exactly the mass the missing half-space would have contributed.
+
+import { CONFIG } from './config.js';
+import { Grid } from './grid.js';
+import { clamp, makeRandom } from './util.js';
+
+// Poly6 is used for density and Spiky for its gradient (Poly6's gradient
+// vanishes at r=0, so particles on top of each other would never separate).
+// Both are written normalised to W(0) = 1, which drops h^9-sized constants out
+// of the arithmetic; the only thing that has to survive is their *ratio*, and
+// that is this number. See CONFIG.fluid for the derivation.
+const GRAD_K = 2880 / 315;
+
+// Scratch for the coincident-particle fallback. Module level so the inner
+// loops stay allocation-free.
+const SEP = new Float64Array(3);
+
+/**
+ * A separation direction for a pair that has collapsed onto the same point,
+ * where the geometry offers none. Derived from the two indices, so it is the
+ * same every frame (a random one would jitter the pair in place), and negated
+ * for the partner so both halves of the pair push the same way apart.
+ */
+function scatterDir(i, j) {
+  const lo = i < j ? i : j;
+  const hi = i < j ? j : i;
+  let h = (Math.imul(lo, 73856093) ^ Math.imul(hi, 19349663)) >>> 0;
+  h = (h ^ (h >>> 13)) >>> 0;
+  const uz = ((h & 2047) / 2047) * 2 - 1;
+  const phi = (((h >>> 11) & 2047) / 2047) * 6.283185307179586;
+  const s = Math.sqrt(Math.max(0, 1 - uz * uz));
+  const sign = i < j ? 1 : -1;
+  SEP[0] = s * Math.cos(phi) * sign;
+  SEP[1] = s * Math.sin(phi) * sign;
+  SEP[2] = uz * sign;
+}
+
+export class Fluid {
+  constructor(capacity) {
+    this.kind = 'water';
+    this.label = 'Water';
+    // No into-screen lean. Sand uses one to pile against the back wall, but a
+    // liquid answers a tilted gravity with a tilted surface: measured, the
+    // sand's 0.45 put the back of the water 22px higher than the front, which
+    // perspective then widened into a visible shelf. Water fills the box on its
+    // own, so it does not need the cue.
+    this.zBias = 0;
+    this.capacity = capacity;
+    this.n = 0;
+
+    const f32 = () => new Float32Array(capacity);
+    // Committed state.
+    this.x = f32();
+    this.y = f32();
+    this.z = f32();
+    this.vx = f32();
+    this.vy = f32();
+    this.vz = f32();
+    // Predicted positions the constraint is solved against.
+    this.px = f32();
+    this.py = f32();
+    this.pz = f32();
+    // Per-iteration scratch.
+    this.lambda = f32();
+    this.dx = f32();
+    this.dy = f32();
+    this.dz = f32();
+    this.density = f32();
+    // Velocity smoothing target (XSPH) — written in one pass, applied in the
+    // next, so particles all see the same velocity field.
+    this.ax = f32();
+    this.ay = f32();
+    this.az = f32();
+    // Shading channel: normalised speed, which the renderer turns into foam.
+    this.speed01 = f32();
+
+    this.grid = new Grid(capacity);
+    this.random = makeRandom(0x51F7);
+
+    // Flat neighbour list, rebuilt once per substep and reused by every solver
+    // iteration. Gathering is the expensive half, and it does not change while
+    // the positions are only being nudged.
+    this.maxNeighbours = CONFIG.fluid.maxNeighbours;
+    this.nbr = new Int32Array(0);
+    this.nbrCount = new Int32Array(capacity);
+
+    this.radius = 8;
+    this.diameter = 16;
+    this.spacing = 16;
+    this.smoothing = 32;
+    this.restDensity = 1;
+    this.depth = 32;
+    this.bounds = { x0: 0, y0: 0, x1: 1, y1: 1 };
+    this.inner = { x0: 0, y0: 0, z0: 0, x1: 1, y1: 1, z1: 1 };
+    this.gravityMagnitude = 4000;
+    this.speedNorm = 600;
+    this.pokeRadius = 60;
+    // Unit gravity from the last step, so a splash throws away from whichever
+    // wall the water is currently lying against.
+    this.gdx = 0;
+    this.gdy = 1;
+    this.gdz = 0;
+
+    // Shake pulse, identical in shape to the sand's: an acceleration added to
+    // gravity for a moment rather than a velocity handed to each particle.
+    this.kickX = 0;
+    this.kickY = 0;
+    this.kickZ = 0;
+    this.kickTime = 0;
+
+    this.substeps = 1;
+    this.iterations = CONFIG.fluid.solverIterations;
+    this.contactCount = 0;
+    this._carry = 0;
+  }
+
+  /**
+   * Water picks a coarser particle than sand on purpose. Sand needs many
+   * particles because every one of them is visible; water is drawn as a
+   * surface, so its particles are hidden and can be several times larger for
+   * the same amount of stuff in the box.
+   */
+  preferredRadius(width, height, qualityScale = 1) {
+    const f = CONFIG.fluid;
+    const base = clamp(Math.min(width, height) / f.divisor, f.minRadius, f.maxRadius);
+    return clamp(base / Math.cbrt(qualityScale), f.minRadius, f.maxRadius);
+  }
+
+  configure(width, height, radius) {
+    this.radius = radius;
+    this.diameter = radius * 2;
+    // Rest spacing is one diameter: the particle count and the fill volume are
+    // derived from the same number in idealCount, so the body settles at the
+    // fill level asked for instead of drifting to whatever the solver likes.
+    this.spacing = this.diameter;
+    this.smoothing = this.spacing * CONFIG.fluid.smoothingRatio;
+
+    this.depth = Math.max(
+      this.diameter * 2,
+      Math.min(CONFIG.fluid.depthLayers * this.diameter, Math.min(width, height) * 0.22),
+    );
+    this.bounds = { x0: 0, y0: 0, x1: width, y1: height };
+    this.inner = {
+      x0: radius,
+      y0: radius,
+      z0: radius,
+      x1: Math.max(radius, width - radius),
+      y1: Math.max(radius, height - radius),
+      z1: Math.max(radius, this.depth - radius),
+    };
+    // One cell per smoothing radius, so the 3x3x3 scan is exactly the kernel
+    // support and nothing inside it is missed.
+    this.grid.configure(width, height, this.depth, this.smoothing);
+
+    this.restDensity = latticeDensity(this.spacing, this.smoothing);
+    this.gravityMagnitude = CONFIG.sim.gravityScale * Math.hypot(width, height);
+    this.speedNorm = 0.35 * Math.sqrt(2 * this.gravityMagnitude * height);
+    this.pokeRadius = Math.max(
+      CONFIG.input.pokeRadiusMin,
+      Math.min(width, height) * CONFIG.input.pokeRadiusFrac,
+    );
+  }
+
+  /** Same pinned-radius problem the sand has; same lever. */
+  targetCount(width, height, qualityScale = 1) {
+    const ideal = this.idealCount();
+    const f = CONFIG.fluid;
+    const pinned = Math.min(width, height) / f.divisor >= f.maxRadius;
+    return pinned ? Math.round(ideal * Math.min(1, qualityScale)) : ideal;
+  }
+
+  /** Particle count that fills `CONFIG.fluid.fill` of the front view. */
+  idealCount(fill = CONFIG.fluid.fill) {
+    const { x1, y1 } = this.bounds;
+    const volume = x1 * (fill * y1) * this.depth;
+    const ideal = volume / (this.spacing * this.spacing * this.spacing);
+    return Math.round(clamp(ideal, CONFIG.fluid.minParticles, Math.min(CONFIG.fluid.maxParticles, this.capacity)));
+  }
+
+  ensureNeighbourCapacity(n) {
+    const need = n * this.maxNeighbours;
+    if (this.nbr.length >= need) return;
+    this.nbr = new Int32Array(need);
+  }
+
+  fill(count) {
+    const n = Math.min(count, this.capacity);
+    this.n = n;
+    this.grid.ensureCapacity(n);
+    this.ensureNeighbourCapacity(n);
+    this.kickTime = 0;
+
+    const rand = this.random;
+    const b = this.inner;
+    // Start on a lattice at rest spacing, jittered a little. Starting at rest
+    // spacing matters: dropping water in over-packed hands the solver a large
+    // density error on frame one and it answers with an explosion.
+    const pitch = this.spacing;
+    const perX = Math.max(1, Math.floor((b.x1 - b.x0) / pitch));
+    const perZ = Math.max(1, Math.floor((b.z1 - b.z0) / pitch) + 1);
+    const perLayer = perX * perZ;
+    const rows = Math.ceil(n / perLayer);
+    const surface = b.y1 - rows * pitch;
+
+    for (let i = 0; i < n; i++) {
+      const row = Math.floor(i / perLayer);
+      const rem = i % perLayer;
+      const j = rem % perX;
+      const k = Math.floor(rem / perX);
+      this.x[i] = clamp(b.x0 + (j + 0.5) * pitch + (rand() - 0.5) * pitch * 0.2, b.x0, b.x1);
+      this.y[i] = clamp(surface + row * pitch + (rand() - 0.5) * pitch * 0.2, b.y0, b.y1);
+      this.z[i] = clamp(b.z0 + k * pitch + (rand() - 0.5) * pitch * 0.2, b.z0, b.z1);
+      this.vx[i] = 0;
+      this.vy[i] = 0;
+      this.vz[i] = 0;
+      this.speed01[i] = 0;
+    }
+  }
+
+  setCount(count) {
+    const target = Math.min(Math.max(count, 0), this.capacity);
+    if (target === this.n) return;
+    if (target < this.n) {
+      this.n = target;
+      return;
+    }
+    // Growing: refill rather than sprinkling particles into a settled body,
+    // where they would land inside their neighbours and blow the density
+    // constraint apart.
+    this.fill(target);
+  }
+
+  clampToBounds() {
+    const b = this.inner;
+    for (let i = 0; i < this.n; i++) {
+      this.x[i] = clamp(this.x[i], b.x0, b.x1);
+      this.y[i] = clamp(this.y[i], b.y0, b.y1);
+      this.z[i] = clamp(this.z[i], b.z0, b.z1);
+    }
+  }
+
+  /** Shake: jerk the container, exactly as the sand does. See Grains.splash. */
+  splash(strength) {
+    const rand = this.random;
+    const cfg = CONFIG.sim;
+    const g = this.gravityMagnitude || 1;
+    let ux = -this.gdx;
+    let uy = -this.gdy;
+    let uz = -this.gdz;
+    const lean = (rand() - 0.5) * 2 * cfg.splashLean;
+    const tx = -uy * lean;
+    const ty = ux * lean;
+    ux += tx;
+    uy += ty;
+    const inv = 1 / (Math.hypot(ux, uy, uz) || 1);
+    ux *= inv; uy *= inv; uz *= inv;
+    const a = g * (cfg.splashAccel + cfg.splashGain * Math.max(0, strength - 1));
+    this.kickX = ux * a;
+    this.kickY = uy * a;
+    this.kickZ = uz * a;
+    this.kickTime = cfg.splashDuration;
+  }
+
+  poke(cx, cy, dragX, dragY, dt) {
+    const r = this.pokeRadius;
+    const r2 = r * r;
+    const push = this.gravityMagnitude * CONFIG.input.pokeAccel * dt;
+    const dragScale = CONFIG.input.pokeDrag;
+    const { x, y, vx, vy } = this;
+    for (let i = 0; i < this.n; i++) {
+      const ox = x[i] - cx;
+      const oy = y[i] - cy;
+      const d2 = ox * ox + oy * oy;
+      if (d2 > r2) continue;
+      const d = Math.sqrt(d2) || 1e-4;
+      const falloff = 1 - d / r;
+      const k = (push * falloff) / d;
+      vx[i] += ox * k + dragX * dragScale * falloff;
+      vy[i] += oy * k + dragY * dragScale * falloff;
+    }
+  }
+
+  // ------------------------------------------------------------------ stepping
+
+  step(dtFrame, gx, gy, gz) {
+    const n = this.n;
+    if (n === 0) return;
+    const cfg = CONFIG.fluid;
+
+    const h = 1 / cfg.fixedHz;
+    this._carry += dtFrame;
+    let steps = Math.floor(this._carry / h);
+    if (steps > cfg.maxSubsteps) steps = cfg.maxSubsteps;
+    if (steps < 1) {
+      if (this._carry < h) return;
+      steps = 1;
+    }
+    this._carry -= steps * h;
+    if (this._carry > h * cfg.maxSubsteps) this._carry = 0;
+    this.substeps = steps;
+    this.iterations = cfg.solverIterations;
+
+    const gmag = Math.hypot(gx, gy, gz) || 1;
+    this.gdx = gx / gmag;
+    this.gdy = gy / gmag;
+    this.gdz = gz / gmag;
+
+    for (let s = 0; s < steps; s++) {
+      let ax = gx;
+      let ay = gy;
+      let az = gz;
+      if (this.kickTime > 0) {
+        ax += this.kickX;
+        ay += this.kickY;
+        az += this.kickZ;
+        this.kickTime -= h;
+      }
+      this.predict(h, ax, ay, az);
+      this.grid.build(this.px, this.py, this.pz, n);
+      this.gatherNeighbours();
+      for (let it = 0; it < this.iterations; it++) {
+        this.solveDensity();
+        this.applyCorrection();
+      }
+      this.commit(h);
+      // After commit, so the separation shows up in the next frame's velocity
+      // rather than being read back as a spurious impulse this one.
+      this.separate();
+      this.viscosity();
+    }
+    this.updateShading(dtFrame);
+  }
+
+  predict(h, gx, gy, gz) {
+    const n = this.n;
+    const { x, y, z, px, py, pz, vx, vy, vz } = this;
+    const damp = Math.exp(-CONFIG.fluid.drag * h);
+    for (let i = 0; i < n; i++) {
+      const nvx = (vx[i] + gx * h) * damp;
+      const nvy = (vy[i] + gy * h) * damp;
+      const nvz = (vz[i] + gz * h) * damp;
+      vx[i] = nvx; vy[i] = nvy; vz[i] = nvz;
+      px[i] = x[i] + nvx * h;
+      py[i] = y[i] + nvy * h;
+      pz[i] = z[i] + nvz * h;
+    }
+    this.project(px, py, pz, n);
+  }
+
+  /** Keep predicted positions inside the glass. */
+  project(px, py, pz, n) {
+    const b = this.inner;
+    for (let i = 0; i < n; i++) {
+      if (px[i] < b.x0) px[i] = b.x0; else if (px[i] > b.x1) px[i] = b.x1;
+      if (py[i] < b.y0) py[i] = b.y0; else if (py[i] > b.y1) py[i] = b.y1;
+      if (pz[i] < b.z0) pz[i] = b.z0; else if (pz[i] > b.z1) pz[i] = b.z1;
+    }
+  }
+
+  gatherNeighbours() {
+    const n = this.n;
+    const grid = this.grid;
+    const { px, py, pz, nbr, nbrCount } = this;
+    const cap = this.maxNeighbours;
+    const hh = this.smoothing;
+    const h2 = hh * hh;
+    const cols = grid.cols;
+    const rows = grid.rows;
+    const slabs = grid.slabs;
+    const layer = cols * rows;
+    const start = grid.cellStart;
+    const order = grid.order;
+    const inv = 1 / grid.cellSize;
+    let total = 0;
+
+    for (let i = 0; i < n; i++) {
+      const xi = px[i], yi = py[i], zi = pz[i];
+      let cx = (xi * inv) | 0, cy = (yi * inv) | 0, cz = (zi * inv) | 0;
+      if (cx < 0) cx = 0; else if (cx >= cols) cx = cols - 1;
+      if (cy < 0) cy = 0; else if (cy >= rows) cy = rows - 1;
+      if (cz < 0) cz = 0; else if (cz >= slabs) cz = slabs - 1;
+
+      let count = 0;
+      const base = i * cap;
+      const z0 = cz > 0 ? cz - 1 : 0, z1 = cz < slabs - 1 ? cz + 1 : slabs - 1;
+      const y0 = cy > 0 ? cy - 1 : 0, y1 = cy < rows - 1 ? cy + 1 : rows - 1;
+      const x0 = cx > 0 ? cx - 1 : 0, x1 = cx < cols - 1 ? cx + 1 : cols - 1;
+      for (let bz = z0; bz <= z1; bz++) {
+        for (let by = y0; by <= y1; by++) {
+          const rowBase = bz * layer + by * cols;
+          const from = start[rowBase + x0];
+          const to = start[rowBase + x1 + 1];
+          for (let s = from; s < to; s++) {
+            const j = order[s];
+            if (j === i) continue;
+            const dx = xi - px[j], dy = yi - py[j], dz = zi - pz[j];
+            if (dx * dx + dy * dy + dz * dz >= h2) continue;
+            if (count >= cap) break;
+            nbr[base + count++] = j;
+          }
+          if (count >= cap) break;
+        }
+        if (count >= cap) break;
+      }
+      nbrCount[i] = count;
+      total += count;
+    }
+    this.contactCount = total >> 1;
+  }
+
+  /**
+   * Density, then the Lagrange multiplier that will correct it. Both loops run
+   * over the whole fluid before anything moves (Jacobi, not Gauss-Seidel) —
+   * with a shared constraint like density, solving in place makes the result
+   * depend on particle ordering and the surface ends up visibly striped.
+   */
+  solveDensity() {
+    const n = this.n;
+    const { px, py, pz, nbr, nbrCount, lambda, density } = this;
+    const cap = this.maxNeighbours;
+    const hh = this.smoothing;
+    const inv = 1 / hh;
+    const gradK = GRAD_K * inv;
+    const rho0 = this.restDensity;
+    const eps = CONFIG.fluid.relaxation;
+
+    for (let i = 0; i < n; i++) {
+      const xi = px[i], yi = py[i], zi = pz[i];
+      let rho = 1; // self contribution: W(0) = 1
+      // Gradient with respect to this particle, and the sum of squared
+      // gradients with respect to every neighbour.
+      let gx = 0, gy = 0, gz = 0, sumSq = 0;
+      const base = i * cap;
+      const count = nbrCount[i];
+      for (let k = 0; k < count; k++) {
+        const j = nbr[base + k];
+        const dx = xi - px[j], dy = yi - py[j], dz = zi - pz[j];
+        const r = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (r <= 1e-6 || r >= hh) continue;
+        const q = r * inv;
+        const w = 1 - q * q;
+        rho += w * w * w;
+        // Spiky falls off with distance, so its gradient points *toward* the
+        // neighbour: dW/dr is negative. Dropping that minus sign inverts the
+        // whole solver — over-dense particles pull together instead of pushing
+        // apart, and the fluid collapses to a point.
+        const gm = -(gradK * (1 - q) * (1 - q)) / r;
+        const cx = dx * gm, cy = dy * gm, cz = dz * gm;
+        gx += cx; gy += cy; gz += cz;
+        sumSq += cx * cx + cy * cy + cz * cz;
+      }
+
+      // The glass cuts the kernel short. Add back what the fluid on the other
+      // side would have contributed, or every particle near a wall reads as
+      // under-dense and the body creeps into the glass and sticks there.
+      rho += rho0 * (
+        wallDensity(xi - this.bounds.x0, hh) + wallDensity(this.bounds.x1 - xi, hh) +
+        wallDensity(yi - this.bounds.y0, hh) + wallDensity(this.bounds.y1 - yi, hh) +
+        wallDensity(zi - this.bounds.z0, hh) + wallDensity(this.depth - zi, hh)
+      );
+
+      density[i] = rho;
+      const c = rho / rho0 - 1;
+      if (c <= 0) {
+        // Free surface: let it expand. Clamping here is what stops the surface
+        // being pulled flat and lets waves and spray exist at all.
+        lambda[i] = 0;
+        continue;
+      }
+      sumSq += gx * gx + gy * gy + gz * gz;
+      lambda[i] = -c / (sumSq / (rho0 * rho0) + eps);
+    }
+  }
+
+  applyCorrection() {
+    const n = this.n;
+    const { px, py, pz, nbr, nbrCount, lambda, dx, dy, dz } = this;
+    const cap = this.maxNeighbours;
+    const hh = this.smoothing;
+    const inv = 1 / hh;
+    const gradK = GRAD_K * inv;
+    const rho0 = this.restDensity;
+    const k = CONFIG.fluid.surfacePressure;
+    const dq = CONFIG.fluid.surfaceDistance;
+    const wq = Math.pow(1 - dq * dq, 3);
+
+    for (let i = 0; i < n; i++) {
+      const xi = px[i], yi = py[i], zi = pz[i];
+      const li = lambda[i];
+      let ax = 0, ay = 0, az = 0;
+      const base = i * cap;
+      const count = nbrCount[i];
+      for (let m = 0; m < count; m++) {
+        const j = nbr[base + m];
+        const ox = xi - px[j], oy = yi - py[j], oz = zi - pz[j];
+        const r = Math.sqrt(ox * ox + oy * oy + oz * oz);
+        if (r <= 1e-6 || r >= hh) continue;
+        const q = r * inv;
+        const w = 1 - q * q;
+        // Artificial pressure. Without it particles clump into strands and
+        // beads under the free surface (tensile instability) instead of
+        // holding a sheet; with it they keep a small standoff and the surface
+        // behaves as if it had surface tension.
+        const s = -k * Math.pow((w * w * w) / wq, 4);
+        const gm = -(gradK * (1 - q) * (1 - q)) / r; // see solveDensity
+
+        const c = (li + lambda[j] + s) * gm;
+        ax += ox * c; ay += oy * c; az += oz * c;
+      }
+      const s = 1 / rho0;
+      dx[i] = ax * s; dy[i] = ay * s; dz[i] = az * s;
+    }
+
+    const maxMove = this.spacing * CONFIG.fluid.maxCorrection;
+    for (let i = 0; i < n; i++) {
+      let mx = dx[i], my = dy[i], mz = dz[i];
+      const m = Math.hypot(mx, my, mz);
+      if (m > maxMove) {
+        const t = maxMove / m;
+        mx *= t; my *= t; mz *= t;
+      }
+      px[i] += mx; py[i] += my; pz[i] += mz;
+    }
+    this.project(px, py, pz, n);
+  }
+
+  /**
+   * A hard floor on how close two particles may sit.
+   *
+   * The density constraint does not provide one, and cannot. A handful of
+   * particles driven together by a splash forms a group that is *locally*
+   * packed but *globally* under-dense — it has lost the neighbours that used
+   * to surround it — so C comes out negative, lambda is clamped to zero at the
+   * free surface, and no correction is ever generated. The group is welded
+   * into a bead that survives forever, and because several particles are then
+   * stacked on one point the thickness field spikes and draws it as a dark
+   * blob. Left alone they accumulate: every splash makes a few more.
+   *
+   * So this is separate from the fluid pressure on purpose. It is unconditional
+   * — it does not care what the density says — and it only ever acts on pairs
+   * far closer than rest spacing, which normal compression never reaches.
+   */
+  separate() {
+    const n = this.n;
+    const { x, y, z, nbr, nbrCount, dx, dy, dz } = this;
+    const cap = this.maxNeighbours;
+    const minDist = this.spacing * CONFIG.fluid.minSeparation;
+    const stiffness = CONFIG.fluid.separationStiffness;
+
+    for (let i = 0; i < n; i++) {
+      const xi = x[i], yi = y[i], zi = z[i];
+      let ax = 0, ay = 0, az = 0;
+      const base = i * cap;
+      const count = nbrCount[i];
+      for (let k = 0; k < count; k++) {
+        const j = nbr[base + k];
+        let ox = xi - x[j], oy = yi - y[j], oz = zi - z[j];
+        const r = Math.sqrt(ox * ox + oy * oy + oz * oz);
+        if (r >= minDist) continue;
+        if (r > 1e-4) {
+          const inv = 1 / r;
+          ox *= inv; oy *= inv; oz *= inv;
+        } else {
+          // Exactly coincident, which the wall clamp produces readily: every
+          // particle pushed past a wall lands on precisely the same plane.
+          // There is no direction to separate along, so take a fixed one.
+          scatterDir(i, j);
+          ox = SEP[0]; oy = SEP[1]; oz = SEP[2];
+        }
+        // Each side of the pair sees this and takes half, so the neighbour's
+        // own pass supplies the opposite push.
+        const push = (minDist - r) * 0.5 * stiffness;
+        ax += ox * push; ay += oy * push; az += oz * push;
+      }
+      dx[i] = ax; dy[i] = ay; dz[i] = az;
+    }
+
+    for (let i = 0; i < n; i++) {
+      x[i] += dx[i]; y[i] += dy[i]; z[i] += dz[i];
+    }
+    this.project(x, y, z, n);
+  }
+
+  /** Read the velocity back out of the position change, PBD style. */
+  commit(h) {
+    const n = this.n;
+    const { x, y, z, px, py, pz, vx, vy, vz } = this;
+    const invH = 1 / h;
+    const maxV = (this.spacing * CONFIG.fluid.maxTravel) / h;
+    for (let i = 0; i < n; i++) {
+      let ux = (px[i] - x[i]) * invH;
+      let uy = (py[i] - y[i]) * invH;
+      let uz = (pz[i] - z[i]) * invH;
+      const m = Math.hypot(ux, uy, uz);
+      if (m > maxV) {
+        const t = maxV / m;
+        ux *= t; uy *= t; uz *= t;
+      }
+      vx[i] = ux; vy[i] = uy; vz[i] = uz;
+      x[i] = px[i]; y[i] = py[i]; z[i] = pz[i];
+    }
+  }
+
+  /**
+   * XSPH: nudge each particle toward the average velocity of its neighbours.
+   * This is the whole of the fluid's viscosity — without it PBF is glassy and
+   * every splash shatters instead of pouring.
+   */
+  viscosity() {
+    const n = this.n;
+    const { x, y, z, vx, vy, vz, ax, ay, az, nbr, nbrCount } = this;
+    const cap = this.maxNeighbours;
+    const hh = this.smoothing;
+    const inv = 1 / hh;
+    const c = CONFIG.fluid.viscosity;
+    if (c <= 0) return;
+
+    for (let i = 0; i < n; i++) {
+      const xi = x[i], yi = y[i], zi = z[i];
+      let sx = 0, sy = 0, sz = 0, wsum = 0;
+      const base = i * cap;
+      const count = nbrCount[i];
+      for (let k = 0; k < count; k++) {
+        const j = nbr[base + k];
+        const dx = xi - x[j], dy = yi - y[j], dz = zi - z[j];
+        const r2 = dx * dx + dy * dy + dz * dz;
+        if (r2 >= hh * hh) continue;
+        const q = Math.sqrt(r2) * inv;
+        const w = 1 - q * q;
+        const ww = w * w * w;
+        sx += (vx[j] - vx[i]) * ww;
+        sy += (vy[j] - vy[i]) * ww;
+        sz += (vz[j] - vz[i]) * ww;
+        wsum += ww;
+      }
+      if (wsum > 1e-6) {
+        const s = c / wsum;
+        ax[i] = vx[i] + sx * s;
+        ay[i] = vy[i] + sy * s;
+        az[i] = vz[i] + sz * s;
+      } else {
+        ax[i] = vx[i]; ay[i] = vy[i]; az[i] = vz[i];
+      }
+    }
+    for (let i = 0; i < n; i++) {
+      vx[i] = ax[i]; vy[i] = ay[i]; vz[i] = az[i];
+    }
+  }
+
+  updateShading(dt) {
+    const n = this.n;
+    const { vx, vy, vz, speed01 } = this;
+    const invSpeed = 1 / this.speedNorm;
+    const blend = 1 - Math.exp(-CONFIG.fluid.foamSmoothing * dt);
+    for (let i = 0; i < n; i++) {
+      const s = clamp(Math.hypot(vx[i], vy[i], vz[i]) * invSpeed, 0, 1);
+      speed01[i] += (s - speed01[i]) * blend;
+    }
+  }
+}
+
+/**
+ * Density of a particle sitting in an infinite lattice at `spacing`, measured
+ * with the same kernel the solver uses. Deriving rest density this way rather
+ * than picking a number means the fluid settles at exactly the spacing that
+ * idealCount assumed, so the body fills the fraction of the box that was asked
+ * for instead of swelling or collapsing to find its own level.
+ */
+function latticeDensity(spacing, smoothing) {
+  const reach = Math.ceil(smoothing / spacing);
+  let rho = 0;
+  for (let a = -reach; a <= reach; a++) {
+    for (let b = -reach; b <= reach; b++) {
+      for (let c = -reach; c <= reach; c++) {
+        const r = Math.sqrt(a * a + b * b + c * c) * spacing;
+        if (r >= smoothing) continue;
+        const w = 1 - (r / smoothing) ** 2;
+        rho += w * w * w;
+      }
+    }
+  }
+  return rho;
+}
+
+/**
+ * Fraction of a Poly6 kernel's mass lying beyond a flat wall at distance `d`.
+ *
+ * Exact, not fitted: the kernel integral over the cap past the plane works out
+ * to 0.5 - (315/256) * P(s) with s = d/h. Multiplying this by the rest density
+ * gives back exactly the contribution of the fluid that would have been there
+ * if the wall were not.
+ */
+function wallDensity(d, smoothing) {
+  const s = d / smoothing;
+  if (s >= 1) return 0;
+  if (s <= 0) return 0.5;
+  const s2 = s * s;
+  const s3 = s2 * s;
+  const s5 = s3 * s2;
+  const s7 = s5 * s2;
+  const s9 = s7 * s2;
+  const p = s - (4 / 3) * s3 + (6 / 5) * s5 - (4 / 7) * s7 + s9 / 9;
+  const f = 0.5 - (315 / 256) * p;
+  return f > 0 ? f : 0;
+}

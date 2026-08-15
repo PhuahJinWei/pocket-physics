@@ -265,4 +265,111 @@ export const CONFIG = {
     // Coarsest allowed, as a fraction of the designed grain count.
     minScale: 0.22,
   },
+
+  // --------------------------------------------------------------- water
+  // Position Based Fluids. See fluid.js for why this is a separate solver
+  // rather than the granular one with friction set to zero.
+  fluid: {
+    // Water particles are far coarser than sand grains, and deliberately so:
+    // sand needs a high count because every grain is visible, while water is
+    // drawn as a surface and hides its particles entirely. Coarser particles
+    // mean the same volume of liquid for a quarter of the work.
+    divisor: 62,
+    minRadius: 5,
+    maxRadius: 15,
+    depthLayers: 4,
+    fill: 0.24,
+    minParticles: 200,
+    maxParticles: 6000,
+
+    // Kernel support as a multiple of rest spacing. 2.0 gives ~30 neighbours,
+    // which is the usual working point: fewer and the density estimate is too
+    // noisy to hold a flat surface, more and the cost climbs as the cube.
+    smoothingRatio: 2.0,
+    // Poly6 for density, Spiky for its gradient, both normalised to W(0)=1.
+    // Their ratio is the only constant that has to survive that normalisation:
+    // (45/pi h^4) / (315/64 pi h^3) = 2880/315/h, which is GRAD_K in fluid.js.
+    solverIterations: 4,
+    // Constraint force mixing. Stops lambda blowing up where a particle has
+    // almost no neighbours (a lone drop of spray) and the denominator vanishes.
+    relaxation: 0.0008,
+    // Artificial pressure: strength, and the distance it peaks at as a
+    // fraction of the smoothing radius. Counteracts the tensile instability
+    // that otherwise pulls surface particles into beads and strands.
+    surfacePressure: 0.0004,
+    surfaceDistance: 0.2,
+    // Ceilings, both as fractions of rest spacing. A single solver iteration
+    // may not shove a particle further than maxCorrection, and a substep may
+    // not move one further than maxTravel — past a cell width the neighbour
+    // list it was solved against is no longer the one it lands in.
+    maxCorrection: 0.35,
+    maxTravel: 0.9,
+    // Room above the measured mean of ~30. Overflowing silently would drop
+    // real neighbours and read as a density hole.
+    maxNeighbours: 64,
+    // Closest two particles may sit, as a fraction of rest spacing, and how
+    // much of any overlap is resolved per substep. Well below rest, so normal
+    // compression never touches it — this exists only to break up the welded
+    // beads described in Fluid.separate, which the density constraint cannot.
+    minSeparation: 0.62,
+    separationStiffness: 0.8,
+
+    // XSPH velocity smoothing. This is the whole of the viscosity model, and
+    // it is what makes water pour rather than shatter.
+    viscosity: 0.12,
+    drag: 0.05,
+    fixedHz: 60,
+    maxSubsteps: 2,
+    foamSmoothing: 9,
+  },
+
+  water: {
+    // Sprite size as a multiple of particle diameter. Generous on purpose: the
+    // blobs have to overlap heavily or the field is lumpy and the surface
+    // inherits the lumps.
+    // Well above the 2.0 that would merely make blobs touch. Particles at rest
+    // sit on a lattice, and a kernel only as wide as the spacing leaves a
+    // ripple at exactly that frequency — the body came out visibly striped.
+    // Wide blobs average the lattice away.
+    blobSize: 3.6,
+    // Per-particle peak contribution to the thickness field. Moves inversely
+    // with blobSize (wider blobs overlap more), and tuned so a full body sits
+    // below saturation — once the field clips at 1.0 its gradient goes flat and
+    // the surface loses every ripple.
+    gain: 0.058,
+    // Fraction of the canvas the field is rendered at. Half res is cheaper and
+    // doubles as the blur that turns blobs into a surface.
+    fieldScale: 0.5,
+    // Thickness at which water starts, and the width of the soft edge. Low on
+    // purpose: a higher threshold pulls the level set inward from the glass and
+    // rounds off the corners, which reads as a block of gel rather than a tank
+    // of water. Low, and the water meets the wall square.
+    surface: 0.055,
+    soft: 0.055,
+    // Beer-Lambert absorption: how fast colour deepens with thickness.
+    absorb: 4.2,
+    // How strongly the thickness gradient tilts the surface normal.
+    relief: 7.0,
+    // Fraction of that relief a *calm* body keeps, and how fast agitation
+    // restores the rest. The particle lattice leaves a permanent fine ripple
+    // in the field; shaded at full relief it reads as wrinkled plastic, so a
+    // still surface is held nearly glassy and only moving water ripples.
+    calmRipple: 0.1,
+    rippleGain: 2.5,
+    // Coverage: alpha at the silhouette edge, and the Beer-Lambert rate at
+    // which thickness turns opaque. Opacity is the strongest "gel" signal —
+    // real water lets the tank show through wherever it runs thin.
+    alphaMin: 0.35,
+    opacify: 5.0,
+    specular: 0.9,
+    fresnel: 0.10,
+    // Foam wants to be rare. Keyed on speed, it fired across the whole crest of
+    // every wave and turned the water white; it should only catch the fastest
+    // thin edges, so the bias sits well up the speed range.
+    foamAmount: 1.4,
+    foamBias: 0.42,
+    shallow: [0.32, 0.62, 0.68],
+    deep: [0.03, 0.16, 0.30],
+    foam: [0.90, 0.95, 0.97],
+  },
 };

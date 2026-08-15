@@ -8,9 +8,12 @@
 
 import { CONFIG } from './config.js';
 import { VERTEX_SHADER, buildFragmentShader, WALL_VERTEX_SHADER, WALL_FRAGMENT_SHADER } from './shaders.js';
+import { WATER_FIELD_VERTEX, WATER_FIELD_FRAGMENT, WATER_COMPOSITE_VERTEX, WATER_COMPOSITE_FRAGMENT } from './water-shaders.js';
 
 const FLOATS_PER_GRAIN = 8; // x,y,z | light, speed, airborne | sizeJitter, hueJitter
 const STRIDE = FLOATS_PER_GRAIN * 4;
+const FLOATS_PER_DROP = 4; // x, y, z, speed
+const DROP_STRIDE = FLOATS_PER_DROP * 4;
 const BUCKETS = 32;
 
 export class Renderer {
@@ -43,6 +46,19 @@ export class Renderer {
     this.speckRadius = 0.28;
     this._styleKey = '';
     this.contextLost = false;
+
+    // Water pass: its own interleaved buffer, and the offscreen thickness field
+    // it accumulates into. No z-sort here — the field is built with additive
+    // blending, which does not care what order the particles arrive in.
+    //
+    // Sized at 3x the particle count to leave room for the wall images packWater
+    // adds; a particle in a corner can contribute three of them.
+    this.waterCpu = new Float32Array(CONFIG.fluid.maxParticles * 3 * FLOATS_PER_DROP);
+    this.waterGhosts = 0;
+    this.fieldTex = null;
+    this.fieldFbo = null;
+    this.fieldW = 0;
+    this.fieldH = 0;
 
     const opts = {
       alpha: false,
@@ -103,11 +119,95 @@ export class Renderer {
     gl.disable(gl.DEPTH_TEST);
     gl.enable(gl.BLEND);
 
+    this.setupWaterPrograms();
+
     // Grain program is built lazily by ensureGrainStyle on the first draw,
     // because the speck count depends on the sprite's on-screen size.
     this.program = null;
     this.speckCount = 0;
     this._styleKey = '';
+  }
+
+  setupWaterPrograms() {
+    const gl = this.gl;
+
+    this.fieldProgram = buildProgram(gl, WATER_FIELD_VERTEX, WATER_FIELD_FRAGMENT);
+    this.fieldAttrib = {
+      pos: gl.getAttribLocation(this.fieldProgram, 'aPos'),
+      speed: gl.getAttribLocation(this.fieldProgram, 'aSpeed'),
+    };
+    this.fieldUniform = {
+      viewport: gl.getUniformLocation(this.fieldProgram, 'uViewport'),
+      focal: gl.getUniformLocation(this.fieldProgram, 'uFocal'),
+      eye: gl.getUniformLocation(this.fieldProgram, 'uEye'),
+      pointSize: gl.getUniformLocation(this.fieldProgram, 'uPointSize'),
+      depthRange: gl.getUniformLocation(this.fieldProgram, 'uDepthRange'),
+      gain: gl.getUniformLocation(this.fieldProgram, 'uGain'),
+    };
+    this.waterBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.waterBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, this.waterCpu.byteLength, gl.DYNAMIC_DRAW);
+
+    this.compositeProgram = buildProgram(gl, WATER_COMPOSITE_VERTEX, WATER_COMPOSITE_FRAGMENT);
+    this.compositeAttrib = { corner: gl.getAttribLocation(this.compositeProgram, 'aCorner') };
+    this.compositeUniform = {
+      field: gl.getUniformLocation(this.compositeProgram, 'uField'),
+      texel: gl.getUniformLocation(this.compositeProgram, 'uTexel'),
+      shallow: gl.getUniformLocation(this.compositeProgram, 'uShallow'),
+      deep: gl.getUniformLocation(this.compositeProgram, 'uDeep'),
+      foamColor: gl.getUniformLocation(this.compositeProgram, 'uFoamColor'),
+      surface: gl.getUniformLocation(this.compositeProgram, 'uSurface'),
+      soft: gl.getUniformLocation(this.compositeProgram, 'uSoft'),
+      absorb: gl.getUniformLocation(this.compositeProgram, 'uAbsorb'),
+      relief: gl.getUniformLocation(this.compositeProgram, 'uRelief'),
+      specular: gl.getUniformLocation(this.compositeProgram, 'uSpecular'),
+      fresnel: gl.getUniformLocation(this.compositeProgram, 'uFresnel'),
+      foamAmount: gl.getUniformLocation(this.compositeProgram, 'uFoamAmount'),
+      foamBias: gl.getUniformLocation(this.compositeProgram, 'uFoamBias'),
+      alphaMin: gl.getUniformLocation(this.compositeProgram, 'uAlphaMin'),
+      opacify: gl.getUniformLocation(this.compositeProgram, 'uOpacify'),
+      calmRipple: gl.getUniformLocation(this.compositeProgram, 'uCalmRipple'),
+      rippleGain: gl.getUniformLocation(this.compositeProgram, 'uRippleGain'),
+    };
+    // One oversized triangle rather than a quad: same coverage, no seam down
+    // the diagonal, one fewer vertex.
+    this.quadBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+
+    this.fieldTex = null;
+    this.fieldFbo = null;
+    this.fieldW = 0;
+    this.fieldH = 0;
+  }
+
+  /** Offscreen buffer the thickness field accumulates into, at reduced size. */
+  ensureField(deviceW, deviceH) {
+    const scale = CONFIG.water.fieldScale;
+    const w = Math.max(1, Math.round(deviceW * scale));
+    const h = Math.max(1, Math.round(deviceH * scale));
+    if (w === this.fieldW && h === this.fieldH && this.fieldTex) return;
+    const gl = this.gl;
+
+    if (this.fieldTex) gl.deleteTexture(this.fieldTex);
+    if (this.fieldFbo) gl.deleteFramebuffer(this.fieldFbo);
+
+    this.fieldW = w;
+    this.fieldH = h;
+    this.fieldTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this.fieldTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    // Linear sampling is doing real work here: it is the second half of the
+    // blur that turns discrete blobs into a continuous surface.
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    this.fieldFbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.fieldFbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.fieldTex, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
   /**
@@ -261,16 +361,11 @@ export class Renderer {
     gl.uniform3fv(this.wallUniform.color, CONFIG.render.wallColor);
     gl.drawArrays(gl.TRIANGLES, 0, 30);
 
-    // Hand the pipeline back to the grain program.
+    // Leave nothing enabled behind us. Attribute arrays are global state in
+    // WebGL1, so a location left on from one program points a later program's
+    // draw at a stale buffer.
+    gl.disableVertexAttribArray(this.wallAttrib.pos);
     gl.disableVertexAttribArray(this.wallAttrib.shade);
-    gl.useProgram(this.program);
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
-    for (const loc of Object.values(this.attrib)) {
-      if (loc >= 0) gl.enableVertexAttribArray(loc);
-    }
-    gl.vertexAttribPointer(this.attrib.pos, 3, gl.FLOAT, false, STRIDE, 0);
-    gl.vertexAttribPointer(this.attrib.shade, 3, gl.FLOAT, false, STRIDE, 12);
-    gl.vertexAttribPointer(this.attrib.jitter, 2, gl.FLOAT, false, STRIDE, 24);
   }
 
   /** Returns true when the backing store changed size. */
@@ -288,19 +383,187 @@ export class Renderer {
     return true;
   }
 
-  draw(sand) {
+  /**
+   * One entry point for every material. The box is shared; what fills it is
+   * not, so each material owns its own pass from here down.
+   */
+  draw(material) {
     const gl = this.gl;
     if (this.contextLost) return;
 
-    this.ensureGrainStyle(sand.diameter);
-
     gl.clear(gl.COLOR_BUFFER_BIT);
     const focal = CONFIG.render.focal * Math.min(this.width, this.height);
-    // Box first: the sand always lives inside it, so no depth test is needed.
-    this.drawWalls(sand.depth, focal, this.eyeX, this.eyeY);
+    // Box first: the contents always live inside it, so no depth test is needed.
+    this.drawWalls(material.depth, focal, this.eyeX, this.eyeY);
+
+    if (material.n === 0) return;
+    if (material.kind === 'water') this.drawWater(material, focal);
+    else this.drawGrains(material, focal);
+  }
+
+  /**
+   * Pack the water into the field buffer, mirroring anything close to the
+   * glass back across it.
+   *
+   * Without this the water visibly shrinks away from its container: a blob
+   * reaching past the wall spends half its mass outside the box, so the
+   * thickness field sags to roughly half strength within one blob radius of
+   * every wall, drops under the surface threshold, and the level set retreats.
+   * The result reads as a slab of jelly sitting in the middle of the tank
+   * rather than water filling it — pale margins down both sides and rounded-off
+   * corners.
+   *
+   * It is the same half-space truncation the solver hits (see Fluid.solveDensity),
+   * on a different field, and it takes the same answer: method of images. A
+   * mirrored particle contributes exactly what the water on the far side would
+   * have, so the gradient across the wall goes to zero and the field stays flat
+   * right up to the glass. Reflecting in *sim* space rather than screen space
+   * means perspective carries the ghosts to the right place on its own — which
+   * matters here, because the box walls converge with depth and are not a fixed
+   * line on screen.
+   *
+   * Only the four lateral walls get ghosts. Depth needs none: thickness is the
+   * count of particles along a view ray, and that ray genuinely does end at the
+   * front and back glass — nothing is missing to add back.
+   */
+  packWater(fluid, w) {
+    const cpu = this.waterCpu;
+    const limit = (cpu.length / FLOATS_PER_DROP) | 0;
+    const n = Math.min(fluid.n, CONFIG.fluid.maxParticles);
+    const { x, y, z, speed01 } = fluid;
+    const wallX = fluid.bounds.x1;
+    const wallY = fluid.bounds.y1;
+    // A ghost only matters while its blob still overlaps the box.
+    const reach = fluid.diameter * w.blobSize * 0.5;
+
+    let count = 0;
+    const put = (px, py, pz, sp) => {
+      if (count >= limit) return;
+      const o = count * FLOATS_PER_DROP;
+      cpu[o] = px;
+      cpu[o + 1] = py;
+      cpu[o + 2] = pz;
+      cpu[o + 3] = sp;
+      count++;
+    };
+
+    for (let i = 0; i < n; i++) {
+      const xi = x[i];
+      const yi = y[i];
+      const zi = z[i];
+      const si = speed01[i];
+      put(xi, yi, zi, si);
+
+      const left = xi < reach;
+      const right = wallX - xi < reach;
+      const above = yi < reach;
+      const below = wallY - yi < reach;
+      const mx = left ? -xi : 2 * wallX - xi;
+      const my = above ? -yi : 2 * wallY - yi;
+
+      if (left || right) put(mx, yi, zi, si);
+      if (above || below) put(xi, my, zi, si);
+      // Corners lose a quadrant, not just a half-space, so they need the
+      // diagonal image too or they stay pinched.
+      if ((left || right) && (above || below)) put(mx, my, zi, si);
+    }
+    this.waterGhosts = count - n;
+    return count;
+  }
+
+  drawWater(fluid, focal) {
+    const gl = this.gl;
+    const w = CONFIG.water;
+    const deviceW = this.canvas.width;
+    const deviceH = this.canvas.height;
+    this.ensureField(deviceW, deviceH);
+
+    const n = this.packWater(fluid, w);
+    const cpu = this.waterCpu;
+
+    // ---- pass 1: accumulate thickness offscreen
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.fieldFbo);
+    gl.viewport(0, 0, this.fieldW, this.fieldH);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.blendFunc(gl.ONE, gl.ONE);
+
+    gl.useProgram(this.fieldProgram);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.waterBuffer);
+    const floats = n * FLOATS_PER_DROP;
+    if (this.isWebGL2) {
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, cpu, 0, floats);
+    } else {
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, cpu.subarray(0, floats));
+    }
+    gl.enableVertexAttribArray(this.fieldAttrib.pos);
+    gl.enableVertexAttribArray(this.fieldAttrib.speed);
+    gl.vertexAttribPointer(this.fieldAttrib.pos, 3, gl.FLOAT, false, DROP_STRIDE, 0);
+    gl.vertexAttribPointer(this.fieldAttrib.speed, 1, gl.FLOAT, false, DROP_STRIDE, 12);
+
+    gl.uniform2f(this.fieldUniform.viewport, this.width, this.height);
+    gl.uniform1f(this.fieldUniform.focal, focal);
+    gl.uniform2f(this.fieldUniform.eye, this.width * 0.5 + this.eyeX, this.height * 0.5 + this.eyeY);
+    gl.uniform1f(this.fieldUniform.depthRange, fluid.depth);
+    gl.uniform1f(this.fieldUniform.gain, w.gain);
+    // Sprite size is in field pixels, so it carries both the device ratio and
+    // the field's own downscale.
+    gl.uniform1f(
+      this.fieldUniform.pointSize,
+      fluid.diameter * w.blobSize * this.dpr * CONFIG.water.fieldScale,
+    );
+    gl.drawArrays(gl.POINTS, 0, n);
+    gl.disableVertexAttribArray(this.fieldAttrib.pos);
+    gl.disableVertexAttribArray(this.fieldAttrib.speed);
+
+    // ---- pass 2: shade the field as a surface, over the box
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, deviceW, deviceH);
+    const bg = CONFIG.render.background;
+    gl.clearColor(bg[0], bg[1], bg[2], 1);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+    gl.useProgram(this.compositeProgram);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuffer);
+    gl.enableVertexAttribArray(this.compositeAttrib.corner);
+    gl.vertexAttribPointer(this.compositeAttrib.corner, 2, gl.FLOAT, false, 0, 0);
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.fieldTex);
+    gl.uniform1i(this.compositeUniform.field, 0);
+    gl.uniform2f(this.compositeUniform.texel, 1 / this.fieldW, 1 / this.fieldH);
+    gl.uniform3fv(this.compositeUniform.shallow, w.shallow);
+    gl.uniform3fv(this.compositeUniform.deep, w.deep);
+    gl.uniform3fv(this.compositeUniform.foamColor, w.foam);
+    gl.uniform1f(this.compositeUniform.surface, w.surface);
+    gl.uniform1f(this.compositeUniform.soft, w.soft);
+    gl.uniform1f(this.compositeUniform.absorb, w.absorb);
+    gl.uniform1f(this.compositeUniform.relief, w.relief);
+    gl.uniform1f(this.compositeUniform.specular, w.specular);
+    gl.uniform1f(this.compositeUniform.fresnel, w.fresnel);
+    gl.uniform1f(this.compositeUniform.foamAmount, w.foamAmount);
+    gl.uniform1f(this.compositeUniform.foamBias, w.foamBias);
+    gl.uniform1f(this.compositeUniform.alphaMin, w.alphaMin);
+    gl.uniform1f(this.compositeUniform.opacify, w.opacify);
+    gl.uniform1f(this.compositeUniform.calmRipple, w.calmRipple);
+    gl.uniform1f(this.compositeUniform.rippleGain, w.rippleGain);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.disableVertexAttribArray(this.compositeAttrib.corner);
+  }
+
+  drawGrains(sand, focal) {
+    const gl = this.gl;
+    this.ensureGrainStyle(sand.diameter);
+    gl.useProgram(this.program);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+    for (const loc of Object.values(this.attrib)) {
+      if (loc >= 0) gl.enableVertexAttribArray(loc);
+    }
+    gl.vertexAttribPointer(this.attrib.pos, 3, gl.FLOAT, false, STRIDE, 0);
+    gl.vertexAttribPointer(this.attrib.shade, 3, gl.FLOAT, false, STRIDE, 12);
+    gl.vertexAttribPointer(this.attrib.jitter, 2, gl.FLOAT, false, STRIDE, 24);
 
     const n = sand.n;
-    if (n === 0) return;
 
     // Counting sort by z bucket, deepest first, so the pack order is
     // back-to-front for the grain pass.

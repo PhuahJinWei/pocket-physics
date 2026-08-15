@@ -12,12 +12,26 @@ export class Hud {
     this.stick = root.querySelector('#stick');
     this.knob = root.querySelector('#knob');
     this.fatal = root.querySelector('#fatal');
+    this.material = root.querySelector('#material');
 
     this.statsVisible = false;
     this.onStick = null;
+    this.onMaterial = null;
     this._hintTimer = 0;
     this._statsTimer = 0;
     this.bindStick();
+    if (this.material) {
+      this.material.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (this.onMaterial) this.onMaterial();
+      });
+      // Otherwise the tap that switches material also pokes the sand under it.
+      this.material.addEventListener('pointerdown', (e) => e.stopPropagation());
+    }
+  }
+
+  setMaterial(label) {
+    if (this.material) this.material.textContent = label;
   }
 
   setHint(text) {
@@ -109,8 +123,9 @@ export class Hud {
     const rows = [
       ['fps', info.fps.toFixed(0)],
       ['work', info.workMs.toFixed(1) + ' ms'],
-      ['grains', String(info.grains)],
-      ['contacts', formatCount(info.contacts)],
+      ['material', info.material],
+      [info.material === 'Water' ? 'particles' : 'grains', String(info.grains)],
+      [info.material === 'Water' ? 'neighbours' : 'contacts', formatCount(info.contacts)],
       ['radius', info.radius.toFixed(2) + ' px'],
       ['depth', Math.round(info.depth) + ' px'],
       ['solve', `${info.substeps}×${info.iterations}`],

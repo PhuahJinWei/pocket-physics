@@ -37,6 +37,11 @@ import { clamp, makeRandom } from './util.js';
 
 export class Grains {
   constructor(capacity) {
+    this.kind = 'sand';
+    this.label = 'Sand';
+    // Lean the bed against the back wall: a granular pile holds whatever slope
+    // it is given, and the lean is a strong 3D cue on a desktop with no sensor.
+    this.zBias = CONFIG.input.zBias;
     this.capacity = capacity;
     this.n = 0;
 
@@ -185,6 +190,31 @@ export class Grains {
     this.active = new Int32Array(cap);
     this.contactCapacity = cap;
     this.ensureHash(cap);
+  }
+
+  /**
+   * Sand wants the finest grain the device can hold: every grain is visible,
+   * so grain size *is* the look. Performance headroom buys a finer grain, never
+   * a deeper bed — count always fills the same volume, so the amount of sand
+   * looks constant per device. Count goes with 1/r^3, hence the cube root.
+   */
+  preferredRadius(width, height, qualityScale = 1) {
+    const g = CONFIG.grain;
+    const base = clamp(Math.min(width, height) / g.divisor, g.minRadius, g.maxRadius);
+    return clamp(base / Math.cbrt(qualityScale), g.minRadius, g.maxRadius);
+  }
+
+  /**
+   * On a large screen the wanted radius exceeds maxRadius and gets pinned
+   * there — and since the tuner coarsens by *growing* grains, pinning leaves it
+   * with no lever at all: it drops quality, nothing changes, and the device
+   * just runs slow forever. When that happens, trade bed depth instead.
+   */
+  targetCount(width, height, qualityScale = 1) {
+    const ideal = this.idealCount();
+    const g = CONFIG.grain;
+    const pinned = Math.min(width, height) / g.divisor >= g.maxRadius;
+    return pinned ? Math.round(ideal * Math.min(1, qualityScale)) : ideal;
   }
 
   /** Grain count that fills `CONFIG.bed.fill` of the front view when settled. */

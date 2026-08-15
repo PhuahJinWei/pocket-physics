@@ -1,7 +1,7 @@
 // Wiring: viewport -> box size, input -> gravity, frame loop, adaptive quality.
 
 import { CONFIG } from './config.js';
-import { Grains } from './grains.js';
+import { MaterialSet } from './materials.js';
 import { Renderer } from './renderer.js';
 import { GravityInput } from './gravity.js';
 import { PokeInput } from './poke.js';
@@ -21,7 +21,9 @@ try {
   throw err;
 }
 
-const sand = new Grains(CONFIG.bed.maxGrains);
+const materials = new MaterialSet();
+if (params.has('material')) materials.select(params.get('material'));
+let sand = materials.current;
 const gravity = new GravityInput();
 const poke = new PokeInput(canvas);
 const tuner = new Tuner();
@@ -61,27 +63,18 @@ function measureViewport() {
   };
 }
 
+// Both of these are the material's call now: sand wants the finest grain the
+// device can afford because every grain is visible, water wants a coarse
+// particle because it is drawn as a surface. See materials.js.
 function grainRadius(width, height) {
   if (forcedRadiusOverride) return forcedRadiusOverride;
   if (forcedRadius) return forcedRadius;
-  const g = CONFIG.grain;
-  const base = clamp(Math.min(width, height) / g.divisor, g.minRadius, g.maxRadius);
-  // Performance headroom buys *finer* grains, never a deeper bed: count always
-  // fills the same volume, so the amount of sand looks constant per device.
-  // Count goes with 1/r^3 in a 3D box, hence the cube root.
-  return clamp(base / Math.cbrt(tuner.scale), g.minRadius, g.maxRadius);
+  return sand.preferredRadius(width, height, tuner.scale);
 }
 
 function targetCount() {
   if (forcedGrains) return Math.min(forcedGrains, sand.capacity);
-  const ideal = sand.idealCount();
-  // On a large screen the wanted grain radius exceeds maxRadius and gets
-  // pinned there — and since the tuner coarsens by *growing* grains, pinning
-  // leaves it with no lever at all: it drops quality, nothing changes, and the
-  // device just runs slow forever. When that happens, trade bed depth instead.
-  const g = CONFIG.grain;
-  const pinned = Math.min(viewWidth, viewHeight) / g.divisor >= g.maxRadius;
-  return pinned ? Math.round(ideal * Math.min(1, tuner.scale)) : ideal;
+  return sand.targetCount(viewWidth, viewHeight, tuner.scale);
 }
 
 /**
@@ -121,11 +114,33 @@ function reset() {
   sand.fill(targetCount());
 }
 
+/**
+ * Switch what is in the box. Each material keeps its own state, so coming back
+ * to one lands on the pile you left rather than re-running a settle — but a
+ * material being seen for the first time has to be sized and filled here,
+ * since layout() only ever ran for whichever one was current at load.
+ */
+function switchMaterial() {
+  // Asked before advancing, so it is about the material we are moving to.
+  const fresh = materials.isFresh(materials.nextId);
+  sand = materials.next();
+  gravity.zBias = sand.zBias;
+  radius = grainRadius(viewWidth, viewHeight);
+  sand.configure(viewWidth, viewHeight, radius);
+  if (fresh || sand.n === 0) sand.fill(targetCount());
+  else sand.clampToBounds();
+  hud.setMaterial(materials.label);
+  hud.setHint(HINT);
+}
+
 layout(true);
+gravity.zBias = sand.zBias;
+hud.setMaterial(materials.label);
 
 // ---------------------------------------------------------------- input setup
 
 gravity.onShake = (strength) => sand.splash(strength);
+hud.onMaterial = switchMaterial;
 
 hud.onStick = (x, y, active) => {
   gravity.stick.x = x;
@@ -147,8 +162,8 @@ if (touch && gravity.supportsSensors && !gravity.demo) {
 }
 
 const HINT = touch
-  ? 'Tilt to pour · touch to push · shake to splash'
-  : 'Arrows / WASD to tilt · drag to push · space to splash · ` for stats';
+  ? 'Tilt to pour · touch to push · shake to splash · tap Sand/Water to switch'
+  : 'Arrows / WASD to tilt · drag to push · space to splash · M for material · ` for stats';
 hud.setHint(HINT);
 
 poke.onFirstTouch = () => {
@@ -169,6 +184,7 @@ window.addEventListener('keydown', (e) => {
   switch (e.code) {
     case 'Space': sand.splash(1.4); break;
     case 'KeyR': reset(); break;
+    case 'KeyM': switchMaterial(); break;
     case 'Backquote': hud.toggleStats(); break;
     case 'KeyH': hud.setHint(HINT); break;
     case 'KeyF': gravity.flipped = !gravity.flipped; break;
@@ -250,6 +266,7 @@ function frame(now) {
   hud.update(dt, {
     fps: tuner.fps,
     workMs,
+    material: materials.label,
     grains: sand.n,
     contacts: sand.contactCount,
     radius,
@@ -277,4 +294,10 @@ function frame(now) {
 requestAnimationFrame(frame);
 
 // Handy from a console or a remote debugger: window.SILT.sand.splash(2) etc.
-window.SILT = { sand, gravity, poke, tuner, renderer, hud, reset, applyQuality, CONFIG };
+// `sand` is whichever material is current — the name is historical.
+window.SILT = {
+  get sand() { return sand; },
+  get material() { return sand; },
+  materials, switchMaterial,
+  gravity, poke, tuner, renderer, hud, reset, applyQuality, CONFIG,
+};

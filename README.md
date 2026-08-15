@@ -46,6 +46,7 @@ python tools/bundle.py
 | Gravity        | tilt the device           | arrow keys / WASD              |
 | Push the sand  | touch and drag (multi-touch) | click and drag              |
 | Splash         | shake                     | space                          |
+| Material       | tap the Sand/Water pill   | `M`                            |
 | Reset the bed  | —                         | `R`                            |
 | Stats panel    | —                         | `` ` ``                        |
 | Tilt pad       | shown automatically       | `J`                            |
@@ -55,24 +56,42 @@ python tools/bundle.py
 
 URL parameters: `?stats` opens the stats panel, `?demo` runs a hands-free sway
 (useful for screenshots and for checking the sim without sensors), `?grains=8000`
-and `?r=3` pin the grain count and radius, `?tune=off` disables adaptive quality,
-`?stick` forces the tilt pad, and `?capture` enables `preserveDrawingBuffer` so
-screenshot tools can read the canvas.
+and `?r=3` pin the grain count and radius, `?material=water` opens straight into
+water, `?tune=off` disables adaptive quality, `?stick` forces the tilt pad, and
+`?capture` enables `preserveDrawingBuffer` so screenshot tools can read the
+canvas.
 
 ## How it works
 
 ```
-main.js      frame loop, viewport → sim size, quality changes
-  gravity.js   accelerometer / keys / tilt pad → an effective gravity vector
-  poke.js      pointers → push impulses
-  grains.js    the simulation
-    grid.js      counting-sort spatial hash
-  renderer.js  WebGL point sprites
+main.js        frame loop, viewport → sim size, quality changes
+  gravity.js     accelerometer / keys / tilt pad → an effective gravity vector
+  poke.js        pointers → push impulses
+  materials.js   what is in the box; the interface both solvers implement
+    grains.js      sand — sequential impulses
+    fluid.js       water — position based fluids
+    grid.js        counting-sort spatial hash, shared by both
+  renderer.js    WebGL: point sprites for sand, a screen-space pass for water
     shaders.js
-  tuner.js     adaptive quality
-  hud.js       stats panel, hint line, permission prompt, tilt pad
-config.js    every tunable, in one place
+    water-shaders.js
+  tuner.js       adaptive quality
+  hud.js         stats panel, hint line, permission prompt, tilt pad
+config.js      every tunable, in one place
 ```
+
+**Materials.** Sand and water are separate solvers behind one interface
+(`materials.js` documents it in full). They share the spatial hash, the fixed
+timestep, the tilt input, the shake pulse and the box; they share nothing else,
+because water is not sand with the friction turned off. A Coulomb contact solver
+with `mu = 0` is a *frictionless granular gas* — it resists penetration and
+nothing else, so it stays compressible and never develops the pressure gradient
+that makes water find its own level.
+
+A material also decides its own particle size and count, because the right
+answer differs: sand wants the finest grain the device can afford since every
+grain is visible, while water is drawn as a surface and its particles never are,
+so it uses coarse ones. Measured on a 1600×865 desktop, water is about **half
+the cost of sand** — 1,700 particles at 7.8 ms against 4,700 grains at 14.2 ms.
 
 **Simulation.** Velocity-level sequential impulses in a shallow 3D box (the
 screen is the front glass; the box extends a few grain diameters in Z), over a

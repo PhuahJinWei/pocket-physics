@@ -35,7 +35,13 @@ export class GravityInput {
     // Smoothed unit-ish vector in box space, consumed by the sim.
     this.gx = 0;
     this.gy = 1;
-    this.gz = CONFIG.input.zBias;
+    // How hard gravity leans into the screen when there is no live sensor.
+    // Owned by the material, not by this class: sand wants to pile against the
+    // back wall because that is what makes the box read as 3D, but the same
+    // lean tips a *liquid* surface, and a tilted water line is exactly the
+    // thing water is not allowed to do. Set from the current material.
+    this.zBias = CONFIG.input.zBias;
+    this.gz = this.zBias;
     // Raw sensor readings, surfaced in the stats panel for on-device debugging.
     this.beta = 0;
     this.gamma = 0;
@@ -260,7 +266,7 @@ export class GravityInput {
 
   /** Target direction from tilt, keys, stick, or the demo sway. */
   targetVector() {
-    const zBias = CONFIG.input.zBias;
+    const zBias = this.zBias;
 
     if (this.demo) {
       // Roughly what a hand does: a lazy roll, never fully on its side.
