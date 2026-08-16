@@ -66,11 +66,10 @@ export class Renderer {
     this.fieldW = 0;
     this.fieldH = 0;
 
-    // Water pass: its own interleaved buffer. Sized at 3x the particle count
+    // Liquid pass: its own interleaved buffer. Sized at 3x the particle count
     // to leave room for the wall images packWater adds; a particle in a corner
     // can contribute three of them.
     this.waterCpu = new Float32Array(CONFIG.fluid.maxParticles * 3 * FLOATS_PER_DROP);
-    this.waterGhosts = 0;
 
     const opts = {
       alpha: false,
@@ -85,6 +84,19 @@ export class Renderer {
     this.isWebGL2 = !!this.gl;
     if (!this.gl) this.gl = canvas.getContext('webgl', opts);
     if (!this.gl) throw new Error('WebGL is not available in this browser.');
+
+    // Half-float for the thickness field where the hardware renders to it.
+    //
+    // The field divides each blob by how much box its pixel's ray crosses, and
+    // 8 bits cannot hold both ends of that. Near a wall the divisor is small,
+    // so the near-wall band ran off the top: measured, the last 16px at every
+    // wall clipped flat at 255 while the interior sat at 186. A clipped band
+    // has no gradient, so its normal dies and it shades as a flat strip with a
+    // hard edge — the "lines" down the sides of the water. Scaling the whole
+    // field down to make room only trades that for the other end: the surface
+    // threshold lands at 0.055, which is 3 levels once there is real headroom,
+    // and the level set stair-steps. Half-float has room for both.
+    this.floatField = this.isWebGL2 && !!this.gl.getExtension('EXT_color_buffer_float');
 
     canvas.addEventListener('webglcontextlost', (e) => {
       e.preventDefault();
@@ -201,6 +213,13 @@ export class Renderer {
       pointSize: gl.getUniformLocation(this.fieldProgram, 'uPointSize'),
       depthRange: gl.getUniformLocation(this.fieldProgram, 'uDepthRange'),
       gain: gl.getUniformLocation(this.fieldProgram, 'uGain'),
+      // So each blob can be clipped to the box as it stands at its own depth,
+      // and divided by how much box its pixel's ray crosses.
+      box: gl.getUniformLocation(this.fieldProgram, 'uBox'),
+      fieldSize: gl.getUniformLocation(this.fieldProgram, 'uFieldSize'),
+      radius: gl.getUniformLocation(this.fieldProgram, 'uRadius'),
+      origin: gl.getUniformLocation(this.fieldProgram, 'uOrigin'),
+      rayFloor: gl.getUniformLocation(this.fieldProgram, 'uRayFloor'),
     };
     this.waterBuffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, this.waterBuffer);
@@ -228,13 +247,34 @@ export class Renderer {
       opacify: gl.getUniformLocation(this.compositeProgram, 'uOpacify'),
       calmRipple: gl.getUniformLocation(this.compositeProgram, 'uCalmRipple'),
       rippleGain: gl.getUniformLocation(this.compositeProgram, 'uRippleGain'),
+      // Where the screen sits inside the padded field, and the field's css span.
+      viewport: gl.getUniformLocation(this.compositeProgram, 'uViewport'),
+      fieldOrigin: gl.getUniformLocation(this.compositeProgram, 'uFieldOrigin'),
+      fieldSpan: gl.getUniformLocation(this.compositeProgram, 'uFieldSpan'),
+      // The box, and how wide a strip along each wall it must not shade.
+      box: gl.getUniformLocation(this.compositeProgram, 'uBox'),
+      guard: gl.getUniformLocation(this.compositeProgram, 'uGuard'),
     };
   }
 
-  /** Offscreen buffer the fields accumulate into, at reduced size. */
-  ensureField(deviceW, deviceH, scale) {
-    const w = Math.max(1, Math.round(deviceW * scale));
-    const h = Math.max(1, Math.round(deviceH * scale));
+  /**
+   * Offscreen buffer the fields accumulate into, at reduced size, optionally
+   * padded by `margin` device px on every side.
+   *
+   * The margin exists for one reason: GL discards a point sprite whose CENTRE
+   * falls outside the viewport, whole, no matter how far its size would reach
+   * back in (GLES 2 §2.13, and every driver honours it). The liquid pass mirrors
+   * particles across the glass to fix kernel truncation there, and a particle
+   * against the front glass mirrors to a centre a few px past the screen edge
+   * — which is exactly the image that has to cover the edge, and exactly the
+   * one that used to vanish. Measured, the field was 0 for the first 8px in
+   * from the wall and half strength to 40px, and no amount of tuning could
+   * reach pixels nothing was drawn on. Padding the viewport by the blob radius
+   * keeps those centres inside it.
+   */
+  ensureField(deviceW, deviceH, scale, margin = 0) {
+    const w = Math.max(1, Math.round((deviceW + 2 * margin) * scale));
+    const h = Math.max(1, Math.round((deviceH + 2 * margin) * scale));
     if (w === this.fieldW && h === this.fieldH && this.fieldTex) return;
     const gl = this.gl;
 
@@ -245,7 +285,11 @@ export class Renderer {
     this.fieldH = h;
     this.fieldTex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, this.fieldTex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    if (this.floatField) {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+    } else {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    }
     // Linear sampling is doing real work here: it is the second half of the
     // blur that turns discrete blobs into a continuous surface.
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
@@ -256,6 +300,15 @@ export class Renderer {
     this.fieldFbo = gl.createFramebuffer();
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.fieldFbo);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.fieldTex, 0);
+    // The extension says half-float is renderable; drivers get the final word,
+    // so ask, and fall back to 8 bits rather than drawing to a dead target.
+    if (this.floatField
+      && gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+      this.floatField = false;
+      gl.bindTexture(gl.TEXTURE_2D, this.fieldTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.fieldTex, 0);
+    }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
@@ -652,67 +705,69 @@ export class Renderer {
   // ----------------------------------------------------------------- water
 
   /**
-   * Pack the water into the field buffer, mirroring anything close to the
+   * Pack the liquid into the field buffer, mirroring anything close to the
    * glass back across it.
    *
-   * Without this the water visibly shrinks away from its container: a blob
-   * reaching past the wall spends half its mass outside the box, so the
-   * thickness field sags to roughly half strength within one blob radius of
-   * every wall, drops under the surface threshold, and the level set retreats.
-   * The result reads as a slab of jelly sitting in the middle of the tank
-   * rather than water filling it — pale margins down both sides and rounded-off
-   * corners.
+   * The thickness field sags next to every wall for two separate reasons, and
+   * this is the answer to the first one. A blob reaching past the wall spends
+   * part of its mass outside the box, so within one blob radius of the glass
+   * the field is only half as strong as it is in the open — the same half-space
+   * truncation the solver hits (see Fluid.solveDensity), and it takes the same
+   * answer: method of images. A mirrored particle contributes exactly what
+   * liquid on the far side would have, so the field stays flat right up to the
+   * wall. Reflecting in sim space and letting perspective project the image is
+   * the same as reflecting on screen about that layer's own projected wall —
+   * provably, since projection is affine per depth — so the images are correct
+   * per layer for free.
    *
-   * It is the same half-space truncation the solver hits (see Fluid.solveDensity),
-   * on a different field, and it takes the same answer: method of images. A
-   * mirrored particle contributes exactly what the water on the far side would
-   * have, so the gradient across the wall goes to zero and the field stays flat
-   * right up to the glass. Reflecting in *sim* space rather than screen space
-   * means perspective carries the ghosts to the right place on its own — which
-   * matters here, because the box walls converge with depth and are not a fixed
-   * line on screen.
+   * The second reason is perspective itself: near a wall a view ray leaves the
+   * box early and crosses less liquid, so the field is genuinely thinner there.
+   * That is WATER_COMPOSITE_FRAGMENT's job — it divides each pixel by how much
+   * box its ray crosses — and images must NOT try to fill it. They used to,
+   * because nothing stopped a back-layer image from landing on pixels whose
+   * rays had left the box before ever reaching that layer. Measured, that piled
+   * a lip along the top of the liquid at each wall and, with the liquid sitting
+   * at the back, dropped floor images into plain view as detached grey blobs.
+   * WATER_FIELD_FRAGMENT now clips every blob, real or image, to the box as it
+   * stands at that particle's depth. With that in place an image can only ever
+   * add back what truncation took away, which is all it was ever for.
    *
-   * Only the four lateral walls get ghosts. Depth needs none: thickness is the
+   * Only the four lateral walls get images. Depth needs none: thickness is the
    * count of particles along a view ray, and that ray genuinely does end at the
    * front and back glass — nothing is missing to add back.
    *
-   * Each image is weighted by how buried the particle it mirrors is, which is
-   * what stops the correction overreaching. An image asserts "there is matching
-   * water on the far side of this wall" — true for bulk filling the tank, false
-   * for the thin film left clinging to the glass after a wave drains down it.
-   * Applied flat it thickened near-wall water by 1.8x and drew those films as
-   * solid rounded pillars standing against the glass, which is not something
-   * water does.
-   *
-   * The weight is raw neighbour count, deliberately not density. Density cannot
-   * tell the two apart and never will: an incompressible solver drives it to
-   * rest density *everywhere* it can, and measured, film and bulk-at-wall both
-   * sit at about 1.1. Neighbour count is geometry rather than a solved
-   * quantity, and it separates them cleanly — median 14 in a film against 26
-   * for bulk against the same wall.
+   * Images are full strength, always. They used to be scaled by the neighbour
+   * count of the particle they mirror, to keep a thin film draining down the
+   * glass from being drawn as a solid pillar; that pillar was really the
+   * unclipped spill above, and the clip is what fixes it. The weighting could
+   * not stay anyway: neighbour count is cut by the free surface and the front
+   * glass as well as by the wall, so a particle at the top corner of a full
+   * pool reads like a film and got a fifth of an image — and the top corner is
+   * the one place a missing image shows, as a sag that no wall-only correction
+   * of the count could recover. Measured: with the weighting honey sagged 14px
+   * into each corner and mercury 35px beyond its own meniscus.
    */
   packWater(fluid, w) {
     const cpu = this.waterCpu;
     const limit = (cpu.length / FLOATS_PER_DROP) | 0;
     const n = Math.min(fluid.n, fluid.capacity);
-    const { x, y, z, speed01, nbrCount } = fluid;
+    const { x, y, z, speed01 } = fluid;
     const wallX = fluid.bounds.x1;
     const wallY = fluid.bounds.y1;
-    // A ghost only matters while its blob still overlaps the box.
+    // An image only matters while its blob still overlaps the box.
     const reach = fluid.diameter * w.blobSize * 0.5;
-    const floor = w.imageFloor;
-    const lo = w.imageBuriedLo;
-    const span = Math.max(1, w.imageBuriedHi - lo);
 
     let count = 0;
-    const put = (px, py, pz, sp, weight) => {
+    // The sign of the weight is the flag the field shader clips on: real
+    // particles pass through, images get cut to the box at their own depth.
+    const put = (px, py, pz, sp, real) => {
       if (count >= limit) return;
       const o = count * FLOATS_PER_DROP;
       cpu[o] = px;
       cpu[o + 1] = py;
       cpu[o + 2] = pz;
       cpu[o + 3] = sp;
-      cpu[o + 4] = weight;
+      cpu[o + 4] = real ? 1 : -1;
       count++;
     };
 
@@ -721,7 +776,7 @@ export class Renderer {
       const yi = y[i];
       const zi = z[i];
       const si = speed01[i];
-      put(xi, yi, zi, si, 1);
+      put(xi, yi, zi, si, true);
 
       const left = xi < reach;
       const right = wallX - xi < reach;
@@ -729,20 +784,14 @@ export class Renderer {
       const below = wallY - yi < reach;
       if (!left && !right && !above && !below) continue;
 
-      // How much of an image this particle has earned.
-      let solid = nbrCount ? (nbrCount[i] - lo) / span : 1;
-      if (solid > 1) solid = 1;
-      else if (solid < floor) solid = floor;
-
       const mx = left ? -xi : 2 * wallX - xi;
       const my = above ? -yi : 2 * wallY - yi;
-      if (left || right) put(mx, yi, zi, si, solid);
-      if (above || below) put(xi, my, zi, si, solid);
+      if (left || right) put(mx, yi, zi, si, false);
+      if (above || below) put(xi, my, zi, si, false);
       // Corners lose a quadrant, not just a half-space, so they need the
       // diagonal image too or they stay pinched.
-      if ((left || right) && (above || below)) put(mx, my, zi, si, solid);
+      if ((left || right) && (above || below)) put(mx, my, zi, si, false);
     }
-    this.waterGhosts = count - n;
     return count;
   }
 
@@ -752,7 +801,13 @@ export class Renderer {
     const w = fluid.look;
     const deviceW = this.canvas.width;
     const deviceH = this.canvas.height;
-    this.ensureField(deviceW, deviceH, w.fieldScale);
+    // Padded by one blob radius so wall images centred just past the glass
+    // still rasterise — see ensureField. `reach` in packWater is the same
+    // number, so every image it emits has its centre inside this viewport.
+    const marginCss = fluid.diameter * w.blobSize * 0.5;
+    this.ensureField(deviceW, deviceH, w.fieldScale, marginCss * this.dpr);
+    const padW = this.width + 2 * marginCss;
+    const padH = this.height + 2 * marginCss;
 
     const n = this.packWater(fluid, w);
     const cpu = this.waterCpu;
@@ -779,11 +834,19 @@ export class Renderer {
     gl.vertexAttribPointer(this.fieldAttrib.speed, 1, gl.FLOAT, false, DROP_STRIDE, 12);
     gl.vertexAttribPointer(this.fieldAttrib.weight, 1, gl.FLOAT, false, DROP_STRIDE, 16);
 
-    gl.uniform2f(this.fieldUniform.viewport, this.width, this.height);
+    // The field's own frame is the screen plus its margin: everything the
+    // shader projects gets shifted by the margin and mapped over the padded
+    // size, so screen (0,0) sits `marginCss` in from the buffer's corner.
+    gl.uniform2f(this.fieldUniform.viewport, padW, padH);
+    gl.uniform2f(this.fieldUniform.origin, marginCss, marginCss);
     gl.uniform1f(this.fieldUniform.focal, focal);
     gl.uniform2f(this.fieldUniform.eye, this.width * 0.5 + this.eyeX, this.height * 0.5 + this.eyeY);
     gl.uniform1f(this.fieldUniform.depthRange, fluid.depth);
     gl.uniform1f(this.fieldUniform.gain, w.gain);
+    gl.uniform2f(this.fieldUniform.box, fluid.bounds.x1, fluid.bounds.y1);
+    gl.uniform2f(this.fieldUniform.fieldSize, this.fieldW, this.fieldH);
+    gl.uniform1f(this.fieldUniform.radius, fluid.radius);
+    gl.uniform1f(this.fieldUniform.rayFloor, CONFIG.render.rayFloor);
     // Sprite size is in field pixels, so it carries both the device ratio and
     // the field's own downscale.
     gl.uniform1f(
@@ -829,6 +892,24 @@ export class Renderer {
     gl.uniform1f(this.compositeUniform.opacify, w.opacify);
     gl.uniform1f(this.compositeUniform.calmRipple, w.calmRipple);
     gl.uniform1f(this.compositeUniform.rippleGain, w.rippleGain);
+    // Where the screen sits inside the padded field the first pass just drew.
+    gl.uniform2f(this.compositeUniform.viewport, this.width, this.height);
+    gl.uniform2f(this.compositeUniform.fieldOrigin, marginCss, marginCss);
+    gl.uniform2f(this.compositeUniform.fieldSpan, padW, padH);
+    gl.uniform2f(this.compositeUniform.box, fluid.bounds.x1, fluid.bounds.y1);
+    // How wide a strip along each wall the composite must not take a normal
+    // from. Two artefacts share that strip and they scale with different
+    // things, so it is the larger of the two: the band where the box converges
+    // away behind the glass (perspective, so it shrinks in a wide window), and
+    // the first row of particles sitting one radius off the wall (which does
+    // not). See WATER_COMPOSITE_FRAGMENT.
+    const shrink = fluid.depth / (focal + fluid.depth);
+    const lattice = fluid.radius * CONFIG.render.wallGuardRows;
+    gl.uniform2f(
+      this.compositeUniform.guard,
+      Math.max((this.width * 0.5 + this.eyeX) * shrink, lattice),
+      Math.max((this.height * 0.5 + this.eyeY) * shrink, lattice),
+    );
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.disableVertexAttribArray(this.compositeAttrib.corner);
   }

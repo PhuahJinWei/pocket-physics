@@ -156,11 +156,48 @@ export const CONFIG = {
   render: {
     maxDpr: 2,
     // Perspective: focal length as a multiple of min(viewport w, h). Smaller =
-    // more dramatic depth. Parallax shifts the eye against tilt, in px.
-    // Shorter focal = more aggressive convergence toward the back. Parallax is
-    // how far the eye slides against the tilt; it is the strongest depth cue
-    // available on a phone because it is coupled to the hand.
-    focal: 1.0,
+    // more dramatic depth, more convergence toward the back.
+    //
+    // Raised from 1.0 because of what it does to a RESTING liquid. The eye sits
+    // at the box centre, so it looks down at any pool below that, and the line
+    // where the liquid meets the side glass runs from the front-top corner back
+    // to the back-top corner — a level surface, but perspective projects that
+    // line as a slope. At 1.0 it measured a 37px drop over the last 43px, which
+    // reads as the liquid sagging into the walls when it is in fact flat.
+    // Measured drop at each end, in px below the bulk surface:
+    //
+    //           focal 1.0   1.5    2.0    3.0
+    //   water        3/5   -2/-1  -5/-5  -7/-7
+    //   honey       18/1    8/-6   5/-9   3/-12
+    //   mercury     82/69  55/48  44/40  35/35
+    //
+    // 2.0 halves it while keeping real convergence (the box's back face still
+    // insets 23px on screen, against 43 at 1.0). Past that it stops paying:
+    // mercury plateaus at 35 because it genuinely stands 20px off every wall
+    // (non-wetting), and water goes negative — its ends rise, which is its real
+    // wetting meniscus showing once the perspective slope stops masking it.
+    //
+    // This costs less than it looks. Parallax — the eye sliding against tilt,
+    // set below — is the strongest depth cue available on a phone because it is
+    // coupled to the hand, and it is untouched by focal.
+    focal: 2.0,
+    // The liquid field divides each blob by how much of the box its pixel's
+    // view ray actually crosses, so a brim-full box reads as full right up to
+    // the glass instead of thinning out into it. A ray that only clips a corner
+    // crosses next to nothing, and dividing by next to nothing turns a stray
+    // blob tail into solid liquid: this is the least capacity it will divide
+    // by. Measured on water, at the very last pixel column: 0.05 boosted the
+    // body there to 2.19x its bulk value, 0.15 to 1.2x, 0.30 undershoots to
+    // 0.6x. See WATER_FIELD_FRAGMENT.
+    rayFloor: 0.15,
+    // The liquid composite refuses to take a surface normal from a strip along
+    // each wall, because two things there are box geometry rather than liquid
+    // shape: the capacity correction's leftovers, and the first row of
+    // particles, which sits one radius off every wall and on a flat floor is a
+    // dead straight line of blobs the full width of the box. This is that strip
+    // in particle radii; the composite takes whichever is wider, this or the
+    // perspective band. Set by measurement — see WATER_COMPOSITE_FRAGMENT.
+    wallGuardRows: 2.5,
     // How far the back of the box falls into shadow: sand and specks fade
     // this fraction of the way toward `fog` at full depth. A colour, never a
     // coverage — sand deep in the box is opaque sand, just further away.
@@ -533,15 +570,6 @@ export const CONFIG = {
     // still surface is held nearly glassy and only moving water ripples.
     calmRipple: 0.1,
     rippleGain: 2.5,
-    // Wall images are scaled by the neighbour count of the particle they
-    // mirror (see Renderer.packWater). Measured against this box: a thin film
-    // draining down the glass sits near 14 neighbours, bulk water against the
-    // same wall near 26, so the ramp runs between them. Below the floor the
-    // image never vanishes entirely, so the body still meets the glass instead
-    // of fraying away from it.
-    imageBuriedLo: 10,
-    imageBuriedHi: 24,
-    imageFloor: 0.2,
     // Coverage: alpha at the silhouette edge, and the Beer-Lambert rate at
     // which thickness turns opaque. Opacity is the strongest "gel" signal —
     // real water lets the tank show through wherever it runs thin, and it is

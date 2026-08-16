@@ -19,51 +19,202 @@ precision highp float;
 
 attribute vec3 aPos;
 attribute float aSpeed;
-// 1 for a real particle; for a wall image, how solid the water it mirrors is.
+// +1 for a real particle, -1 for a wall image. Only the sign carries meaning;
+// the fragment shader clips images to the box and leaves real particles alone.
 attribute float aWeight;
 
+// The field is drawn into a frame slightly larger than the screen: uViewport
+// is that padded size and uOrigin is where the screen's own (0,0) sits inside
+// it. See Renderer.ensureField for why the padding has to exist.
 uniform vec2 uViewport;
+uniform vec2 uOrigin;
 uniform float uFocal;
 uniform vec2 uEye;
 uniform float uPointSize;
 uniform float uDepthRange;
+uniform vec2 uBox;        // sim px: box width and height
+uniform vec2 uFieldSize;  // the offscreen buffer, in its own pixels
+uniform float uRadius;    // particle radius, sim px
 
 varying float vSpeed;
 varying float vFade;
 varying float vWeight;
+varying float vIsImage;
+// The box's outline on the field at this particle's NEAR face and FAR face:
+// xmin, xmax, ymin, ymax in field pixels. See the fragment shader.
+varying vec4 vNear;
+varying vec4 vFar;
+
+vec4 outlineAt(float z) {
+  float persp = uFocal / (uFocal + z);
+  vec2 lo = uEye * (1.0 - persp) + uOrigin;
+  vec2 hi = uEye + (uBox - uEye) * persp + uOrigin;
+  vec2 sc = uFieldSize / uViewport;
+  // The field buffer's y runs up from the bottom, unlike css.
+  return vec4(lo.x * sc.x, hi.x * sc.x, (uViewport.y - hi.y) * sc.y, (uViewport.y - lo.y) * sc.y);
+}
 
 void main() {
   float persp = uFocal / (uFocal + aPos.z);
-  vec2 p = uEye + (aPos.xy - uEye) * persp;
+  vec2 p = uEye + (aPos.xy - uEye) * persp + uOrigin;
   vec2 unit = p / uViewport;
   gl_Position = vec4(unit.x * 2.0 - 1.0, 1.0 - unit.y * 2.0, 0.0, 1.0);
   gl_PointSize = uPointSize * persp;
   vSpeed = aSpeed;
-  vWeight = aWeight;
+  vWeight = abs(aWeight);
+  vIsImage = step(aWeight, 0.0);
   // Deeper water contributes a little less, so the body carries a front-to-back
   // gradient instead of reading as one flat slab of colour.
   vFade = 1.0 - 0.35 * clamp(aPos.z / max(uDepthRange, 1.0), 0.0, 1.0);
+
+  // A particle is a ball uRadius deep, not a plane. The box's outline slides
+  // inward on screen between the ball's near face and its far face, and how
+  // far across that slide a pixel sits is how much of the ball its ray reaches.
+  vNear = outlineAt(max(aPos.z - uRadius, 0.0));
+  vFar = outlineAt(min(aPos.z + uRadius, uDepthRange));
 }
 `;
 
 export const WATER_FIELD_FRAGMENT = `
+// The ray math below divides by a drift that passes through zero down the
+// middle of the screen; mediump loses the far walls, so take highp where the
+// hardware has it.
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
 precision mediump float;
+#endif
 
 varying float vSpeed;
 varying float vFade;
 varying float vWeight;
+varying float vIsImage;
+varying vec4 vNear;
+varying vec4 vFar;
 
 uniform float uGain;
+// The same frame the vertex shader drew into: padded css size, where the
+// screen's (0,0) sits in it, and the buffer's size in its own pixels.
+uniform vec2 uViewport;
+uniform vec2 uOrigin;
+uniform vec2 uFieldSize;
+uniform vec2 uEye;
+uniform float uFocal;
+uniform vec2 uBox;
+uniform float uDepthRange;
+uniform float uRadius;
+uniform float uRayFloor;
+
+// Depth-fade integrals, so a ray's capacity is weighted exactly as the field
+// weights the balls it sums: P is the integral of vFade, Q of z * vFade.
+float fadeP(float z) { return z - 0.175 * z * z / uDepthRange; }
+float fadeQ(float z) { return 0.5 * z * z - 0.35 * z * z * z / (3.0 * uDepthRange); }
+
+// How much liquid the ray through this pixel could hold, as a fraction of a
+// ray that runs the whole depth, in the units the sum below is taken in.
+//
+// The field is a screen-space count of what lies along a view ray, but the
+// box is a 3-D volume in perspective and its walls converge going back. A ray
+// aimed near a wall leaves through that wall almost at once and crosses only
+// a sliver of the box; one up the middle runs the full depth. So the field
+// falls away toward every wall even when the box is brim full, and one
+// absolute threshold reads that as "less liquid here": the silhouette shrinks
+// back from the glass, and frays into grey haze along the floor. Divided by
+// its own capacity, a full sliver is as full as a full column and the liquid
+// meets the glass.
+//
+// Capacity is not the ray's plain length. What the sum actually counts is
+// balls, each reached by the ray in proportion to how far past its near face
+// the ray gets (that ramp is the "inside" factor below), weighted by depth
+// fade. So the capacity is that same ramp integrated over every ball a full
+// box would hold — which is what makes a full box come out at exactly 1.0
+// right up to the corner, and is why the corner does not starve: the first
+// ball a corner ray reaches is a small fraction of a small capacity, not of a
+// large one.
+//
+// The balls are integrated over centres from 0 to depth, not from uRadius to
+// depth - uRadius, even though no centre can actually sit closer to the glass
+// than uRadius. The liquid is a lattice: its first row sits AT uRadius and
+// owns the whole slab from 0 to 2 * uRadius, so in the continuum limit the
+// centre density runs edge to edge. Integrating from uRadius instead credited
+// a corner ray with a quarter of the balls it really reaches — measured, the
+// last 10px at every wall came out over-boosted into saturation.
+//
+// At the front glass screen space and sim space coincide, so the pixel IS the
+// ray's entry point, drifting by (p - eye) / focal per unit of depth.
+float capacityAt(vec2 pcss) {
+  vec2 drift = (pcss - uEye) / uFocal;
+  float zExit = uDepthRange;
+  if (drift.x < -1e-6) zExit = min(zExit, -pcss.x / drift.x);
+  else if (drift.x > 1e-6) zExit = min(zExit, (uBox.x - pcss.x) / drift.x);
+  if (drift.y < -1e-6) zExit = min(zExit, -pcss.y / drift.y);
+  else if (drift.y > 1e-6) zExit = min(zExit, (uBox.y - pcss.y) / drift.y);
+  zExit = clamp(zExit, 0.0, uDepthRange);
+
+  float r = uRadius;
+  float a = 0.0;                  // centre density runs from the front glass
+  float b = uDepthRange;          // to the back
+  // Balls the ray passes completely: centres up to zExit - r.
+  float z0 = a;
+  float z1 = clamp(zExit - r, a, b);
+  float full = fadeP(z1) - fadeP(z0);
+  // Balls the ray only reaches part way into: centres zExit - r .. zExit + r,
+  // each counting (zExit + r - z) / 2r of itself.
+  float z2 = clamp(zExit - r, a, b);
+  float z3 = clamp(zExit + r, a, b);
+  float part = ((zExit + r) * (fadeP(z3) - fadeP(z2)) - (fadeQ(z3) - fadeQ(z2))) / (2.0 * r);
+  float whole = fadeP(b) - fadeP(a);
+  // A ray that only clips a corner reaches next to nothing, and dividing by
+  // next to nothing turns a stray blob tail into liquid. Floor it.
+  return max((full + part) / max(whole, 1e-3), uRayFloor);
+}
 
 void main() {
   vec2 uv = gl_PointCoord * 2.0 - 1.0;
   float r2 = dot(uv, uv);
   if (r2 > 1.0) discard;
+
+  // Clip IMAGES to the box as it stands at their own depth: nothing before the
+  // outline at the ball's near face, all of it past the outline at its far
+  // face, a linear ramp between.
+  //
+  // This is what makes the wall images in Renderer.packWater safe. An image is
+  // a real blob drawn beyond the glass, and unclipped it spills onto pixels
+  // whose rays left the box long before reaching its layer: measured, that
+  // piled a lip along the top of the liquid at each wall and, with the liquid
+  // sitting at the back, dropped floor images into plain view as detached grey
+  // blobs — six lit regions, five of them with no particle in them at all.
+  //
+  // Real particles are deliberately NOT clipped. Clipping them is defensible on
+  // paper — a back-row blob reaching past the back wall's projected position is
+  // claiming pixels it cannot be seen through — but it strips the near-wall
+  // band of every layer except the frontmost, and that band is exactly where
+  // the liquid meets the glass. Measured on water: clipped, the surface fell
+  // 27px over the last 43px into each wall while the physics was flat there;
+  // unclipped it sits within a few px of the bulk. A real particle is inside
+  // the box, so its blob spilling a little past the projected outline invents
+  // nothing that is not there — it is the halo of liquid that genuinely exists.
+  vec2 fc = gl_FragCoord.xy;
+  float box =
+      clamp((fc.x - vNear.x) / max(vFar.x - vNear.x, 0.5), 0.0, 1.0)
+    * clamp((vNear.y - fc.x) / max(vNear.y - vFar.y, 0.5), 0.0, 1.0)
+    * clamp((fc.y - vNear.z) / max(vFar.z - vNear.z, 0.5), 0.0, 1.0)
+    * clamp((vNear.w - fc.y) / max(vNear.w - vFar.w, 0.5), 0.0, 1.0);
+  float inside = mix(1.0, box, vIsImage);
+  if (inside <= 0.0) discard;
+
   // Squared falloff: smooth enough that overlapping blobs merge without a seam,
   // tight enough that the body keeps an edge instead of fogging outward.
   float w = 1.0 - r2;
   w = w * w;
-  float t = w * uGain * vFade * vWeight;
+  // Divided by capacity HERE, per fragment, not in the composite. The sum is
+  // linear so it comes to the same thing — except that the field is 8-bit,
+  // and a corner ray's raw thickness is one or two quantisation levels that no
+  // later division can recover. Stored already normalised, it is a full-scale
+  // value like anywhere else.
+  vec2 pcss = fc * (uViewport / uFieldSize);
+  pcss = vec2(pcss.x, uViewport.y - pcss.y) - uOrigin;
+  float t = w * uGain * vFade * vWeight * inside / capacityAt(pcss);
   // R: thickness. G: thickness weighted by speed, so the composite can divide
   // the two back out and know how agitated the water at this pixel is.
   gl_FragColor = vec4(t, t * vSpeed, 0.0, 1.0);
@@ -105,8 +256,55 @@ uniform float uOpacify;
 uniform float uCalmRipple;
 uniform float uRippleGain;
 
+// The field is padded around the screen (see Renderer.ensureField): where the
+// screen's (0,0) sits inside it, and its full css extent — both in css px, and
+// against the screen's own css size.
+uniform highp vec2 uViewport;
+uniform highp vec2 uFieldOrigin;
+uniform highp vec2 uFieldSpan;
+
+// The box, and the width of the strip along each wall whose gradient cannot be
+// believed. In highp: these are screen-scale numbers divided by small ones.
+uniform highp vec2 uBox;
+uniform highp vec2 uGuard;
+
+// Distance from the nearest wall on each axis, in units of uGuard — the width
+// of the strip along each wall whose gradient cannot be believed. 0 at a wall,
+// 1 at the edge of the strip, and it keeps counting past it, which is the
+// point: a measure that saturates at the edge cannot express "well clear of the
+// wall", and these artefacts run past it.
+//
+// Per axis, not a single distance, because they have a direction: both vary
+// with distance FROM a wall, so next to the floor it is the VERTICAL gradient
+// that is untrustworthy and next to a side wall the horizontal one. Killing
+// both is what turned the bright line into a dark band.
+//
+// uGuard covers two different things that happen to live in the same place, and
+// it is the LARGER of the two (see Renderer.drawFluid):
+//   - the band where the box converges away behind the glass, so the capacity
+//     correction is large and inexact;
+//   - the first row of particles, which sits one radius off every wall and, on
+//     a flat floor, is a dead straight line of blobs the full width of the box.
+// Sizing the guard on perspective alone hid the second one only by luck: in a
+// tall window the band is 25px and swallows it, in a wide one the band is 10px
+// and the lattice row at ~12px sits just outside, lit as a bright seam.
+highp vec2 wallDistance(highp vec2 p) {
+  return min(p, uBox - p) / max(uGuard, vec2(1.0));
+}
+
+// Field texture coordinate for a css screen position: shift into the padded
+// frame, then flip, since the texture's v runs up from the bottom.
+highp vec2 fieldUV(highp vec2 pcss) {
+  highp vec2 q = (pcss + uFieldOrigin) / uFieldSpan;
+  return vec2(q.x, 1.0 - q.y);
+}
+
 void main() {
-  vec4 c = texture2D(uField, vUV);
+  highp vec2 pcss = vec2(vUV.x, 1.0 - vUV.y) * uViewport;
+  vec4 c = texture2D(uField, fieldUV(pcss));
+  // Thickness as a fraction of what this pixel's ray could hold — the field
+  // pass has already divided out the box's perspective (see capacityAt there),
+  // so a full box reads as full right up to the glass.
   float t = c.x;
   // The level set of the thickness field is the water's silhouette. Everything
   // below the threshold is air, and the soft band across it is the anti-aliased
@@ -119,10 +317,12 @@ void main() {
   // Normal from the gradient of thickness. At the waterline thickness ramps up
   // from nothing, so the normal tips over and catches the light there — which
   // is exactly where a real surface shows its edge.
-  float l = texture2D(uField, vUV - vec2(uTexel.x, 0.0)).x;
-  float r = texture2D(uField, vUV + vec2(uTexel.x, 0.0)).x;
-  float d = texture2D(uField, vUV - vec2(0.0, uTexel.y)).x;
-  float u = texture2D(uField, vUV + vec2(0.0, uTexel.y)).x;
+  highp vec2 stepCss = uTexel * uFieldSpan;   // one field texel, in css px
+  float l = texture2D(uField, fieldUV(pcss - vec2(stepCss.x, 0.0))).x;
+  float r = texture2D(uField, fieldUV(pcss + vec2(stepCss.x, 0.0))).x;
+  // css y runs down the screen.
+  float d = texture2D(uField, fieldUV(pcss + vec2(0.0, stepCss.y))).x;
+  float u = texture2D(uField, fieldUV(pcss - vec2(0.0, stepCss.y))).x;
 
   // Calm water is glass. The particle lattice leaves a permanent fine ripple
   // in the thickness field, and at full strength the normal shades it like
@@ -137,8 +337,39 @@ void main() {
   // of a resting body, which gating by agitation alone wiped out.
   float edgeBand = 1.0 - smoothstep(uSurface * 1.6, uSurface * 4.5, t);
   float ripple = clamp(uCalmRipple + agitation * uRippleGain, 0.0, 1.0);
+
+  // Do not shade the corrected band. Where a ray leaves the box early the field
+  // pass divided its thickness by a small, and only approximate, capacity, and
+  // what the approximation leaves behind is a ramp in the field that no liquid
+  // put there — measured on water, 2.5x the bulk value hard against the floor,
+  // still 1.6x a third of the way in, back within 5% only past ~24px. Relief
+  // reads that ramp as a steeply tilted surface and lights it: that is the
+  // bright line along the floor and up both walls.
+  //
+  // The ramp cannot be tuned away. It is worst where the wedge is thinner than
+  // one particle row, and there no continuum estimate of capacity is accurate —
+  // raising uRayFloor only trades the line back for a sloping surface. So gate
+  // the shading instead: the band is a correction, not a shape, and it is
+  // trusted for coverage but not for a normal.
+  //
+  // The gate has to open LATE, outside the band, and PER AXIS. Two earlier
+  // versions keyed on the fraction of the box the ray crosses, which saturates
+  // at the band edge; both merely moved the line to wherever the gate sat
+  // half-open (11px above the floor, then 17px). Measured against the band
+  // width instead, the field is back within 5% of bulk about two band-widths
+  // out, so that is where the suspect component is restored.
+  //
+  // Per axis is what keeps the cure from being as visible as the disease.
+  // Damping BOTH components near a wall leaves the margin with a normal facing
+  // straight at the viewer: no fresnel, no glint, so it read as a dark band
+  // against a body full of ripple — trading a bright line for a dark one. Only
+  // the component running across the wall carries the artefact. Next to the
+  // floor the horizontal gradient is still honest surface, and keeping it is
+  // what lets the margin shade like the water it is part of.
+  vec2 trust = smoothstep(vec2(0.4), vec2(2.0), wallDistance(pcss));
   float relief = uRelief * max(ripple, edgeBand);
-  vec3 nrm = normalize(vec3((l - r) * relief, (d - u) * relief, 1.0));
+  vec3 nrm = normalize(vec3((l - r) * relief * trust.x,
+                            (d - u) * relief * trust.y, 1.0));
 
   // Beer-Lambert: colour is how much water the light had to cross, so thin
   // edges stay pale and the body deepens toward the middle. This single term
