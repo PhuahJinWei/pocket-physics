@@ -132,9 +132,23 @@ a composite makes that easy to get wrong, and three things carry it:
   as water in a different colour. What a viscous surface actually holds is
   *large* shape, and that comes from the solver refusing to level, not from the
   shader.
-- **Highlight tightness** (`specPower`). A rippled surface throws many small
-  hard glints; a smooth one carries a single broad sheen. This was a constant
-  shared by both for a long time, and a good part of why they read alike.
+- **Highlight tightness** (`specPower`), which was a constant shared by both
+  for a long time and a good part of why they read alike. Note which way round
+  it goes: broad highlights come from a *rough* surface, and honey is optically
+  smooth, so honey's is **tighter** than water's, not broader. Set broad (22)
+  the lobe was wide enough that a flat, viewer-facing surface sat near its peak
+  and the entire body took a uniform white lift — every shape came out as flat
+  pale-yellow paper. That one number moved the mean from (215,175,82) to
+  (168,124,30), highlighter to amber.
+
+One thing no palette can fix: **a slab of liquid filling the box has the same
+thickness along every view ray**, so its interior is genuinely uniform —
+measured, 0.65 to 0.70 across a whole body. Beer-Lambert has nothing to work
+with there, and lowering the field gain to unsaturate it only flattens the
+contrast further. All of the form has to come from the silhouette and the
+curved edges, which is why `relief` wants to be *up* for a thick liquid rather
+than down, and why the resting-surface smoothness (`calmRipple`) is what
+separates it from water instead.
 
 A material also decides its own particle size and count, because the right
 answer differs: sand wants the finest grain the device can afford since every

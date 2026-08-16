@@ -965,17 +965,23 @@ CONFIG.honeyLook = Object.assign({}, CONFIG.water, {
   shallow: [1.00, 0.82, 0.30],
   deep: [0.55, 0.38, 0.05],
   foam: [0.99, 0.88, 0.62],
-  absorb: 2.6,
-  // Nearly opaque, and opaque almost immediately. This is the single biggest
-  // thing separating the two: water is a tinted window onto the box behind it,
-  // honey is a body you cannot see into. Even a honey film is still honey
-  // coloured rather than glass.
-  alphaMin: 0.88,
-  opacify: 16.0,
-  // Broad, soft sheen rather than water's hard glints — a smooth surface has
-  // one highlight, not a hundred.
+  absorb: 3.2,
+  // Solid, but not a cut-out. Water is a tinted window onto the box behind it
+  // and honey is a body you cannot see into, so these stay well apart — but
+  // pushed to 0.88/16 the edge went opaque within a pixel of the silhouette
+  // and every shape ended up a flat slab with a hard rim. The thinnest honey
+  // is still translucent; it is the *body* that is not.
+  alphaMin: 0.50,
+  opacify: 8.0,
+  // Tight, and *tighter* than water — the second time this one caught me out.
+  // Broad highlights come from a rough surface, and honey is optically smooth:
+  // it is a mirror with few highlights, not a diffuse one with soft ones. At
+  // 22 the lobe was so wide that a flat, viewer-facing surface sat near its
+  // peak, so the entire body took a uniform white lift and came out as flat
+  // pale-yellow paper. Measured, that one number moved the mean from
+  // (215,175,82) to (168,124,30) — from highlighter to amber.
   specular: 1.1,
-  specPower: 22.0,
+  specPower: 70.0,
   fresnel: 0.20,
   // SMOOTHER than water, which is the correction that mattered most. A still
   // honey surface is a mirror; still water is not, because water is never
@@ -986,7 +992,15 @@ CONFIG.honeyLook = Object.assign({}, CONFIG.water, {
   // water's surface contrast (44 against 25) when it should carry less. What a
   // viscous surface actually holds is *large* shape, and that comes from the
   // solver refusing to level, not from the shader.
-  relief: 3.5,
+  // A slab of liquid filling the box has the same thickness along every view
+  // ray, so its interior is genuinely uniform and no palette can shade it —
+  // measured, thickness runs 0.65 to 0.70 across the whole body. All of the
+  // form therefore has to come from the silhouette and the curved edges, which
+  // is what relief shades, so it needs to be *up*, not down. What keeps honey
+  // from reading as water is calmRipple: still honey is a mirror, still water
+  // never is, and that is a property of the resting surface rather than of how
+  // strongly the surface is lit.
+  relief: 7.0,
   calmRipple: 0.06,
   rippleGain: 1.0,
   // No foam. Honey does not aerate on a shake; it heaves and folds.
