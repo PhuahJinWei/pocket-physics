@@ -225,13 +225,9 @@ tens of pixels, which would catch an entire moving bed.
   hundreds of blobs sum together and the level set falls where it falls. A
   grain by itself gets one blob, and with a fixed peak it usually lost — the
   depth weighting alone put it under. Measured, **75% of the grains in a splash
-  drew literally nothing**, every one of them past the front of the box. So an
-  isolated grain is given exactly the peak that lands its level set on a
-  known fraction of its own radius, with no depth attenuation. Solving for the
-  peak rather than just turning the gain up is what keeps it safe: a narrow
-  blob with a tall peak is compact and cannot bridge, and because the target
-  size sits inside the blob radius the peak stays low enough that several may
-  overlap before the 8-bit field clips (measured max 186/255 through a splash).
+  drew literally nothing**, every one of them past the front of the box. This
+  is what led to solving each grain's peak from the size it should draw at,
+  which is now how *every* grain is handled — see below.
 - **The specks draw it, not the field.** A lone blob's level set is a clean
   circle that nothing breaks up — the threshold dither moves it less than a
   pixel — so a full-size blob renders a flying grain as a smooth bead. Instead
@@ -267,10 +263,42 @@ by it. Same fog on the specks. That reads as *far*; the old way read as
 Separately, loosely held grains (as opposed to fully isolated ones) draw a
 *narrower* blob, graded by how few contacts they have. A blob wide enough to
 smooth the packed surface otherwise bridges the gap to a grain that is barely
-attached and hangs it off the pile as a drip. This is a width only, never a
-brightness: blending an ordinary surface grain toward the isolated-grain peak
-bulges it out of the surface as its own lump and fringes the whole bed with
-grain-sized nubs — exactly the scale the field render exists to hide.
+attached and hangs it off the pile as a drip.
+
+**How big a grain draws is solved, not left to a threshold.** Every grain is
+given the blob peak that makes it land, on its own, at a chosen size. Handing
+grains a fixed peak and letting a threshold decide the size is the same
+statement backwards, and it hides a trap: the size you then get depends on how
+many *other* grains happen to overlap. A deep bed sums twenty-odd blobs, so
+almost any peak looks right there — and a peak tuned that way left a single
+grain unable to clear the threshold at all.
+
+Nothing revealed that until the bed stopped being deep. **Lay the phone flat on
+a table and gravity points into the screen**: the whole bed collapses into a
+sheet one grain thick spread across the entire viewport, nothing overlaps
+enough, and the sand tears into black holes. Measured, a quarter of the box
+drew black. The same bug had also been quietly eating the sand that sits only
+against the back wall.
+
+The size a grain draws at follows from how packed it is:
+
+- **packed** → a little *outside* its own radius (`bulkSize`). Deliberate: a
+  physics grain stands in for a clump of real sand, and that sand fills its
+  neighbourhood rather than an inscribed sphere, so a jammed single layer
+  should read as continuous sand — because that is what it is.
+- **loose** → down toward `soloSize`, well inside it, where the specks take
+  over. Drawn generously instead, sparse grains merge into rounded lobes and a
+  splash turns to batter.
+
+One global threshold cannot do both — generous enough to close a monolayer is
+generous enough to melt a splash — which is exactly why this is per grain.
+"Packed" saturates at **three** contacts, not the six of full 3D coordination:
+a sheet one grain thick genuinely has fewer neighbours than a deep bed, and
+measured against six it read as half loose and tore into holes anyway. The
+renderer only needs to tell a connected mass from a grain flying on its own.
+
+Depth deliberately does not enter the coverage at all. Sand is opaque however
+deep it sits; what changes with distance is colour.
 
 None of it is additive and nothing glows. The whole thing costs one to two
 milliseconds against a simulation that costs ten or more.
@@ -320,13 +348,14 @@ Everything lives in [`src/config.js`](src/config.js). The knobs worth knowing:
 | `bed.depthLayers` | how deep the box is, in grain diameters |
 | `render.focal` / `parallax` | how dramatic the perspective is |
 | `render.wallColor` / `wallShade` | the box interior |
-| `sand.blob` / `surface` | how smooth the silhouette is, and how tight it sits on the grains |
+| `sand.bulkSize` / `soloSize` | how big packed sand and flying sand draw, in grain radii |
+| `sand.blob` / `surface` | blob width, and the field's working scale (not a size) |
 | `sand.edgeRadius` / `edgeSmooth` | the silhouette low-pass that removes grain-scale lumps |
 | `sand.form` / `formRadius` | large-scale shading, and how wide its gradient reaches |
 | `sand.speckPx` / `speckCoverage` | on-screen speck size and density — independent of physics cost |
 | `sand.speckRelief` / `speckRound` | the per-speck lit crest and shadowed side |
 | `sand.looseShrink` | how much narrower a barely-attached grain's blob is |
-| `sand.soloSize` / `speckAirSpread` | how big sand in flight draws, and how far its specks spread |
+| `sand.speckAirSpread` | how far a flying grain's specks spread |
 | `sand.speckAirMul` / `speckAirSize` | how many extra specks flying sand gets, and how fine |
 | `sand.airPow` / `airLight` | how soft and how pale flying sand is |
 | `render.depthDim` / `fog` | how far, and toward what, the back of the box darkens |

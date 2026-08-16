@@ -1050,6 +1050,15 @@ export class Grains {
     for (let i = 0; i < n; i++) {
       const buried = clamp(cover[i] * invCover, 0, 1);
       const looseNow = 1 - clamp(contacts[i] / 6, 0, 1);
+      // How UNSUPPORTED a grain is, for the renderer — a different question
+      // from how lit it is, and it saturates much sooner. Three contacts
+      // already means "part of a connected mass", and the renderer only needs
+      // to tell a mass from a grain flying on its own. Measured against six
+      // (full 3D coordination) a jammed single layer reads as half loose,
+      // because a sheet one grain thick genuinely has fewer neighbours than a
+      // deep bed — and the renderer then drew it small and tore it into holes,
+      // which is exactly what a phone laid face-up showed.
+      const packNow = 1 - clamp(contacts[i] / 3, 0, 1);
       // Lit if nothing is above you, or if you are barely touching anything...
       const exposed = Math.max(1 - buried, looseNow * 0.95);
       // ...otherwise take what filters down from the grain above you.
@@ -1062,7 +1071,7 @@ export class Grains {
       // surface flicker from step to step.
       const air = contacts[i] === 0 ? 1 : 0;
       airborne[i] += (air - airborne[i]) * blend;
-      loose[i] += (looseNow - loose[i]) * blend;
+      loose[i] += (packNow - loose[i]) * blend;
     }
   }
 }

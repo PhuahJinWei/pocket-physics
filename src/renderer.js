@@ -153,8 +153,8 @@ export class Renderer {
       jitter: gl.getAttribLocation(this.sandFieldProgram, 'aJitter'),
     };
     this.sandFieldUniform = uniforms(gl, this.sandFieldProgram, [
-      'uViewport', 'uFocal', 'uEye', 'uPointSize', 'uDepthRange', 'uDepthWeight', 'uGain',
-      'uLooseShrink', 'uBlob', 'uThreshold', 'uSoloSize', 'uAirPow', 'uAirLight',
+      'uViewport', 'uFocal', 'uEye', 'uPointSize', 'uDepthRange',
+      'uLooseShrink', 'uBlob', 'uThreshold', 'uBulkSize', 'uSoloSize', 'uAirPow', 'uAirLight',
     ]);
 
     this.sandCompositeProgram = buildProgram(gl, SAND_COMPOSITE_VERTEX, SAND_COMPOSITE_FRAGMENT);
@@ -514,13 +514,12 @@ export class Renderer {
     // own downscale.
     gl.uniform1f(fu.uPointSize, sand.diameter * s.blob * this.dpr * s.fieldScale);
     gl.uniform1f(fu.uDepthRange, sand.depth);
-    gl.uniform1f(fu.uDepthWeight, s.depthWeight);
-    gl.uniform1f(fu.uGain, s.gain);
     gl.uniform1f(fu.uLooseShrink, s.looseShrink);
     gl.uniform1f(fu.uBlob, s.blob);
-    // Worst case of the dithered threshold, so a lone grain clears it wherever
-    // the noise happens to land rather than flickering along with it.
+    // Worst case of the dithered threshold, so a grain clears it wherever the
+    // noise happens to land rather than flickering along with it.
     gl.uniform1f(fu.uThreshold, s.surface + s.dither * 0.5);
+    gl.uniform1f(fu.uBulkSize, s.bulkSize);
     gl.uniform1f(fu.uSoloSize, s.soloSize);
     gl.uniform1f(fu.uAirPow, s.airPow);
     gl.uniform1f(fu.uAirLight, s.airLight);

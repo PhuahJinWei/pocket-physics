@@ -36,12 +36,11 @@ uniform float uFocal;     // focal length in CSS px
 uniform vec2 uEye;        // projection centre in CSS px (parallax lives here)
 uniform float uPointSize; // blob diameter for a mean grain, in field px
 uniform float uDepthRange;
-uniform float uDepthWeight;
 uniform float uLooseShrink;
-uniform float uGain;      // peak of a packed grain's blob
 uniform float uBlob;      // blob radius as a multiple of the grain radius
 uniform float uThreshold; // worst-case coverage the composite calls "sand"
-uniform float uSoloSize;  // where a lone grain's level set lands, in radii
+uniform float uBulkSize;  // where a packed grain's level set lands, in radii
+uniform float uSoloSize;  // and where a grain with nothing to touch does
 uniform float uAirPow;    // profile exponent for a lone grain (mass uses 2)
 uniform float uAirLight;  // ceiling on the light ramp for sand in flight
 
@@ -75,45 +74,44 @@ void main() {
   vLight = mix(lit, min(lit, uAirLight), air);
   vSpeed = aShade.y;
 
-  // Two regimes, blended by whether the grain has anything to overlap with.
+  // Every grain's blob peak is SOLVED, so that alone it draws at a chosen
+  // size. Handing grains a fixed peak and letting a threshold decide the size
+  // is the same statement backwards, and it hides a trap: the size you get
+  // then depends on how many other grains happen to overlap. A deep bed sums
+  // twenty-odd blobs, so almost any peak looks right there — and a peak tuned
+  // that way left a *single* grain unable to clear the threshold at all. It
+  // never showed until the bed stopped being deep. Lay the phone flat and the
+  // whole thing collapses into a sheet one grain thick across the entire
+  // screen, where nothing overlaps enough, and the sand tears into holes.
   //
-  // A grain in the mass contributes a moderate blob and the surface is built
-  // out of hundreds of them summing together, so its own peak hardly matters.
-  // ('packed' is a reserved word in GLSL ES — hence 'bulk'.) Depth barely
-  // touches it: sand is opaque however deep it sits, and attenuating the back
-  // of the box drew the sand that is only there — the band you see above the
-  // front surface when the bed leans on the back wall — as a thin, translucent
-  // smear that tore into holes. Measured, that band ramped from 6 to 46 in a
-  // field whose threshold is 22. What SHOULD change with depth is colour, and
-  // that is the composite's job (uDepthDim there); the small weight kept here
-  // only lets the front layer lead the averages a little.
+  // The size a grain draws at depends on how packed it is, which is the part
+  // that matters:
   //
-  // A grain touching NOTHING has to clear the threshold by itself or it is not
-  // drawn at all, and with a fixed peak it usually could not: measured, 75% of
-  // the grains in a splash rendered as literally nothing. So it gets exactly
-  // the peak that lands its level set on uSoloSize of its own radius. Solving
-  // for the peak rather than turning the gain up is what keeps this safe: a
-  // narrow blob with a tall peak is a compact dot that cannot bridge to
-  // anything, and because uSoloSize sits inside the blob radius the peak
-  // needed stays low enough that several may overlap before the 8-bit field
-  // clips (measured max 186/255 through a splash, nothing clipped).
+  //   packed  -> uBulkSize, a little OUTSIDE its own radius. Deliberate: a
+  //              physics grain stands in for a clump of real sand, and that
+  //              sand fills its neighbourhood rather than an inscribed
+  //              sphere, so a jammed monolayer should read as continuous.
+  //   loose   -> down toward uSoloSize, well inside it. Sand thrown into the
+  //              air is drawn by its SPECKS; the field only puts a soft core
+  //              under them. Drawn generously instead, sparse grains merge
+  //              into rounded lobes and a splash turns to batter.
   //
-  // Gated on *airborne*, not on looseness. A surface grain is under-coordinated
-  // by definition — four contacts instead of six — and blending it toward the
-  // solo peak bulges it out of the surface as its own lump, which fringes the
-  // whole bed with grain-sized nubs: exactly the scale the field render exists
-  // to hide.
+  // One threshold cannot do both — generous enough to close a monolayer is
+  // generous enough to melt a splash — which is exactly why this is per grain
+  // and keyed on contacts rather than set globally.
   //
-  // A lone grain also gets a gentler blob profile (uAirPow, against 2 for the
-  // mass), so the coverage ramps across its edge over more pixels and the
-  // composite's fixed soft band lands as a soft, porous puff instead of a
-  // hard-rimmed pea. The peak has to be solved against that same profile.
-  float bulk = uGain * (1.0 - uDepthWeight * depth);
-  float rn = min(uSoloSize / (uBlob * shrink), 0.95);
+  // Depth deliberately does not enter. Sand is opaque however deep it sits;
+  // what changes with distance is colour, and that is the composite's job.
+  //
+  // A loose grain also gets a gentler blob profile (uAirPow, against 2 for
+  // the mass) so its coverage ramps over more pixels and the composite's soft
+  // band lands as a porous puff rather than a hard-rimmed pea. The peak is
+  // solved against whichever profile the grain is using.
+  float target = mix(uBulkSize, uSoloSize, loose);
+  float rn = min(target / (uBlob * shrink), 0.95);
   float e = 1.0 - rn * rn;
   float prof = mix(e * e, pow(e, uAirPow), air);
-  float solo = uThreshold / max(prof, 1e-3);
-  vWeight = mix(bulk, max(bulk, solo), air);
+  vWeight = uThreshold / max(prof, 1e-3);
   vAir = air;
 }
 `;

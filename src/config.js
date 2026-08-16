@@ -209,21 +209,13 @@ export const CONFIG = {
     // exactly the scale sand must not have. Wide blobs low-pass the surface
     // over a couple of grains, so it reads as a slope with fuzz on it.
     blob: 2.3,
-    // Peak contribution of one blob. The interior sums twenty-odd overlapping
-    // blobs and the field is 8-bit, so this has to keep that sum below 1 — a
-    // clipped coverage channel throws the light average off. Measured on a
-    // settled 4.5k-grain bed: 0.11 clipped 0.27% of field pixels, 0.09 none,
-    // and a single layer of sand still sums to about three times the
-    // threshold.
-    gain: 0.09,
-    // How much less a grain at the back of the box counts in the field's
-    // AVERAGES (light, speed, depth). Kept small on purpose — this also scales
-    // coverage, and sand is opaque however deep it sits. At 0.55 the sand
-    // visible only at the back of the box (the band above the front surface
-    // when the bed leans on the back wall) drew as a translucent smear that
-    // tore into holes: measured, its coverage ramped 6 -> 46 against a
-    // threshold of 22. Depth belongs to colour, via render.depthDim.
-    depthWeight: 0.12,
+    // Where a PACKED grain's silhouette lands, as a multiple of its own
+    // radius. A little over 1 on purpose: a physics grain stands in for a
+    // clump of real sand, and that sand fills its neighbourhood rather than
+    // an inscribed sphere, so a jammed single layer should read as continuous
+    // sand — which is what you get when the phone is laid flat and the whole
+    // bed collapses into a sheet one grain thick.
+    bulkSize: 1.25,
     // A grain touching nothing draws its blob this much NARROWER (graded by
     // how few contacts it has). This is a width, not a brightness: a narrow
     // blob cannot bridge to the mass and hang off it as a drip. Its peak is
@@ -236,11 +228,14 @@ export const CONFIG = {
     // cloud even while the simulation is perfectly sane. It also sets how hard
     // a lone grain has to shout to clear the threshold, and therefore how many
     // may overlap before the 8-bit field clips, so it is cheap to keep modest.
-    // Deliberately well inside the grain: a grain in flight is drawn by its
-    // SPECKS (which spread to speckAirSpread), and the field only supplies a
-    // soft core underneath them. Drawn as a full-size blob instead, a flying
-    // grain is a smooth 20px disc — a bead — because a lone blob's level set
-    // is a clean circle that nothing breaks up.
+    // Where a grain with NOTHING to touch draws instead, in its own radii —
+    // and the bed slides between the two by contact count. Deliberately well
+    // inside the grain: sand in flight is drawn by its SPECKS (which spread to
+    // speckAirSpread) with the field only putting a soft core underneath them.
+    // Drawn full size a flying grain is a smooth 20px disc — a bead — because
+    // a lone blob's level set is a clean circle that nothing breaks up, and
+    // sparse grains drawn generously merge into rounded lobes that turn a
+    // splash into batter.
     soloSize: 0.5,
     // Blob profile exponent for a lone grain (the mass uses 2). Lower is a
     // gentler falloff, so the composite's fixed soft band spans more pixels
@@ -250,15 +245,18 @@ export const CONFIG = {
     // the pale cream of a sunlit surface, which a lone grain has not earned —
     // left there, a splash is a scatter of glowing beads.
     airLight: 0.45,
-    // Coverage at which sand starts, and the width of the anti-aliased edge.
-    // A lone grain's blob peaks at `gain`; this threshold draws it a little
-    // *under* its physical size (about 0.8 of its radius), which tightens the
-    // grains protruding from a surface into small bumps rather than domes.
-    surface: 0.085,
-    soft: 0.012,
+    // Coverage at which sand starts. This no longer decides how big anything
+    // looks — bulkSize and soloSize do, and the field pass solves each grain's
+    // peak to match — so it is purely the scale the field works in. Lower
+    // leaves more 8-bit headroom before a deep bed clips; too low and the
+    // field quantises. Nothing visual should move if you change it.
+    surface: 0.042,
+    soft: 0.006,
     // The threshold wanders by this much at grain scale, so the silhouette
-    // breaks into fuzz instead of a smooth contour.
-    dither: 0.02,
+    // breaks into fuzz instead of a smooth contour. Proportional to `surface`
+    // — as an absolute offset it would swamp a low threshold and re-open the
+    // holes it exists to roughen.
+    dither: 0.009,
     ditherPx: 3.0,
     // Form shading from the field gradient: how strongly the gradient tilts
     // the normal, how much of the result the colour sees, and — the load
