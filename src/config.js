@@ -763,9 +763,39 @@ CONFIG.mercuryLook = Object.assign({}, CONFIG.water, {
   // its "dark" side is still a mid silver. Both ends are neutral, too; the
   // faint blue in the old deep end tinted the entire body.
   metal: 1.0,
-  shallow: [1.00, 1.00, 1.00],
-  deep: [0.42, 0.43, 0.45],
+  // Sky and ground of the reflected room. Neither is at an extreme: the sky
+  // leaves headroom so the reflected light below can still be the brightest
+  // thing on the surface, and the ground is a mid silver rather than a dark,
+  // because mercury reflects the room even where it is "dark".
+  shallow: [0.80, 0.81, 0.83],
+  deep: [0.30, 0.31, 0.33],
   foam: [1.00, 1.00, 1.00],
+  // The reflected room. A mirror's defining trick is that the room stays put
+  // while the object moves, so all of this is measured against gravity rather
+  // than the screen: tip the box and the horizon rakes across the mercury.
+  //
+  // envSharp is how much a given slope of surface swings the reflection. The
+  // body is nearly flat, so its normals only tip a little and this has to
+  // amplify hard or the whole pool sits on one flat patch of environment —
+  // which is exactly what "grey blob" was.
+  envSharp: 3.2,
+  // How far tipping the device face-up or face-down slides the reflection. The
+  // flat body of the pool has nothing else to go on — every one of its normals
+  // faces the viewer — so without this it holds one tone at every angle and
+  // reads as painted rather than reflective. This is the tilt sensitivity.
+  pitchGain: 0.5,
+  // Half-width of the horizon crossing. Small, because a mirror's horizon is a
+  // line rather than a fade, and that hard edge sliding past is most of the
+  // read.
+  horizon: 0.45,
+  // The window in the room. On a curved surface — the rim, a wave — this is a
+  // band that rakes across as the thing rolls. On the FLAT body it cannot be a
+  // band, because every pixel there shares one reflection, so it brightens the
+  // whole pool at once as the tilt sweeps past it. Kept gentle for that reason:
+  // at 0.55 it simply blew the body to white through the middle of the tilt.
+  lampAt: 0.25,
+  lampWidth: 40.0,
+  lampGain: 0.22,
   // Opaque. Nothing gets into mercury, so there is no thickness gradient and
   // no seeing the box through it.
   alphaMin: 1.0,

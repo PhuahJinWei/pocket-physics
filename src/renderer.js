@@ -45,6 +45,13 @@ export class Renderer {
     // Parallax offset for the projection eye, in CSS px; set from the tilt.
     this.eyeX = 0;
     this.eyeY = 0;
+    // World up in screen space, mirrored from the gravity input each frame so
+    // a metal's reflected horizon can stay anchored to the room while the box
+    // turns. Straight up until the first frame sets it.
+    this.tiltUp = [0, 1];
+    // How far face-up (+) or face-down (-) the device is held.
+    this.tiltPitch = 0;
+
     // Adaptive quality, mirrored from the tuner each frame. Only the speck
     // pass reads it — see speckCountFor.
     this.quality = 1;
@@ -247,6 +254,14 @@ export class Renderer {
       opacify: gl.getUniformLocation(this.compositeProgram, 'uOpacify'),
       calmRipple: gl.getUniformLocation(this.compositeProgram, 'uCalmRipple'),
       rippleGain: gl.getUniformLocation(this.compositeProgram, 'uRippleGain'),
+      // The reflected room, for metals.
+      up: gl.getUniformLocation(this.compositeProgram, 'uUp'),
+      pitch: gl.getUniformLocation(this.compositeProgram, 'uPitch'),
+      envSharp: gl.getUniformLocation(this.compositeProgram, 'uEnvSharp'),
+      horizon: gl.getUniformLocation(this.compositeProgram, 'uHorizon'),
+      lampAt: gl.getUniformLocation(this.compositeProgram, 'uLampAt'),
+      lampWidth: gl.getUniformLocation(this.compositeProgram, 'uLampWidth'),
+      lampGain: gl.getUniformLocation(this.compositeProgram, 'uLampGain'),
       // Where the screen sits inside the padded field, and the field's css span.
       viewport: gl.getUniformLocation(this.compositeProgram, 'uViewport'),
       fieldOrigin: gl.getUniformLocation(this.compositeProgram, 'uFieldOrigin'),
@@ -892,6 +907,19 @@ export class Renderer {
     gl.uniform1f(this.compositeUniform.opacify, w.opacify);
     gl.uniform1f(this.compositeUniform.calmRipple, w.calmRipple);
     gl.uniform1f(this.compositeUniform.rippleGain, w.rippleGain);
+    // World up in screen space, from the gravity the box is being tilted with.
+    // Gravity points down the screen in sim axes, and this pass has +y running
+    // UP, so the y term keeps its sign and x flips. Falls back to straight up
+    // before the first frame has set a tilt.
+    gl.uniform2f(this.compositeUniform.up, this.tiltUp[0], this.tiltUp[1]);
+    // How far the device is tipped face-up or face-down, which is what aims a
+    // flat mirror at the ceiling or the floor.
+    gl.uniform1f(this.compositeUniform.pitch, this.tiltPitch * (w.pitchGain || 0));
+    gl.uniform1f(this.compositeUniform.envSharp, w.envSharp || 0);
+    gl.uniform1f(this.compositeUniform.horizon, w.horizon || 1);
+    gl.uniform1f(this.compositeUniform.lampAt, w.lampAt || 0);
+    gl.uniform1f(this.compositeUniform.lampWidth, w.lampWidth || 1);
+    gl.uniform1f(this.compositeUniform.lampGain, w.lampGain || 0);
     // Where the screen sits inside the padded field the first pass just drew.
     gl.uniform2f(this.compositeUniform.viewport, this.width, this.height);
     gl.uniform2f(this.compositeUniform.fieldOrigin, marginCss, marginCss);

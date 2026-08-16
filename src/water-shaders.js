@@ -255,6 +255,15 @@ uniform float uAlphaMin;
 uniform float uOpacify;
 uniform float uCalmRipple;
 uniform float uRippleGain;
+// The reflected room, for uMetal surfaces. uUp is world up in screen space, so
+// the horizon is anchored to gravity rather than to the screen.
+uniform vec2 uUp;
+uniform float uPitch;
+uniform float uEnvSharp;
+uniform float uHorizon;
+uniform float uLampAt;
+uniform float uLampWidth;
+uniform float uLampGain;
 
 // The field is padded around the screen (see Renderer.ensureField): where the
 // screen's (0,0) sits inside it, and its full css extent — both in css px, and
@@ -374,30 +383,56 @@ void main() {
   // Beer-Lambert: colour is how much water the light had to cross, so thin
   // edges stay pale and the body deepens toward the middle. This single term
   // does most of the work of making it read as a volume rather than a shape.
-  //
-  // A metal has no such term — nothing gets in, so thickness means nothing and
-  // the colour is entirely what the surface reflects. For those the same two
-  // palette ends are reused as a crude environment instead: a surface tilted
-  // up catches the bright end, one tilted away takes the dark. That swap is
-  // the whole of the liquid-metal look, and it needs no extra uniforms — but
-  // it does mean a metal lives or dies on uRelief, since with a flat normal
-  // everywhere it would be one flat tone.
-  //
-  // (No backticks in here: this GLSL is a JS template literal, so one ends the
-  // string and the shader source spills into the module as code.)
-  // Only a surface tilted UP catches the bright end; one facing the viewer
-  // takes the dark. Centring it instead (mapping a flat normal to the middle
-  // of the ramp) makes a flat body one uniform mid-grey, which reads as
-  // concrete rather than metal — and a slab of liquid is mostly flat, so that
-  // is what you get everywhere except the rim.
   float travel = 1.0 - exp(-uAbsorb * t);
-  float facing = 1.0 - clamp(nrm.y, 0.0, 1.0);
-  vec3 color = mix(uShallow, uDeep, mix(travel, facing, uMetal));
+  vec3 color = mix(uShallow, uDeep, travel);
 
   // +y is up the screen in this pass, unlike gl_PointCoord in the grain
   // shader where it points down. Getting that backwards lights the water from
   // underneath and puts a bright rim along the floor instead of the surface.
   vec3 lightDir = normalize(vec3(-0.35, 0.62, 0.70));
+
+  // A metal has no Beer-Lambert term — nothing gets in, so thickness means
+  // nothing and the colour is entirely what the surface reflects. What it
+  // reflects is a room, and the whole character of a mirror is that the room
+  // STAYS PUT while the object moves: tip the box and the horizon sweeps
+  // across the mercury. That sweep is most of what separates mercury from grey
+  // paint, and the old version could not do it — it keyed on nrm.y, which is
+  // fixed to the screen, so the shading was identical however the phone was
+  // held. uUp is world up in screen space, straight off the gravity vector.
+  if (uMetal > 0.0) {
+    // How far this bit of surface tips toward the sky. Two terms, and the
+    // second is the one that matters:
+    //
+    //   uUp   turns the horizon with the box, so a sloped bit of surface — the
+    //         rim, a ripple, a wave — reflects sky or ground depending on which
+    //         way it leans in the ROOM rather than on the screen.
+    //   uPitch slides the whole reflection. This is the term that makes a flat
+    //         pool respond at all: its normals are all (0,0,1), and a mirror
+    //         facing the viewer reflects the same patch of room however you
+    //         spin it about the view axis, so uUp alone left the body a fixed
+    //         tone at every tilt (measured: mean 196.5 upright vs 195.1 at 45
+    //         degrees, which is nothing). Tipping the phone face-up aims that
+    //         mirror at the ceiling and face-down at the floor, and THAT is
+    //         what a hand actually does.
+    float tip = clamp(dot(nrm.xy, uUp) * uEnvSharp + uPitch, -1.0, 1.0);
+    // Ground below the horizon, sky above it. Sharp, because a mirror's
+    // horizon is a line, not a gradient — that hard edge sliding over the
+    // surface is what the eye reads as "reflective".
+    vec3 env = mix(uDeep, uShallow, smoothstep(-uHorizon, uHorizon, tip));
+    // And the light itself, reflected: a narrow band just off the horizon.
+    // Physically it is the window in the room; visually it is the thing that
+    // rakes across the metal as you tilt.
+    float d = tip - uLampAt;
+    env += uLampGain * exp(-d * d * uLampWidth);
+    color = mix(color, env, uMetal);
+    // Turn the key light with the room too, so the glint below travels with
+    // the horizon instead of staying pinned to one corner of the screen.
+    // Rotating (0,1) onto uUp is the matrix [[uy, ux], [-ux, uy]].
+    vec2 rl = vec2(uUp.y * lightDir.x + uUp.x * lightDir.y,
+                  -uUp.x * lightDir.x + uUp.y * lightDir.y);
+    lightDir = normalize(vec3(mix(lightDir.xy, rl, uMetal), lightDir.z));
+  }
+
   vec3 view = vec3(0.0, 0.0, 1.0);
   vec3 half3 = normalize(lightDir + view);
   // Highlight tightness is a material property, not a constant. Water is a

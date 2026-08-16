@@ -293,6 +293,16 @@ function frame(now) {
   const P = CONFIG.render.parallax;
   renderer.eyeX = -gravity.gx * P;
   renderer.eyeY = -gravity.gy * P;
+  // Which way is up, for a metal's reflected horizon. Gravity points down the
+  // screen in sim axes; the composite runs +y upward, so y keeps its sign and
+  // x flips. Near free-fall there is no meaningful up, so hold the last one.
+  const gm = Math.hypot(gravity.gx, gravity.gy);
+  if (gm > 0.05) {
+    renderer.tiltUp[0] = -gravity.gx / gm;
+    renderer.tiltUp[1] = gravity.gy / gm;
+  }
+  // Face-up is +z here, and a face-up mirror looks at the ceiling.
+  renderer.tiltPitch = gravity.gz;
   // Speck density is the one part of the look the tuner can thin out; grain
   // size, its usual lever, leaves the total speck count unchanged.
   renderer.quality = tuner.scale;
