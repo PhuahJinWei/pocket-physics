@@ -179,7 +179,23 @@ void main() {
   // like cut paper.
   float fresnel = pow(1.0 - clamp(nrm.z, 0.0, 1.0), 3.0) * uFresnel;
 
-  color += spec + fresnel;
+  // Roll the glint off instead of letting it clip. Added raw, a strong
+  // highlight (mercury reaches ~2.0) saturates every pixel it touches to the
+  // same flat 255, so the rim stops being a gradient and becomes a solid white
+  // slab of uniform colour. A slab of white tracing the silhouette reads as a
+  // drawn outline rather than a reflection, and where the silhouette rounds a
+  // corner that outline hooks back on itself and looks like a claw. Measured on
+  // resting mercury: a 16px band along the shoulder was pure 255 with no
+  // gradient across it at all.
+  //
+  // The compression is deliberately parameter-free: x/(1+x) leaves small values
+  // almost untouched, so water and honey (whose glints are well under 1) shade
+  // as before, and only the highlights that would have clipped are pulled back.
+  // The peak still reaches white once the base colour is added -- it just gets
+  // there at a point instead of across a band, which is what makes it read as
+  // light falling on a curved surface.
+  float glint = spec + fresnel;
+  color += glint / (1.0 + glint);
 
   // Foam where the water is both moving and thin — the crest of a wave and the
   // spray off a splash, not the calm mass underneath it.

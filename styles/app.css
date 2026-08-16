@@ -58,28 +58,6 @@ html, body {
   mix-blend-mode: screen;
 }
 
-#hint {
-  position: absolute;
-  left: 50%;
-  bottom: calc(18px + env(safe-area-inset-bottom));
-  transform: translateX(-50%);
-  max-width: min(92vw, 520px);
-  padding: 7px 14px;
-  border: 1px solid var(--edge);
-  border-radius: 999px;
-  background: var(--panel);
-  backdrop-filter: blur(8px);
-  color: var(--dim);
-  font-size: 12px;
-  letter-spacing: 0.02em;
-  text-align: center;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  transition: opacity 900ms ease;
-}
-#hint.faded { opacity: 0; }
-
 /* Material picker. Sits opposite the stats panel and stays put — this is the
    one control that has to be reachable on a phone, where there is no key to
    press. #ui ignores pointers, so it has to opt back in.
@@ -294,5 +272,5 @@ html, body {
 #fatal.visible { display: block; }
 
 @media (prefers-reduced-motion: reduce) {
-  #knob, #hint { transition: none; }
+  #knob { transition: none; }
 }

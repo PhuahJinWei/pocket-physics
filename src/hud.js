@@ -1,10 +1,9 @@
-// DOM overlay: the hint line, the stats panel, the tilt-permission prompt, and
-// the virtual tilt stick shown when no sensors are available.
+// DOM overlay: the stats panel, the tilt-permission prompt, and the virtual
+// tilt stick shown when no sensors are available.
 
 export class Hud {
   constructor(root) {
     this.root = root;
-    this.hint = root.querySelector('#hint');
     this.stats = root.querySelector('#stats');
     this.gate = root.querySelector('#gate');
     this.gateButton = root.querySelector('#gate-button');
@@ -23,7 +22,6 @@ export class Hud {
     // movement keys do not tilt the box out from under someone who is choosing.
     this.materialOpen = false;
     this._materialButtons = new Map();
-    this._hintTimer = 0;
     this._statsTimer = 0;
     this.bindStick();
     this.bindMaterial();
@@ -103,12 +101,6 @@ export class Hud {
     this.material.setAttribute('aria-expanded', open ? 'true' : 'false');
   }
 
-  setHint(text) {
-    this.hint.textContent = text;
-    this.hint.classList.remove('faded');
-    this._hintTimer = 7;
-  }
-
   showGate(text, note, onClick) {
     this.gateNote.textContent = note || '';
     this.gateButton.textContent = text;
@@ -180,10 +172,6 @@ export class Hud {
   }
 
   update(dt, info) {
-    if (this._hintTimer > 0) {
-      this._hintTimer -= dt;
-      if (this._hintTimer <= 0) this.hint.classList.add('faded');
-    }
     if (!this.statsVisible) return;
     this._statsTimer -= dt;
     if (this._statsTimer > 0) return;

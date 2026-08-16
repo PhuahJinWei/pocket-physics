@@ -75,7 +75,7 @@ main.js        frame loop, viewport → sim size, quality changes
     shaders.js       sand field, composite, specks, and the box walls
     water-shaders.js
   tuner.js       adaptive quality
-  hud.js         stats panel, hint line, permission prompt, tilt pad
+  hud.js         stats panel, permission prompt, tilt pad
 config.js      every tunable, in one place
 ```
 

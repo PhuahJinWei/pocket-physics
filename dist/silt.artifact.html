@@ -60,28 +60,6 @@ html, body {
   mix-blend-mode: screen;
 }
 
-#hint {
-  position: absolute;
-  left: 50%;
-  bottom: calc(18px + env(safe-area-inset-bottom));
-  transform: translateX(-50%);
-  max-width: min(92vw, 520px);
-  padding: 7px 14px;
-  border: 1px solid var(--edge);
-  border-radius: 999px;
-  background: var(--panel);
-  backdrop-filter: blur(8px);
-  color: var(--dim);
-  font-size: 12px;
-  letter-spacing: 0.02em;
-  text-align: center;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  transition: opacity 900ms ease;
-}
-#hint.faded { opacity: 0; }
-
 /* Material picker. Sits opposite the stats panel and stays put — this is the
    one control that has to be reachable on a phone, where there is no key to
    press. #ui ignores pointers, so it has to opt back in.
@@ -296,7 +274,7 @@ html, body {
 #fatal.visible { display: block; }
 
 @media (prefers-reduced-motion: reduce) {
-  #knob, #hint { transition: none; }
+  #knob { transition: none; }
 }
 
 </style>
@@ -309,7 +287,6 @@ html, body {
             aria-label="Material">Sand</button>
     <div id="material-menu" role="listbox" aria-label="Choose material" hidden></div>
   </div>
-  <div id="hint"></div>
   <div id="stats"></div>
 
   <div id="gate">
@@ -4105,7 +4082,23 @@ void main() {
   // like cut paper.
   float fresnel = pow(1.0 - clamp(nrm.z, 0.0, 1.0), 3.0) * uFresnel;
 
-  color += spec + fresnel;
+  // Roll the glint off instead of letting it clip. Added raw, a strong
+  // highlight (mercury reaches ~2.0) saturates every pixel it touches to the
+  // same flat 255, so the rim stops being a gradient and becomes a solid white
+  // slab of uniform colour. A slab of white tracing the silhouette reads as a
+  // drawn outline rather than a reflection, and where the silhouette rounds a
+  // corner that outline hooks back on itself and looks like a claw. Measured on
+  // resting mercury: a 16px band along the shoulder was pure 255 with no
+  // gradient across it at all.
+  //
+  // The compression is deliberately parameter-free: x/(1+x) leaves small values
+  // almost untouched, so water and honey (whose glints are well under 1) shade
+  // as before, and only the highlights that would have clipped are pulled back.
+  // The peak still reaches white once the base colour is added -- it just gets
+  // there at a point instead of across a band, which is what makes it read as
+  // light falling on a curved surface.
+  float glint = spec + fresnel;
+  color += glint / (1.0 + glint);
 
   // Foam where the water is both moving and thin — the crest of a wave and the
   // spray off a splash, not the calm mass underneath it.
@@ -5523,13 +5516,12 @@ class Tuner {
 }
 
 // ---- src/hud.js ----
-// DOM overlay: the hint line, the stats panel, the tilt-permission prompt, and
-// the virtual tilt stick shown when no sensors are available.
+// DOM overlay: the stats panel, the tilt-permission prompt, and the virtual
+// tilt stick shown when no sensors are available.
 
 class Hud {
   constructor(root) {
     this.root = root;
-    this.hint = root.querySelector('#hint');
     this.stats = root.querySelector('#stats');
     this.gate = root.querySelector('#gate');
     this.gateButton = root.querySelector('#gate-button');
@@ -5548,7 +5540,6 @@ class Hud {
     // movement keys do not tilt the box out from under someone who is choosing.
     this.materialOpen = false;
     this._materialButtons = new Map();
-    this._hintTimer = 0;
     this._statsTimer = 0;
     this.bindStick();
     this.bindMaterial();
@@ -5628,12 +5619,6 @@ class Hud {
     this.material.setAttribute('aria-expanded', open ? 'true' : 'false');
   }
 
-  setHint(text) {
-    this.hint.textContent = text;
-    this.hint.classList.remove('faded');
-    this._hintTimer = 7;
-  }
-
   showGate(text, note, onClick) {
     this.gateNote.textContent = note || '';
     this.gateButton.textContent = text;
@@ -5705,10 +5690,6 @@ class Hud {
   }
 
   update(dt, info) {
-    if (this._hintTimer > 0) {
-      this._hintTimer -= dt;
-      if (this._hintTimer <= 0) this.hint.classList.add('faded');
-    }
     if (!this.statsVisible) return;
     this._statsTimer -= dt;
     if (this._statsTimer > 0) return;
@@ -5766,8 +5747,38 @@ try {
   throw err;
 }
 
+// Remembering the choice across reloads. localStorage *throws* rather than
+// no-ops where storage is blocked — a sandboxed iframe, which is how the
+// artifact build runs, or a browser set to refuse cookies — so both sides
+// swallow it: remembering the material is a convenience, never a dependency.
+const MATERIAL_KEY = 'silt.material';
+
+function loadMaterial() {
+  try {
+    return localStorage.getItem(MATERIAL_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function saveMaterial(id) {
+  try {
+    localStorage.setItem(MATERIAL_KEY, id);
+  } catch {
+    /* storage unavailable — the session just will not be remembered */
+  }
+}
+
+// Reload lands on whatever was last in the box rather than back on sand. An
+// explicit ?material= still wins, so a capture or a shared link pins what it
+// names. select() rejects an id it does not know and leaves the default
+// standing, so a value left over from a renamed material degrades quietly.
 const materials = new MaterialSet();
-if (params.has('material')) materials.select(params.get('material'));
+const startMaterial = params.get('material') || loadMaterial();
+if (startMaterial) materials.select(startMaterial);
+// Written back so storage tracks what is actually in the box, including when
+// the query param picked it.
+saveMaterial(materials.id);
 let sand = materials.current;
 const gravity = new GravityInput();
 const poke = new PokeInput(canvas);
@@ -5870,6 +5881,7 @@ function selectMaterial(id) {
   // Asked before selecting, because reading `current` is what builds it.
   const fresh = materials.isFresh(id);
   if (!materials.select(id)) return;
+  saveMaterial(id);
   sand = materials.current;
   gravity.zBias = sand.zBias;
   radius = grainRadius(viewWidth, viewHeight);
@@ -5877,7 +5889,6 @@ function selectMaterial(id) {
   if (fresh || sand.n === 0) sand.fill(targetCount());
   else sand.clampToBounds();
   hud.setMaterial(materials.id, materials.label);
-  hud.setHint(HINT);
 }
 
 /** Keyboard shortcut: step to the next material in the registry. */
@@ -5913,12 +5924,6 @@ if (touch && gravity.supportsSensors && !gravity.demo) {
   }
 }
 
-// Names no material, so the registry can grow without the hint going stale.
-const HINT = touch
-  ? 'Tilt to pour · touch to push · shake to splash · tap the pill to switch'
-  : 'Arrows / WASD to tilt · drag to push · space to splash · M for material · ` for stats';
-hud.setHint(HINT);
-
 poke.onFirstTouch = () => {
   // A tap is a gesture, so it is also a chance to ask for sensors on iOS.
   if (touch && !gravity.sensorActive && gravity.requiresGesture && GravityInput.secureContext) {
@@ -5942,7 +5947,6 @@ window.addEventListener('keydown', (e) => {
     case 'KeyR': reset(); break;
     case 'KeyM': switchMaterial(); break;
     case 'Backquote': hud.toggleStats(); break;
-    case 'KeyH': hud.setHint(HINT); break;
     case 'KeyF': gravity.flipped = !gravity.flipped; break;
     case 'KeyJ':
       stickForced = !stickForced;

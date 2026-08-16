@@ -21,8 +21,38 @@ try {
   throw err;
 }
 
+// Remembering the choice across reloads. localStorage *throws* rather than
+// no-ops where storage is blocked — a sandboxed iframe, which is how the
+// artifact build runs, or a browser set to refuse cookies — so both sides
+// swallow it: remembering the material is a convenience, never a dependency.
+const MATERIAL_KEY = 'silt.material';
+
+function loadMaterial() {
+  try {
+    return localStorage.getItem(MATERIAL_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function saveMaterial(id) {
+  try {
+    localStorage.setItem(MATERIAL_KEY, id);
+  } catch {
+    /* storage unavailable — the session just will not be remembered */
+  }
+}
+
+// Reload lands on whatever was last in the box rather than back on sand. An
+// explicit ?material= still wins, so a capture or a shared link pins what it
+// names. select() rejects an id it does not know and leaves the default
+// standing, so a value left over from a renamed material degrades quietly.
 const materials = new MaterialSet();
-if (params.has('material')) materials.select(params.get('material'));
+const startMaterial = params.get('material') || loadMaterial();
+if (startMaterial) materials.select(startMaterial);
+// Written back so storage tracks what is actually in the box, including when
+// the query param picked it.
+saveMaterial(materials.id);
 let sand = materials.current;
 const gravity = new GravityInput();
 const poke = new PokeInput(canvas);
@@ -125,6 +155,7 @@ function selectMaterial(id) {
   // Asked before selecting, because reading `current` is what builds it.
   const fresh = materials.isFresh(id);
   if (!materials.select(id)) return;
+  saveMaterial(id);
   sand = materials.current;
   gravity.zBias = sand.zBias;
   radius = grainRadius(viewWidth, viewHeight);
@@ -132,7 +163,6 @@ function selectMaterial(id) {
   if (fresh || sand.n === 0) sand.fill(targetCount());
   else sand.clampToBounds();
   hud.setMaterial(materials.id, materials.label);
-  hud.setHint(HINT);
 }
 
 /** Keyboard shortcut: step to the next material in the registry. */
@@ -168,12 +198,6 @@ if (touch && gravity.supportsSensors && !gravity.demo) {
   }
 }
 
-// Names no material, so the registry can grow without the hint going stale.
-const HINT = touch
-  ? 'Tilt to pour · touch to push · shake to splash · tap the pill to switch'
-  : 'Arrows / WASD to tilt · drag to push · space to splash · M for material · ` for stats';
-hud.setHint(HINT);
-
 poke.onFirstTouch = () => {
   // A tap is a gesture, so it is also a chance to ask for sensors on iOS.
   if (touch && !gravity.sensorActive && gravity.requiresGesture && GravityInput.secureContext) {
@@ -197,7 +221,6 @@ window.addEventListener('keydown', (e) => {
     case 'KeyR': reset(); break;
     case 'KeyM': switchMaterial(); break;
     case 'Backquote': hud.toggleStats(); break;
-    case 'KeyH': hud.setHint(HINT); break;
     case 'KeyF': gravity.flipped = !gravity.flipped; break;
     case 'KeyJ':
       stickForced = !stickForced;
