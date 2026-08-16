@@ -486,13 +486,15 @@ export const CONFIG = {
     adhesion: 0,
     adhesionGlass: 0,
     adhesionBand: 1.0,
-    // Pairwise attraction between neighbours — surface tension. Water has
-    // effectively none at this scale; it is the whole of what makes mercury
-    // bead. `cohesionDamp` opposes relative motion along the same pairs and is
-    // not optional: without it the attraction is an undamped spring stepped
-    // explicitly, and it pumps energy in forever. See Fluid.cohesion.
-    cohesion: 0,
-    cohesionDamp: 0,
+    // Surface tension, as a constraint solved alongside incompressibility —
+    // how far a particle moves toward its neighbourhood centroid per solver
+    // iteration, 0 to 1. Zero in the interior by symmetry, so this only ever
+    // acts on a surface. Water has effectively none at this scale; it is the
+    // whole of what makes mercury bead. See Fluid.solveTension.
+    tension: 0,
+    // Ceiling on one iteration's move, as a fraction of rest spacing — the
+    // same guard the pressure correction uses, for the same reason.
+    tensionMaxMove: 0.25,
     fixedHz: 60,
     maxSubsteps: 2,
     foamSmoothing: 9,
@@ -705,10 +707,7 @@ CONFIG.mercury = Object.assign({}, CONFIG.fluid, {
   // does mercury in a wide tray), and it is the smaller puddle that beads.
   // Measured at fill 0.05: cohesion 0 spread to 97% of the box width and 30px
   // deep, cohesion 6 pulled back to 71% and 70px deep.
-  cohesion: 2.5,
-  // Not optional — see Fluid.cohesion. Opposes relative motion along the same
-  // pairs the attraction acts on.
-  cohesionDamp: 3.0,
+  tension: 0.35,
   wallDensity: 1.8,
   viscosity: 0.06,
   drag: 0.02,
