@@ -80,6 +80,19 @@ export const MATERIALS = [
       look: CONFIG.honeyLook,
     }),
   },
+  {
+    // Also the fluid solver, but the first material that needed a new *force*
+    // rather than new numbers: cohesion, so it beads. See CONFIG.mercury.
+    id: 'mercury',
+    label: 'Mercury',
+    tint: '#c9ccd4',
+    create: () => new Fluid(CONFIG.mercury.maxParticles, {
+      kind: 'mercury',
+      label: 'Mercury',
+      tuning: CONFIG.mercury,
+      look: CONFIG.mercuryLook,
+    }),
+  },
 ];
 
 /**

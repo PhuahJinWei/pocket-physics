@@ -486,6 +486,13 @@ export const CONFIG = {
     adhesion: 0,
     adhesionGlass: 0,
     adhesionBand: 1.0,
+    // Pairwise attraction between neighbours — surface tension. Water has
+    // effectively none at this scale; it is the whole of what makes mercury
+    // bead. `cohesionDamp` opposes relative motion along the same pairs and is
+    // not optional: without it the attraction is an undamped spring stepped
+    // explicitly, and it pumps energy in forever. See Fluid.cohesion.
+    cohesion: 0,
+    cohesionDamp: 0,
     fixedHz: 60,
     maxSubsteps: 2,
     foamSmoothing: 9,
@@ -665,5 +672,100 @@ CONFIG.honeyLook = Object.assign({}, CONFIG.water, {
   calmRipple: 0.06,
   rippleGain: 1.0,
   // No foam. Honey does not aerate on a shake; it heaves and folds.
+  foamAmount: 0.0,
+});
+
+// ------------------------------------------------------------------- mercury
+//
+// The third liquid, and the first that needed a new force rather than new
+// numbers. Honey differs from water in how fast it flows; mercury differs in
+// what shape it wants to be, and incompressibility has nothing to say about
+// that — a density constraint is indifferent to where the edge of the liquid
+// is, so a body just takes the shape of whatever holds it. Mercury does the
+// opposite: it holds its own shape and refuses the container's.
+//
+//   cohesion    Pairwise attraction, so the body pulls itself into beads that
+//               merge on contact. Everything characteristic comes from here.
+//   wallDensity Above 1, which is the trick for non-wetting. The term exists
+//               to hand back the density a wall's missing half-space would
+//               have contributed; overpay it and the wall reads as *denser*
+//               than open fluid, so the liquid pushes off rather than
+//               settling against it — a contact angle past 90 degrees, which
+//               is exactly what mercury does to glass.
+//   viscosity   Barely any. Mercury is about as runny as water and nothing
+//               about it should feel thick; the beading must come from
+//               tension alone, or it reads as jelly.
+//   adhesion    Zero, and pointedly so. Honey's defining trait is that it
+//               grips what it touches; mercury's is that it grips nothing.
+CONFIG.mercury = Object.assign({}, CONFIG.fluid, {
+  // In gravities: how hard the surface pulls itself in against how hard
+  // gravity pulls it down. Surface tension only wins below the capillary
+  // length, so how much of it is in the box matters as much as this number —
+  // a pool spanning the box stays flat however hard it pulls (correctly: so
+  // does mercury in a wide tray), and it is the smaller puddle that beads.
+  // Measured at fill 0.05: cohesion 0 spread to 97% of the box width and 30px
+  // deep, cohesion 6 pulled back to 71% and 70px deep.
+  cohesion: 2.5,
+  // Not optional — see Fluid.cohesion. Opposes relative motion along the same
+  // pairs the attraction acts on.
+  cohesionDamp: 3.0,
+  wallDensity: 1.8,
+  viscosity: 0.06,
+  drag: 0.02,
+  adhesion: 0,
+  adhesionGlass: 0,
+  // Artificial pressure fights clustering, which is the one thing this liquid
+  // is supposed to do. Eased right down, leaving the explicit cohesion term to
+  // decide the shape instead of a numerical correction arguing with it.
+  surfacePressure: 0.00005,
+  // Distinctly less than the other liquids, and that is a physical choice
+  // rather than a cosmetic one: tension can only shape a body smaller than the
+  // capillary length, so a boxful of mercury would just be a flat metal floor.
+  fill: 0.11,
+});
+
+CONFIG.mercuryLook = Object.assign({}, CONFIG.water, {
+  // A metal, so `shallow` and `deep` stop being a depth ramp and become the
+  // two ends of a reflected environment — sky above, ground below. See uMetal
+  // in the composite.
+  //
+  // The environment is BRIGHT, at both ends. The first cut used the box's own
+  // near-black as the ground, and the result averaged (68,70,75) — a dark
+  // blue-grey at 28% lightness that read as wet slate. Real mercury is the
+  // brightest thing in whatever room it is in, because it reflects the room:
+  // its "dark" side is still a mid silver. Both ends are neutral, too; the
+  // faint blue in the old deep end tinted the entire body.
+  metal: 1.0,
+  shallow: [1.00, 1.00, 1.00],
+  deep: [0.42, 0.43, 0.45],
+  foam: [1.00, 1.00, 1.00],
+  // Opaque. Nothing gets into mercury, so there is no thickness gradient and
+  // no seeing the box through it.
+  alphaMin: 1.0,
+  opacify: 40.0,
+  absorb: 40.0,
+  // A mirror: hard highlights that actually reach white, and a strong grazing
+  // edge. Not as tight as the instinct says — at specPower 220 the lobe was so
+  // narrow that on a half-res field almost nothing ever caught it, and the
+  // body went to flat matte grey (p99 148, no whites at all). 120 gives real
+  // whites (p99 255) at the crests while the flat interior stays a mid silver.
+  specular: 2.0,
+  specPower: 120.0,
+  fresnel: 0.6,
+  // The defining thing about mercury is that it is optically SMOOTH — the one
+  // liquid that is a true mirror at rest. Relief here shades the particle
+  // lattice, and at 14 it lit every particle as a bump: measured, 770 bright
+  // specks and a luminance SD of 48 across the interior, which is what made it
+  // look pebbled and wet rather than mirrored. Low relief and a near-zero calm
+  // ripple keep the interior a smooth field with a single sheen; the curved
+  // rim still shades because its gradient is real, not lattice noise.
+  relief: 8.0,
+  calmRipple: 0.06,
+  // Near zero — the opposite of water. Water earns its ripple gain because
+  // agitated water genuinely does ripple; a heaving metal is still a mirror,
+  // and letting motion re-expose the lattice made the moving surface pebbly
+  // again (138 bright specks mid-splash at 1.2, 62 at 0.2). Real waves are
+  // large shape and the field still carries those; this only ever added noise.
+  rippleGain: 0.2,
   foamAmount: 0.0,
 });

@@ -79,7 +79,7 @@ main.js        frame loop, viewport → sim size, quality changes
 config.js      every tunable, in one place
 ```
 
-**Materials.** Sand, water and honey. Adding one is a single entry in the
+**Materials.** Sand, water, honey and mercury. Adding one is a single entry in the
 `MATERIALS` registry (`materials.js` documents the interface in full): the
 picker builds itself from that list, so a new material appears in the UI with
 its swatch and needs no markup, styling or wiring. The renderer switches on the
@@ -92,6 +92,40 @@ sand with the friction turned off. A Coulomb contact solver with `mu = 0` is a
 *frictionless granular gas*: it resists penetration and nothing else, so it
 stays compressible and never develops the pressure gradient that makes water
 find its own level.
+
+**Mercury** needed the first genuinely new force. Honey differs from water in
+how fast it flows; mercury differs in *what shape it wants to be*, and a density
+constraint has nothing to say about that — incompressibility is indifferent to
+where the edge of the liquid is, so a body simply takes the shape of whatever
+holds it. So `Fluid.cohesion` adds a pairwise attraction, and three details
+decide whether it works at all:
+
+- **It must start beyond rest spacing.** Written the obvious way, peaking at
+  half the smoothing radius — which *is* the rest spacing — it pulls hardest
+  exactly where the density constraint is pushing back, and the two form an
+  undamped spring.
+- **It must damp along the pair.** An attraction computed from positions alone
+  is a spring stepped explicitly and adds energy every cycle. Water hides that
+  behind its own viscosity; mercury is barely viscous by design and has nothing
+  to bleed it off.
+- **Strength has to be in gravities.** As a raw coefficient a plausible-looking
+  400 worked out at 9600 px/s² — larger than gravity — saturating the travel
+  clamp on every surface particle, every substep.
+
+Non-wetting comes free from a term that already existed. `wallDensity` hands
+back the density a wall's missing half-space would have contributed, so
+*overpaying* it makes the wall read as denser than open fluid and the liquid
+pushes off rather than settling against it: a contact angle past 90°, which is
+what mercury does to glass.
+
+One honest limit: **surface tension only wins below the capillary length**, so
+how much mercury is in the box matters as much as how hard it pulls. A pool
+spanning the box stays flat however strong the cohesion — correctly, since so
+does mercury in a wide tray — and it is the smaller puddle that beads. Measured
+at fill 0.05: cohesion off spread to 97% of the box width and 30 px deep;
+cohesion 6 pulled back to 71% and 70 px deep. Mercury therefore ships with
+distinctly less liquid than the others, which is a physical choice rather than
+a cosmetic one.
 
 Honey, though, *is* water with different numbers — same solver, same two passes,
 a dozen constants (`CONFIG.honey`). The interesting part is which constants.
@@ -455,6 +489,9 @@ Everything lives in [`src/config.js`](src/config.js). The knobs worth knowing:
 | `sand.glintStrength` / `glintRate` | sparkle |
 | `render.deep` / `mid` / `lit` | the colour ramp from buried to sunlit |
 | `honey.adhesionGlass` | how thick honey behaves — the no-slip term, not `viscosity` |
+| `mercury.cohesion` / `fill` | how hard it beads, in gravities — and how much liquid there is to bead |
+| `mercury.wallDensity` | above 1 = non-wetting; how hard it pushes off the glass |
+| `mercuryLook.metal` | swaps the depth ramp for a reflected environment |
 | `honeyLook.absorb` / `deep` | how fast amber deepens, and the hue it deepens *to* |
 | `water/honeyLook.alphaMin` / `opacify` | see-through vs solid — the main thing telling two liquids apart |
 | `water/honeyLook.relief` / `calmRipple` / `specPower` | how rippled and how glossy each surface is |

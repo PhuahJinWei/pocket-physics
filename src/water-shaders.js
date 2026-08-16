@@ -97,6 +97,7 @@ uniform float uRelief;
 uniform float uSpecular;
 uniform float uSpecPower;
 uniform float uFresnel;
+uniform float uMetal;      // 0 = transparent liquid, 1 = mirror
 uniform float uFoamAmount;
 uniform float uFoamBias;
 uniform float uAlphaMin;
@@ -142,8 +143,25 @@ void main() {
   // Beer-Lambert: colour is how much water the light had to cross, so thin
   // edges stay pale and the body deepens toward the middle. This single term
   // does most of the work of making it read as a volume rather than a shape.
+  //
+  // A metal has no such term — nothing gets in, so thickness means nothing and
+  // the colour is entirely what the surface reflects. For those the same two
+  // palette ends are reused as a crude environment instead: a surface tilted
+  // up catches the bright end, one tilted away takes the dark. That swap is
+  // the whole of the liquid-metal look, and it needs no extra uniforms — but
+  // it does mean a metal lives or dies on uRelief, since with a flat normal
+  // everywhere it would be one flat tone.
+  //
+  // (No backticks in here: this GLSL is a JS template literal, so one ends the
+  // string and the shader source spills into the module as code.)
+  // Only a surface tilted UP catches the bright end; one facing the viewer
+  // takes the dark. Centring it instead (mapping a flat normal to the middle
+  // of the ramp) makes a flat body one uniform mid-grey, which reads as
+  // concrete rather than metal — and a slab of liquid is mostly flat, so that
+  // is what you get everywhere except the rim.
   float travel = 1.0 - exp(-uAbsorb * t);
-  vec3 color = mix(uShallow, uDeep, travel);
+  float facing = 1.0 - clamp(nrm.y, 0.0, 1.0);
+  vec3 color = mix(uShallow, uDeep, mix(travel, facing, uMetal));
 
   // +y is up the screen in this pass, unlike gl_PointCoord in the grain
   // shader where it points down. Getting that backwards lights the water from

@@ -825,6 +825,13 @@ const CONFIG = {
     adhesion: 0,
     adhesionGlass: 0,
     adhesionBand: 1.0,
+    // Pairwise attraction between neighbours — surface tension. Water has
+    // effectively none at this scale; it is the whole of what makes mercury
+    // bead. `cohesionDamp` opposes relative motion along the same pairs and is
+    // not optional: without it the attraction is an undamped spring stepped
+    // explicitly, and it pumps energy in forever. See Fluid.cohesion.
+    cohesion: 0,
+    cohesionDamp: 0,
     fixedHz: 60,
     maxSubsteps: 2,
     foamSmoothing: 9,
@@ -1004,6 +1011,101 @@ CONFIG.honeyLook = Object.assign({}, CONFIG.water, {
   calmRipple: 0.06,
   rippleGain: 1.0,
   // No foam. Honey does not aerate on a shake; it heaves and folds.
+  foamAmount: 0.0,
+});
+
+// ------------------------------------------------------------------- mercury
+//
+// The third liquid, and the first that needed a new force rather than new
+// numbers. Honey differs from water in how fast it flows; mercury differs in
+// what shape it wants to be, and incompressibility has nothing to say about
+// that — a density constraint is indifferent to where the edge of the liquid
+// is, so a body just takes the shape of whatever holds it. Mercury does the
+// opposite: it holds its own shape and refuses the container's.
+//
+//   cohesion    Pairwise attraction, so the body pulls itself into beads that
+//               merge on contact. Everything characteristic comes from here.
+//   wallDensity Above 1, which is the trick for non-wetting. The term exists
+//               to hand back the density a wall's missing half-space would
+//               have contributed; overpay it and the wall reads as *denser*
+//               than open fluid, so the liquid pushes off rather than
+//               settling against it — a contact angle past 90 degrees, which
+//               is exactly what mercury does to glass.
+//   viscosity   Barely any. Mercury is about as runny as water and nothing
+//               about it should feel thick; the beading must come from
+//               tension alone, or it reads as jelly.
+//   adhesion    Zero, and pointedly so. Honey's defining trait is that it
+//               grips what it touches; mercury's is that it grips nothing.
+CONFIG.mercury = Object.assign({}, CONFIG.fluid, {
+  // In gravities: how hard the surface pulls itself in against how hard
+  // gravity pulls it down. Surface tension only wins below the capillary
+  // length, so how much of it is in the box matters as much as this number —
+  // a pool spanning the box stays flat however hard it pulls (correctly: so
+  // does mercury in a wide tray), and it is the smaller puddle that beads.
+  // Measured at fill 0.05: cohesion 0 spread to 97% of the box width and 30px
+  // deep, cohesion 6 pulled back to 71% and 70px deep.
+  cohesion: 2.5,
+  // Not optional — see Fluid.cohesion. Opposes relative motion along the same
+  // pairs the attraction acts on.
+  cohesionDamp: 3.0,
+  wallDensity: 1.8,
+  viscosity: 0.06,
+  drag: 0.02,
+  adhesion: 0,
+  adhesionGlass: 0,
+  // Artificial pressure fights clustering, which is the one thing this liquid
+  // is supposed to do. Eased right down, leaving the explicit cohesion term to
+  // decide the shape instead of a numerical correction arguing with it.
+  surfacePressure: 0.00005,
+  // Distinctly less than the other liquids, and that is a physical choice
+  // rather than a cosmetic one: tension can only shape a body smaller than the
+  // capillary length, so a boxful of mercury would just be a flat metal floor.
+  fill: 0.11,
+});
+
+CONFIG.mercuryLook = Object.assign({}, CONFIG.water, {
+  // A metal, so `shallow` and `deep` stop being a depth ramp and become the
+  // two ends of a reflected environment — sky above, ground below. See uMetal
+  // in the composite.
+  //
+  // The environment is BRIGHT, at both ends. The first cut used the box's own
+  // near-black as the ground, and the result averaged (68,70,75) — a dark
+  // blue-grey at 28% lightness that read as wet slate. Real mercury is the
+  // brightest thing in whatever room it is in, because it reflects the room:
+  // its "dark" side is still a mid silver. Both ends are neutral, too; the
+  // faint blue in the old deep end tinted the entire body.
+  metal: 1.0,
+  shallow: [1.00, 1.00, 1.00],
+  deep: [0.42, 0.43, 0.45],
+  foam: [1.00, 1.00, 1.00],
+  // Opaque. Nothing gets into mercury, so there is no thickness gradient and
+  // no seeing the box through it.
+  alphaMin: 1.0,
+  opacify: 40.0,
+  absorb: 40.0,
+  // A mirror: hard highlights that actually reach white, and a strong grazing
+  // edge. Not as tight as the instinct says — at specPower 220 the lobe was so
+  // narrow that on a half-res field almost nothing ever caught it, and the
+  // body went to flat matte grey (p99 148, no whites at all). 120 gives real
+  // whites (p99 255) at the crests while the flat interior stays a mid silver.
+  specular: 2.0,
+  specPower: 120.0,
+  fresnel: 0.6,
+  // The defining thing about mercury is that it is optically SMOOTH — the one
+  // liquid that is a true mirror at rest. Relief here shades the particle
+  // lattice, and at 14 it lit every particle as a bump: measured, 770 bright
+  // specks and a luminance SD of 48 across the interior, which is what made it
+  // look pebbled and wet rather than mirrored. Low relief and a near-zero calm
+  // ripple keep the interior a smooth field with a single sheen; the curved
+  // rim still shades because its gradient is real, not lattice noise.
+  relief: 8.0,
+  calmRipple: 0.06,
+  // Near zero — the opposite of water. Water earns its ripple gain because
+  // agitated water genuinely does ripple; a heaving metal is still a mirror,
+  // and letting motion re-expose the lattice made the moving surface pebbly
+  // again (138 bright specks mid-splash at 1.2, 62 at 0.2). Real waves are
+  // large shape and the field still carries those; this only ever added noise.
+  rippleGain: 0.2,
   foamAmount: 0.0,
 });
 
@@ -2601,6 +2703,7 @@ class Fluid {
       // rather than being read back as a spurious impulse this one.
       this.separate();
       this.viscosity();
+      this.cohesion(h);
       this.adhesion(h);
     }
     this.updateShading(dtFrame);
@@ -2977,6 +3080,118 @@ class Fluid {
   }
 
   /**
+   * Cohesion — surface tension, and the whole of what makes mercury mercury.
+   *
+   * The density constraint alone cannot produce it. Incompressibility says
+   * every particle wants the same number of neighbours; it is indifferent to
+   * where the *edge* of the liquid is, so a body has no reason to prefer a
+   * small surface and simply takes the shape of whatever holds it. Water is
+   * near enough to that at this scale. Mercury is not: it pulls itself into
+   * beads, refuses to wet what it sits on, and merges on contact.
+   *
+   * Modelled as a pairwise attraction over the neighbour list the solver has
+   * already gathered, and the load-bearing detail is *where the kernel starts*.
+   * It is zero at and inside the rest spacing, rises beyond it, and falls back
+   * to zero at the smoothing radius.
+   *
+   * Beginning at rest spacing is the whole of what makes it stable. Written
+   * the obvious way — a kernel peaking at half the smoothing radius, which is
+   * exactly the rest spacing — cohesion pulls hardest precisely where the
+   * density constraint is pushing back, and the two form an undamped spring.
+   * Measured, that did not settle at all: the body plateaued at an RMS of 177
+   * px/s and stayed there indefinitely, where the same fluid without cohesion
+   * reaches 0.1. It is the same trap the granular solver has, in a different
+   * costume — a correction that fights the projection pumps energy in forever,
+   * and no amount of damping hides it.
+   *
+   * Starting past rest spacing leaves the constraint alone: incompressibility
+   * owns everything up to a particle's own size, and cohesion only ever pulls
+   * back neighbours that are drifting apart. Which is what surface tension is.
+   *
+   * Applied to velocity rather than position for the same reason — an
+   * attraction that moved particles directly would be undone by the next
+   * constraint iteration, and the two would argue every substep.
+   */
+  cohesion(h) {
+    const k = this.tuning.cohesion;
+    if (!k) return;
+    const n = this.n;
+    const { x, y, z, vx, vy, vz, nbr, nbrCount } = this;
+    const cap = this.maxNeighbours;
+    const hh = this.smoothing;
+    // Cohesion lives strictly between rest spacing and the smoothing radius.
+    const rest = this.spacing;
+    const span = hh - rest;
+    if (span <= 0) return;
+    const invSpan = 1 / span;
+    // Strength is in GRAVITIES, and the accumulated direction below is an
+    // average rather than a sum, so `cohesion` reads as "how hard the surface
+    // pulls itself in, against how hard gravity pulls it down". Scaled any
+    // other way the number means nothing: written first as a raw coefficient
+    // times spacing, a plausible-looking 400 worked out at 9600 px/s^2 —
+    // larger than gravity — which saturated the travel clamp on every surface
+    // particle every substep and boiled the body permanently.
+    const gain = k * this.gravityMagnitude * h;
+    // Companion damping along each pair, and it is not optional — see below.
+    const dampGain = this.tuning.cohesionDamp * h;
+    // A cohesive body still has to be caught by the solver, so no single
+    // substep may add more than a fraction of the travel cap.
+    const maxDv = (this.spacing * this.tuning.maxTravel) / h * 0.25;
+
+    for (let i = 0; i < n; i++) {
+      const xi = x[i], yi = y[i], zi = z[i];
+      const vxi = vx[i], vyi = vy[i], vzi = vz[i];
+      let ax = 0, ay = 0, az = 0;      // attraction
+      let bx = 0, by = 0, bz = 0;      // damping
+      let wsum = 0;
+      const base = i * cap;
+      const count = nbrCount[i];
+      for (let m = 0; m < count; m++) {
+        const j = nbr[base + m];
+        const dx = xi - x[j], dy = yi - y[j], dz = zi - z[j];
+        const r2 = dx * dx + dy * dy + dz * dz;
+        if (r2 >= hh * hh || r2 < 1e-8) continue;
+        const r = Math.sqrt(r2);
+        // Zero at and inside rest spacing — the density constraint owns that
+        // range, and overlapping it is what turns cohesion into a spring.
+        const u = (r - rest) * invSpan;
+        if (u <= 0) continue;
+        const om = 1 - u;
+        const w = 16 * u * u * om * om;   // peaks at u = 0.5, normalised to 1
+        const inv_r = 1 / r;
+        const nx = dx * inv_r, ny = dy * inv_r, nz = dz * inv_r;
+        ax -= nx * w; ay -= ny * w; az -= nz * w;   // toward the neighbour
+        wsum += w;
+        // Relative velocity along the pair, opposed. Without this the whole
+        // term is an undamped spring stepped explicitly, which adds energy on
+        // every cycle no matter how the kernel is shaped: measured, the body
+        // never settled at all, plateauing at an RMS of 210 px/s against the
+        // 1 px/s it reaches with cohesion off. Water hid it behind its own
+        // viscosity; mercury is barely viscous by design and has nothing to
+        // bleed it off, so the damping has to live here, with the force that
+        // creates the oscillation.
+        const rel = (vxi - vx[j]) * nx + (vyi - vy[j]) * ny + (vzi - vz[j]) * nz;
+        const dw = w * rel;
+        bx -= nx * dw; by -= ny * dw; bz -= nz * dw;
+      }
+      if (wsum < 1e-6) continue;
+      // Averaged, not summed. Summed, the pull grows with however many
+      // neighbours happen to be in range, so a denser patch pulls harder for
+      // no physical reason and the strength has no stable meaning.
+      const inv_w = 1 / wsum;
+      let dvx = ax * inv_w * gain + bx * inv_w * dampGain;
+      let dvy = ay * inv_w * gain + by * inv_w * dampGain;
+      let dvz = az * inv_w * gain + bz * inv_w * dampGain;
+      const mag = Math.hypot(dvx, dvy, dvz);
+      if (mag > maxDv) {
+        const t = maxDv / mag;
+        dvx *= t; dvy *= t; dvz *= t;
+      }
+      vx[i] += dvx; vy[i] += dvy; vz[i] += dvz;
+    }
+  }
+
+  /**
    * Wall adhesion: a liquid that wets the glass drags against it. Water barely
    * does at this scale, honey emphatically does — it is what leaves a coating
    * behind on a wall the body has flowed away from, and without it a thick
@@ -3201,6 +3416,19 @@ const MATERIALS = [
       label: 'Honey',
       tuning: CONFIG.honey,
       look: CONFIG.honeyLook,
+    }),
+  },
+  {
+    // Also the fluid solver, but the first material that needed a new *force*
+    // rather than new numbers: cohesion, so it beads. See CONFIG.mercury.
+    id: 'mercury',
+    label: 'Mercury',
+    tint: '#c9ccd4',
+    create: () => new Fluid(CONFIG.mercury.maxParticles, {
+      kind: 'mercury',
+      label: 'Mercury',
+      tuning: CONFIG.mercury,
+      look: CONFIG.mercuryLook,
     }),
   },
 ];
@@ -3836,6 +4064,7 @@ uniform float uRelief;
 uniform float uSpecular;
 uniform float uSpecPower;
 uniform float uFresnel;
+uniform float uMetal;      // 0 = transparent liquid, 1 = mirror
 uniform float uFoamAmount;
 uniform float uFoamBias;
 uniform float uAlphaMin;
@@ -3881,8 +4110,25 @@ void main() {
   // Beer-Lambert: colour is how much water the light had to cross, so thin
   // edges stay pale and the body deepens toward the middle. This single term
   // does most of the work of making it read as a volume rather than a shape.
+  //
+  // A metal has no such term — nothing gets in, so thickness means nothing and
+  // the colour is entirely what the surface reflects. For those the same two
+  // palette ends are reused as a crude environment instead: a surface tilted
+  // up catches the bright end, one tilted away takes the dark. That swap is
+  // the whole of the liquid-metal look, and it needs no extra uniforms — but
+  // it does mean a metal lives or dies on uRelief, since with a flat normal
+  // everywhere it would be one flat tone.
+  //
+  // (No backticks in here: this GLSL is a JS template literal, so one ends the
+  // string and the shader source spills into the module as code.)
+  // Only a surface tilted UP catches the bright end; one facing the viewer
+  // takes the dark. Centring it instead (mapping a flat normal to the middle
+  // of the ramp) makes a flat body one uniform mid-grey, which reads as
+  // concrete rather than metal — and a slab of liquid is mostly flat, so that
+  // is what you get everywhere except the rim.
   float travel = 1.0 - exp(-uAbsorb * t);
-  vec3 color = mix(uShallow, uDeep, travel);
+  float facing = 1.0 - clamp(nrm.y, 0.0, 1.0);
+  vec3 color = mix(uShallow, uDeep, mix(travel, facing, uMetal));
 
   // +y is up the screen in this pass, unlike gl_PointCoord in the grain
   // shader where it points down. Getting that backwards lights the water from
@@ -4139,6 +4385,7 @@ class Renderer {
       relief: gl.getUniformLocation(this.compositeProgram, 'uRelief'),
       specular: gl.getUniformLocation(this.compositeProgram, 'uSpecular'),
       specPower: gl.getUniformLocation(this.compositeProgram, 'uSpecPower'),
+      metal: gl.getUniformLocation(this.compositeProgram, 'uMetal'),
       fresnel: gl.getUniformLocation(this.compositeProgram, 'uFresnel'),
       foamAmount: gl.getUniformLocation(this.compositeProgram, 'uFoamAmount'),
       foamBias: gl.getUniformLocation(this.compositeProgram, 'uFoamBias'),
@@ -4739,6 +4986,7 @@ class Renderer {
     gl.uniform1f(this.compositeUniform.relief, w.relief);
     gl.uniform1f(this.compositeUniform.specular, w.specular);
     gl.uniform1f(this.compositeUniform.specPower, w.specPower);
+    gl.uniform1f(this.compositeUniform.metal, w.metal || 0);
     gl.uniform1f(this.compositeUniform.fresnel, w.fresnel);
     gl.uniform1f(this.compositeUniform.foamAmount, w.foamAmount);
     gl.uniform1f(this.compositeUniform.foamBias, w.foamBias);

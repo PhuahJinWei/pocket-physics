@@ -220,6 +220,7 @@ export class Renderer {
       relief: gl.getUniformLocation(this.compositeProgram, 'uRelief'),
       specular: gl.getUniformLocation(this.compositeProgram, 'uSpecular'),
       specPower: gl.getUniformLocation(this.compositeProgram, 'uSpecPower'),
+      metal: gl.getUniformLocation(this.compositeProgram, 'uMetal'),
       fresnel: gl.getUniformLocation(this.compositeProgram, 'uFresnel'),
       foamAmount: gl.getUniformLocation(this.compositeProgram, 'uFoamAmount'),
       foamBias: gl.getUniformLocation(this.compositeProgram, 'uFoamBias'),
@@ -820,6 +821,7 @@ export class Renderer {
     gl.uniform1f(this.compositeUniform.relief, w.relief);
     gl.uniform1f(this.compositeUniform.specular, w.specular);
     gl.uniform1f(this.compositeUniform.specPower, w.specPower);
+    gl.uniform1f(this.compositeUniform.metal, w.metal || 0);
     gl.uniform1f(this.compositeUniform.fresnel, w.fresnel);
     gl.uniform1f(this.compositeUniform.foamAmount, w.foamAmount);
     gl.uniform1f(this.compositeUniform.foamBias, w.foamBias);
