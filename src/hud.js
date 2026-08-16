@@ -1,5 +1,5 @@
-// DOM overlay: the stats panel, the tilt-permission prompt, and the virtual
-// tilt stick shown when no sensors are available.
+// DOM overlay: the control bar, the stats readout, the tilt-permission prompt,
+// and the virtual tilt stick shown when no sensors are available.
 
 export class Hud {
   constructor(root) {
@@ -14,17 +14,74 @@ export class Hud {
     this.material = root.querySelector('#material');
     this.materialPicker = root.querySelector('#material-picker');
     this.materialMenu = root.querySelector('#material-menu');
+    this.menuPanel = root.querySelector('#menu-panel');
+    this.menuButton = root.querySelector('#menu');
+    this.menuList = root.querySelector('#menu-list');
 
     this.statsVisible = false;
     this.onStick = null;
     this.onMaterial = null;
-    // True while the material list is open. The frame loop reads this so the
+    this.onAction = null;
+    // True while either list is open. The frame loop reads these so the
     // movement keys do not tilt the box out from under someone who is choosing.
     this.materialOpen = false;
+    this.menuOpen = false;
     this._materialButtons = new Map();
     this._statsTimer = 0;
     this.bindStick();
     this.bindMaterial();
+    this.bindControls();
+  }
+
+  /**
+   * Actions menu. One listener on the list rather than one per row, so adding
+   * an action is markup and a case in main.js — nothing here.
+   */
+  bindControls() {
+    if (!this.menuButton) return;
+    this.menuButton.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.showMenu(!this.menuOpen);
+    });
+    // The panel floats over the canvas, so a press on it must not also start a
+    // drag in the liquid underneath, the same reason the picker stops its own.
+    this.menuPanel.addEventListener('pointerdown', (e) => e.stopPropagation());
+    this.menuList.addEventListener('click', (e) => {
+      const button = e.target.closest('.menu-item');
+      if (!button) return;
+      e.stopPropagation();
+      // Keep focus off the row after a tap: a focused button would otherwise
+      // eat the next space press, which is the splash shortcut.
+      button.blur();
+      // The readout latches, so leave the menu up to show it took. Everything
+      // else acts on the box, and you want to see the box.
+      if (button.dataset.act !== 'stats') this.showMenu(false);
+      if (this.onAction) this.onAction(button.dataset.act);
+    });
+    window.addEventListener('pointerdown', (e) => {
+      if (this.menuOpen && !this.menuPanel.contains(e.target)) this.showMenu(false);
+    });
+    window.addEventListener('keydown', (e) => {
+      if (this.menuOpen && e.code === 'Escape') {
+        this.showMenu(false);
+        this.menuButton.focus();
+      }
+    });
+  }
+
+  showMenu(open) {
+    if (!this.menuList) return;
+    this.menuOpen = open;
+    this.menuList.hidden = !open;
+    this.menuButton.setAttribute('aria-expanded', open ? 'true' : 'false');
+    // Two lists on two corners of the same rim; only one is ever up.
+    if (open) this.showMaterialMenu(false);
+  }
+
+  /** Latch a menu row on or off — currently just the readout toggle. */
+  setActionState(act, on) {
+    const row = this.menuList && this.menuList.querySelector(`[data-act="${act}"]`);
+    if (row) row.setAttribute('aria-pressed', on ? 'true' : 'false');
   }
 
   bindMaterial() {
@@ -99,6 +156,7 @@ export class Hud {
     this.materialOpen = open;
     this.materialMenu.hidden = !open;
     this.material.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) this.showMenu(false);
   }
 
   showGate(text, note, onClick) {
@@ -121,6 +179,9 @@ export class Hud {
   toggleStats(force) {
     this.statsVisible = force === undefined ? !this.statsVisible : force;
     this.stats.classList.toggle('visible', this.statsVisible);
+    // Both the key and the toolbar button come through here, so the lamp on the
+    // button is right however the readout was opened.
+    this.setActionState('stats', this.statsVisible);
   }
 
   showStick(visible) {

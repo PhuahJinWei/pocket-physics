@@ -1,12 +1,56 @@
 /* Full-bleed dark stage. The canvas is position:fixed so mobile browser chrome
    showing and hiding never triggers a layout fight over 100vh. */
 
+/* The chrome is meant to read as the instrument the sim is mounted in, not as a
+   menu laid over a picture. Three rules hold it together:
+
+   1. One light, and it is the sim's light. The water shader lights from the
+      upper left, so every bevel here catches on its top-left edge and shades on
+      the bottom-right. Nothing is lit from anywhere else.
+   2. Two surfaces only. Metal stands proud of the page (--face, lit bevel);
+      wells are cut into it (--well, inset shadow). A control is one or the
+      other, never a flat rectangle with a hairline border.
+   3. Labels are engraved, not printed: the type sits a shade darker than its
+      surface with a single light pixel below it, the way etched metal catches. */
 :root {
   --ink: #e8e0d0;
   --dim: rgba(226, 213, 189, 0.55);
+  --faint: rgba(226, 213, 189, 0.3);
+  /* The amber the sim's own glints land on, so a lit control belongs to it. */
+  --lit: #f0c274;
   --panel: rgba(24, 20, 15, 0.78);
   --edge: rgba(214, 190, 150, 0.16);
+
+  --face: linear-gradient(158deg, rgba(62, 52, 39, 0.62), rgba(19, 15, 11, 0.82));
+  --well: linear-gradient(158deg, rgba(7, 6, 4, 0.9), rgba(21, 17, 12, 0.72));
+  --bevel-lit: rgba(246, 228, 190, 0.13);
+  --bevel-dark: rgba(0, 0, 0, 0.5);
   color-scheme: dark;
+}
+
+/* Machined plate: proud of the page, lit from the upper left. */
+.face {
+  border: 1px solid rgba(0, 0, 0, 0.55);
+  background: var(--face);
+  backdrop-filter: blur(10px);
+  box-shadow:
+    inset 1px 1px 0 var(--bevel-lit),
+    inset -1px -1px 0 var(--bevel-dark),
+    0 6px 18px rgba(0, 0, 0, 0.45);
+}
+
+/* Cut into the plate: the same bevel, inverted. */
+.well {
+  border: 1px solid rgba(0, 0, 0, 0.5);
+  background: var(--well);
+  box-shadow:
+    inset 1px 2px 3px rgba(0, 0, 0, 0.66),
+    inset -1px -1px 0 rgba(246, 228, 190, 0.05);
+}
+
+.engraved {
+  color: var(--dim);
+  text-shadow: 0 1px 0 rgba(255, 232, 190, 0.07);
 }
 
 * { box-sizing: border-box; }
@@ -81,20 +125,27 @@ html, body {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 8px 14px;
-  border: 1px solid var(--edge);
-  border-radius: 999px;
-  background: var(--panel);
-  backdrop-filter: blur(8px);
+  min-height: 38px;
+  padding: 0 12px 0 14px;
+  border: 1px solid rgba(0, 0, 0, 0.55);
+  border-radius: 10px;
+  background: var(--face);
+  backdrop-filter: blur(10px);
+  box-shadow:
+    inset 1px 1px 0 var(--bevel-lit),
+    inset -1px -1px 0 var(--bevel-dark),
+    0 6px 18px rgba(0, 0, 0, 0.45);
   color: var(--dim);
+  text-shadow: 0 1px 0 rgba(255, 232, 190, 0.07);
   font: inherit;
   font-size: 12px;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
-  transition: color 180ms ease, border-color 180ms ease;
+  transition: color 160ms ease, box-shadow 160ms ease;
 }
-/* Caret, so the pill reads as something that opens rather than a label. */
+/* Caret, so the plate reads as something that opens rather than a label. */
 #material::after {
   content: "";
   width: 0;
@@ -102,44 +153,57 @@ html, body {
   border-left: 4px solid transparent;
   border-right: 4px solid transparent;
   border-top: 5px solid currentColor;
-  opacity: 0.7;
-  transition: transform 180ms ease;
+  opacity: 0.55;
+  transition: transform 200ms ease, opacity 160ms ease;
 }
-#material[aria-expanded="true"]::after { transform: rotate(180deg); }
+#material[aria-expanded="true"]::after { transform: rotate(180deg); opacity: 0.9; }
 #material:hover,
 #material:focus-visible,
 #material[aria-expanded="true"] {
   color: var(--ink);
-  border-color: rgba(230, 205, 160, 0.36);
   outline: none;
+  box-shadow:
+    inset 1px 1px 0 rgba(246, 228, 190, 0.2),
+    inset -1px -1px 0 var(--bevel-dark),
+    0 6px 18px rgba(0, 0, 0, 0.45);
 }
-#material:active { transform: scale(0.98); }
+/* Pressed: the bevel inverts, so the plate goes down into the housing. */
+#material:active {
+  box-shadow:
+    inset 1px 2px 3px rgba(0, 0, 0, 0.6),
+    inset -1px -1px 0 rgba(246, 228, 190, 0.05);
+}
 
+/* The list is a well cut into the housing, not a card floating over it. */
 #material-menu {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
   padding: 5px;
-  border: 1px solid var(--edge);
-  border-radius: 14px;
-  background: var(--panel);
-  backdrop-filter: blur(8px);
+  border: 1px solid rgba(0, 0, 0, 0.5);
+  border-radius: 12px;
+  background: var(--well);
+  backdrop-filter: blur(10px);
+  box-shadow:
+    inset 1px 2px 3px rgba(0, 0, 0, 0.66),
+    inset -1px -1px 0 rgba(246, 228, 190, 0.05);
 }
 #material-menu[hidden] { display: none; }
 
 .material-option {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 10px;
   width: 100%;
-  padding: 7px 10px;
+  min-height: 34px;
+  padding: 0 10px;
   border: 0;
-  border-radius: 10px;
+  border-radius: 8px;
   background: transparent;
   color: var(--dim);
   font: inherit;
   font-size: 12px;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
   text-align: left;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
@@ -147,18 +211,32 @@ html, body {
 }
 .material-option:hover,
 .material-option:focus-visible {
-  background: rgba(226, 213, 189, 0.09);
+  background: rgba(246, 228, 190, 0.07);
   color: var(--ink);
   outline: none;
 }
 .material-option[aria-selected="true"] { color: var(--ink); }
 
+/* The swatch is the material itself, so give it a body: a lit top-left edge
+   and a seat in the metal, the same treatment as everything else here. */
 .material-swatch {
-  width: 10px;
-  height: 10px;
+  width: 11px;
+  height: 11px;
   flex: none;
   border-radius: 50%;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.45),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(0, 0, 0, 0.55);
+}
+/* The current material gets a lamp behind its swatch — the one place in the
+   chrome that emits rather than reflects, so the eye finds it instantly. */
+.material-option[aria-selected="true"] .material-swatch {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(0, 0, 0, 0.55),
+    0 0 9px 1px currentColor;
 }
 /* Tick only on the current one, and it holds its column either way so the
    labels do not shuffle sideways as the selection moves. */
@@ -167,31 +245,185 @@ html, body {
   margin-left: auto;
   width: 5px;
   height: 9px;
-  border: solid currentColor;
+  border: solid var(--lit);
   border-width: 0 1.5px 1.5px 0;
   transform: rotate(45deg) translate(-1px, -1px);
   opacity: 0;
 }
-.material-option[aria-selected="true"]::after { opacity: 0.85; }
+.material-option[aria-selected="true"]::after { opacity: 0.9; }
 
-#stats {
+/* Actions menu. The mirror of the material picker on the opposite corner: two
+   small plates on the rim of the box and nothing else, so the container reads
+   as empty. Collapsed by default. */
+#menu-panel {
   position: absolute;
   top: calc(12px + env(safe-area-inset-top));
-  left: 12px;
+  left: calc(12px + env(safe-area-inset-left));
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+#menu {
+  width: 44px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(0, 0, 0, 0.55);
+  border-radius: 10px;
+  background: var(--face);
+  backdrop-filter: blur(10px);
+  box-shadow:
+    inset 1px 1px 0 var(--bevel-lit),
+    inset -1px -1px 0 var(--bevel-dark),
+    0 6px 18px rgba(0, 0, 0, 0.45);
+  color: var(--dim);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: color 160ms ease, box-shadow 160ms ease;
+}
+#menu:hover,
+#menu:focus-visible,
+#menu[aria-expanded="true"] {
+  color: var(--ink);
+  outline: none;
+  box-shadow:
+    inset 1px 1px 0 rgba(246, 228, 190, 0.2),
+    inset -1px -1px 0 var(--bevel-dark),
+    0 6px 18px rgba(0, 0, 0, 0.45);
+}
+/* Held open, the plate stays pressed into the housing — so the trigger itself
+   says the panel below belongs to it. */
+#menu[aria-expanded="true"] {
+  box-shadow:
+    inset 1px 2px 3px rgba(0, 0, 0, 0.6),
+    inset -1px -1px 0 rgba(246, 228, 190, 0.05);
+}
+#menu:active {
+  box-shadow:
+    inset 1px 2px 3px rgba(0, 0, 0, 0.6),
+    inset -1px -1px 0 rgba(246, 228, 190, 0.05);
+}
+
+/* Same well as the material list, so the two menus are visibly one system. */
+#menu-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 186px;
+  padding: 5px;
+  border: 1px solid rgba(0, 0, 0, 0.5);
+  border-radius: 12px;
+  background: var(--well);
+  backdrop-filter: blur(10px);
+  box-shadow:
+    inset 1px 2px 3px rgba(0, 0, 0, 0.66),
+    inset -1px -1px 0 rgba(246, 228, 190, 0.05);
+}
+#menu-list[hidden] { display: none; }
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 140ms ease, color 140ms ease;
+}
+/* Every glyph in the chrome, trigger and rows alike. These paths are strokes
+   with no area, so they need fill:none and an explicit stroke — left to the SVG
+   defaults (fill black, stroke none) they render as nothing at all. */
+#menu svg,
+.menu-item svg {
+  width: 17px;
+  height: 17px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  /* The engraved trick, on a glyph: one light pixel under the stroke. */
+  filter: drop-shadow(0 1px 0 rgba(255, 232, 190, 0.09));
+}
+#menu svg { width: 18px; height: 18px; }
+.menu-item span { flex: 1; }
+.menu-item:hover,
+.menu-item:focus-visible {
+  background: rgba(246, 228, 190, 0.07);
+  color: var(--ink);
+  outline: none;
+}
+/* The one latching row: the readout is either on or off, and it stays lit. */
+.menu-item[aria-pressed="true"] { color: var(--lit); }
+
+/* The shortcut, as a key cap milled into the row. Carrying it here is what
+   lets the toolbar disappear without the shortcuts going back to being
+   invisible — open the menu once and you have them. */
+.menu-item kbd {
+  flex: none;
+  min-width: 20px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: linear-gradient(158deg, rgba(70, 59, 44, 0.5), rgba(24, 19, 14, 0.5));
+  box-shadow:
+    inset 1px 1px 0 rgba(246, 228, 190, 0.09),
+    inset -1px -1px 0 rgba(0, 0, 0, 0.4);
+  color: var(--faint);
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-align: center;
+}
+
+/* Readout: a gauge face cut into the housing. Its numbers are the one place
+   the chrome is allowed to be busy, so they get their own column and rhythm. */
+/* Bottom-left, out of the way of the menu that opens above it — and it grows
+   upward from there, so a long readout never pushes into the rim controls. */
+#stats {
+  position: absolute;
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  left: calc(12px + env(safe-area-inset-left));
   display: none;
   grid-template-columns: auto auto;
-  gap: 1px 12px;
-  padding: 10px 12px;
-  border: 1px solid var(--edge);
-  border-radius: 10px;
-  background: var(--panel);
-  backdrop-filter: blur(8px);
+  align-items: baseline;
+  gap: 2px 16px;
+  padding: 11px 13px;
+  border: 1px solid rgba(0, 0, 0, 0.5);
+  border-radius: 12px;
+  background: var(--well);
+  backdrop-filter: blur(10px);
+  box-shadow:
+    inset 1px 2px 3px rgba(0, 0, 0, 0.66),
+    inset -1px -1px 0 rgba(246, 228, 190, 0.05);
   font-size: 11px;
-  line-height: 1.5;
+  line-height: 1.55;
 }
 #stats.visible { display: grid; }
-#stats .k { color: var(--dim); }
-#stats .v { color: var(--ink); text-align: right; font-variant-numeric: tabular-nums; }
+#stats .k {
+  color: var(--faint);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  text-shadow: 0 1px 0 rgba(255, 232, 190, 0.05);
+}
+#stats .v {
+  color: var(--ink);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
 
 #gate {
   position: absolute;
@@ -272,5 +504,10 @@ html, body {
 #fatal.visible { display: block; }
 
 @media (prefers-reduced-motion: reduce) {
-  #knob { transition: none; }
+  #knob,
+  #material,
+  #material::after,
+  #menu,
+  .menu-item,
+  .material-option { transition: none; }
 }

@@ -234,11 +234,6 @@ export class GravityInput {
       gx = rx;
       gy = ry;
     }
-    if (this.flipped) {
-      gx = -gx;
-      gy = -gy;
-    }
-
     // A hard shake can read several g; allow it, but not unboundedly.
     const m = Math.hypot(gx, gy, gz);
     const cap = CONFIG.input.maxG;
@@ -265,7 +260,27 @@ export class GravityInput {
   }
 
   /** Target direction from tilt, keys, stick, or the demo sway. */
+  /**
+   * Where gravity points, and the flip applied to it.
+   *
+   * The flip used to live inside the two sensor branches below, which meant it
+   * did nothing at all without sensors: the keyboard, the stick and the
+   * resting case each return before ever reaching it, so on a desktop the
+   * control was inert. Applied here it is the same correction for a phone —
+   * identical, since both branches flipped immediately before returning and
+   * the magnitude cap is unchanged by a sign flip — and it now also inverts
+   * keys, stick and rest, so the box can be turned upside down anywhere.
+   *
+   * x and y only. Flipping z as well would push the liquid against the other
+   * pane of glass, which is not what turning a box over does.
+   */
   targetVector() {
+    const v = this.sourceVector();
+    if (!this.flipped) return v;
+    return { ...v, x: -v.x, y: -v.y };
+  }
+
+  sourceVector() {
     const zBias = this.zBias;
 
     if (this.demo) {
@@ -313,10 +328,6 @@ export class GravityInput {
         const ry = -dx * s + dy * c;
         dx = rx;
         dy = ry;
-      }
-      if (this.flipped) {
-        dx = -dx;
-        dy = -dy;
       }
       return { x: dx, y: dy, z: dz };
     }

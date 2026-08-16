@@ -179,6 +179,17 @@ hud.setMaterials(MATERIALS, materials.id);
 gravity.onShake = (strength) => sand.splash(strength);
 hud.onMaterial = selectMaterial;
 
+// The toolbar runs the same handlers as the keys — one behaviour, two ways in.
+hud.onAction = (act) => {
+  switch (act) {
+    case 'splash': sand.splash(1.4); break;
+    case 'flip': gravity.flipped = !gravity.flipped; break;
+    case 'reset': reset(); break;
+    case 'stats': hud.toggleStats(); break;
+    default: break;
+  }
+};
+
 hud.onStick = (x, y, active) => {
   gravity.stick.x = x;
   gravity.stick.y = y;
@@ -209,9 +220,9 @@ poke.onFirstTouch = () => {
 // WASD is reserved for tilting, so stats sits on backquote rather than D.
 window.addEventListener('keydown', (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
-  // While the material list is open the keyboard belongs to it — otherwise
-  // arrowing through the options also tilts the box, and space splashes it.
-  if (hud.materialOpen) return;
+  // While either list is open the keyboard belongs to it — otherwise arrowing
+  // through the options also tilts the box, and space splashes it.
+  if (hud.materialOpen || hud.menuOpen) return;
   gravity.setKey(e.code, true);
   // Before the switch: the movement keys fall through to `default` and would
   // otherwise never get here.
