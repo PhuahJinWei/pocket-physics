@@ -168,8 +168,9 @@ if (touch && gravity.supportsSensors && !gravity.demo) {
   }
 }
 
+// Names no material, so the registry can grow without the hint going stale.
 const HINT = touch
-  ? 'Tilt to pour · touch to push · shake to splash · tap Sand/Water to switch'
+  ? 'Tilt to pour · touch to push · shake to splash · tap the pill to switch'
   : 'Arrows / WASD to tilt · drag to push · space to splash · M for material · ` for stats';
 hud.setHint(HINT);
 

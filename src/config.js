@@ -478,6 +478,14 @@ export const CONFIG = {
     // it is what makes water pour rather than shatter.
     viscosity: 0.12,
     drag: 0.05,
+    // Tangential drag at the walls — no-slip — and the width of the band it
+    // acts over as a multiple of rest spacing. `adhesionGlass` is the front and
+    // back panes, and in a box this shallow it is the one that decides how
+    // thick the liquid behaves. Water barely wets glass at this scale; honey
+    // emphatically does. See Fluid.adhesion.
+    adhesion: 0,
+    adhesionGlass: 0,
+    adhesionBand: 1.0,
     fixedHz: 60,
     maxSubsteps: 2,
     foamSmoothing: 9,
@@ -527,10 +535,15 @@ export const CONFIG = {
     imageFloor: 0.2,
     // Coverage: alpha at the silhouette edge, and the Beer-Lambert rate at
     // which thickness turns opaque. Opacity is the strongest "gel" signal —
-    // real water lets the tank show through wherever it runs thin.
-    alphaMin: 0.35,
-    opacify: 5.0,
+    // real water lets the tank show through wherever it runs thin, and it is
+    // also most of what separates water from a thick liquid, so water is kept
+    // deliberately see-through and honey deliberately not.
+    alphaMin: 0.24,
+    opacify: 4.0,
     specular: 0.9,
+    // Tight. A rippled surface throws many small hard glints, which is what
+    // water looks like; see the composite.
+    specPower: 90.0,
     fresnel: 0.10,
     // Foam wants to be rare. Keyed on speed, it fired across the whole crest of
     // every wave and turned the water white; it should only catch the fastest
@@ -542,3 +555,101 @@ export const CONFIG = {
     foam: [0.90, 0.95, 0.97],
   },
 };
+
+// --------------------------------------------------------------------- honey
+//
+// The same solver and the same two passes as water — a liquid is a liquid — so
+// honey is written as the handful of numbers that differ, layered over water's.
+// Built with Object.assign rather than spread into a literal so both objects
+// stay live on CONFIG and can be poked from a console like everything else.
+//
+// What actually separates the two, in order of how much it matters:
+//
+//   adhesionGlass  The whole of it, and not where you would look first. The
+//               box is a slab a few particles deep, so the front and back
+//               panes are nearly all of the wetted area, and holding the
+//               liquid against them is what creates a shear profile for the
+//               viscosity to act on. Measured under a sustained 20-degree
+//               tilt: water answers at 215 px/s and rings (its mean speed
+//               climbs again at 2s as it sloshes back), honey at 56 and
+//               creeps monotonically to the same place over about three
+//               seconds. Turned off, honey is water.
+//   viscosity   XSPH, which drags each particle toward its neighbours' average
+//               velocity. On its own it does *nothing* to a body sliding as a
+//               plug — there is no shear to resist — which is why it needs the
+//               wall term. What it does own is the absence of slosh: it
+//               carries the walls' grip into the body and the surface settles
+//               without ringing. Past ~0.9 the fluid locks solid.
+//   adhesion    The same grip on the four lateral walls, so it also coats the
+//               sides it has flowed away from rather than draining clean.
+//   drag        Barely above water's. Bulk drag is the obvious knob for "slow"
+//               and the wrong one: gravity re-accelerates every substep, so it
+//               only sets a terminal velocity, and cranked hard enough to be
+//               visibly slow it deadens the shake response as well.
+//   surface*    Artificial pressure exists to stop water tearing into beads;
+//               honey may hold a rounder, lumpier surface, so it is eased.
+//
+// Honey also falls slowly, and that is a deliberate choice rather than a
+// leftover. A body in flight is unavoidably touching both panes in a box this
+// shallow, so no-slip decelerates a ballistic arc to roughly 40% of gravity.
+// Fading the grip out above a speed does fix the fall, but the two regimes sit
+// only about 1.5x apart — a gripped tilt settles near 350 px/s, a shake
+// averages 540 — so no threshold separates them, and every setting that made
+// the fall look right also released the grip during ordinary tilting and left
+// honey behaving like water. Given the choice, thickness wins: it is the
+// entire point of the material, and a slow fall reads as heavy rather than as
+// wrong. See Fluid.adhesion.
+CONFIG.honey = Object.assign({}, CONFIG.fluid, {
+  viscosity: 0.72,
+  adhesion: 6.0,
+  adhesionGlass: 25.0,
+  adhesionBand: 1.3,
+  drag: 0.15,
+  surfacePressure: 0.0002,
+  // Slightly less of it, so the body reads as a heavier, shallower pool.
+  fill: 0.20,
+});
+
+CONFIG.honeyLook = Object.assign({}, CONFIG.water, {
+  // Amber. Honey absorbs far harder than water, but not so hard that the ramp
+  // is spent inside the first few particles: at 7.5 the whole body sat at the
+  // deep end of it and came out as one flat orange slab, which reads as clay.
+  // Half that, and the thickness gradient is visible across the pool — thin
+  // edges glowing gold, the middle going to dark amber — which is most of what
+  // makes honey look lit from inside rather than painted.
+  // Both ends have to sit at honey's hue, not just the bright one. A body this
+  // thick spends nearly all of the Beer-Lambert ramp at the deep end, so the
+  // deep colour is what you actually see: a red-brown there (hue 21) rendered
+  // the whole pool at hue 24, which is past orange and nowhere near honey.
+  // Real honey runs 40-45 — clover #FFC30B is 45, amber #E8A317 is 40 — so
+  // both ends are set on that line and the deep end is lifted out of the mud.
+  shallow: [1.00, 0.82, 0.30],
+  deep: [0.55, 0.38, 0.05],
+  foam: [0.99, 0.88, 0.62],
+  absorb: 2.6,
+  // Nearly opaque, and opaque almost immediately. This is the single biggest
+  // thing separating the two: water is a tinted window onto the box behind it,
+  // honey is a body you cannot see into. Even a honey film is still honey
+  // coloured rather than glass.
+  alphaMin: 0.88,
+  opacify: 16.0,
+  // Broad, soft sheen rather than water's hard glints — a smooth surface has
+  // one highlight, not a hundred.
+  specular: 1.1,
+  specPower: 22.0,
+  fresnel: 0.20,
+  // SMOOTHER than water, which is the correction that mattered most. A still
+  // honey surface is a mirror; still water is not, because water is never
+  // quite still. Set the other way round — honey wrinklier than water, on the
+  // reasoning that a viscous surface holds whatever shape it is given — the
+  // two came out with the same fine texture in the same places, and honey read
+  // as water in a different colour. Measured, honey carried nearly twice
+  // water's surface contrast (44 against 25) when it should carry less. What a
+  // viscous surface actually holds is *large* shape, and that comes from the
+  // solver refusing to level, not from the shader.
+  relief: 3.5,
+  calmRipple: 0.06,
+  rippleGain: 1.0,
+  // No foam. Honey does not aerate on a shake; it heaves and folds.
+  foamAmount: 0.0,
+});

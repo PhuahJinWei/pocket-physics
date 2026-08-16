@@ -219,6 +219,7 @@ export class Renderer {
       absorb: gl.getUniformLocation(this.compositeProgram, 'uAbsorb'),
       relief: gl.getUniformLocation(this.compositeProgram, 'uRelief'),
       specular: gl.getUniformLocation(this.compositeProgram, 'uSpecular'),
+      specPower: gl.getUniformLocation(this.compositeProgram, 'uSpecPower'),
       fresnel: gl.getUniformLocation(this.compositeProgram, 'uFresnel'),
       foamAmount: gl.getUniformLocation(this.compositeProgram, 'uFoamAmount'),
       foamBias: gl.getUniformLocation(this.compositeProgram, 'uFoamBias'),
@@ -361,7 +362,9 @@ export class Renderer {
     this.drawWalls(material.depth, focal, this.eyeX, this.eyeY);
 
     if (material.n === 0) return;
-    if (material.kind === 'water') this.drawWater(material, focal);
+    // Switch on the pass a material asks for, not on which material it is:
+    // every liquid takes the same one and differs only in its `look`.
+    if (material.render === 'fluid') this.drawFluid(material, focal);
     else this.drawSand(material, focal);
   }
 
@@ -690,15 +693,15 @@ export class Renderer {
   packWater(fluid, w) {
     const cpu = this.waterCpu;
     const limit = (cpu.length / FLOATS_PER_DROP) | 0;
-    const n = Math.min(fluid.n, CONFIG.fluid.maxParticles);
+    const n = Math.min(fluid.n, fluid.capacity);
     const { x, y, z, speed01, nbrCount } = fluid;
     const wallX = fluid.bounds.x1;
     const wallY = fluid.bounds.y1;
     // A ghost only matters while its blob still overlaps the box.
     const reach = fluid.diameter * w.blobSize * 0.5;
-    const floor = CONFIG.water.imageFloor;
-    const lo = CONFIG.water.imageBuriedLo;
-    const span = Math.max(1, CONFIG.water.imageBuriedHi - lo);
+    const floor = w.imageFloor;
+    const lo = w.imageBuriedLo;
+    const span = Math.max(1, w.imageBuriedHi - lo);
 
     let count = 0;
     const put = (px, py, pz, sp, weight) => {
@@ -742,9 +745,10 @@ export class Renderer {
     return count;
   }
 
-  drawWater(fluid, focal) {
+  drawFluid(fluid, focal) {
     const gl = this.gl;
-    const w = CONFIG.water;
+    // The liquid's own palette, not water's — this pass draws honey too.
+    const w = fluid.look;
     const deviceW = this.canvas.width;
     const deviceH = this.canvas.height;
     this.ensureField(deviceW, deviceH, w.fieldScale);
@@ -785,6 +789,7 @@ export class Renderer {
       this.fieldUniform.pointSize,
       fluid.diameter * w.blobSize * this.dpr * w.fieldScale,
     );
+    // The field is shared with the sand pass and sized on whoever drew last.
     gl.drawArrays(gl.POINTS, 0, n);
     gl.disableVertexAttribArray(this.fieldAttrib.pos);
     gl.disableVertexAttribArray(this.fieldAttrib.speed);
@@ -814,6 +819,7 @@ export class Renderer {
     gl.uniform1f(this.compositeUniform.absorb, w.absorb);
     gl.uniform1f(this.compositeUniform.relief, w.relief);
     gl.uniform1f(this.compositeUniform.specular, w.specular);
+    gl.uniform1f(this.compositeUniform.specPower, w.specPower);
     gl.uniform1f(this.compositeUniform.fresnel, w.fresnel);
     gl.uniform1f(this.compositeUniform.foamAmount, w.foamAmount);
     gl.uniform1f(this.compositeUniform.foamBias, w.foamBias);

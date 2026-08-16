@@ -39,6 +39,8 @@ export class Grains {
   constructor(capacity) {
     this.kind = 'sand';
     this.label = 'Sand';
+    // Which pass in the renderer draws this.
+    this.render = 'grains';
     // Lean the bed against the back wall: a granular pile holds whatever slope
     // it is given, and the lean is a strong 3D cue on a desktop with no sensor.
     this.zBias = CONFIG.input.zBias;

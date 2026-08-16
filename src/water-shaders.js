@@ -95,6 +95,7 @@ uniform float uSoft;
 uniform float uAbsorb;
 uniform float uRelief;
 uniform float uSpecular;
+uniform float uSpecPower;
 uniform float uFresnel;
 uniform float uFoamAmount;
 uniform float uFoamBias;
@@ -150,7 +151,11 @@ void main() {
   vec3 lightDir = normalize(vec3(-0.35, 0.62, 0.70));
   vec3 view = vec3(0.0, 0.0, 1.0);
   vec3 half3 = normalize(lightDir + view);
-  float spec = pow(max(dot(nrm, half3), 0.0), 60.0) * uSpecular;
+  // Highlight tightness is a material property, not a constant. Water is a
+  // rippled mirror and scatters a lot of small hard glints; a thick syrup is a
+  // smooth one and carries a single broad sheen instead. Sharing one exponent
+  // is a good part of why two liquids read as the same liquid recoloured.
+  float spec = pow(max(dot(nrm, half3), 0.0), uSpecPower) * uSpecular;
   // Grazing angles reflect more than head-on ones; on a body this shallow the
   // rim is the only place that happens, and it is what stops the edge looking
   // like cut paper.

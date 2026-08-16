@@ -7,9 +7,16 @@
 // a surface and its particles never are. Pushing both decisions behind the
 // interface is what keeps main.js from growing a branch per material.
 //
+// A material does not have to mean a solver. Sand and water are genuinely
+// different ones; honey is the fluid solver with a dozen constants changed, and
+// the renderer draws it with water's two passes and honey's palette. So the
+// renderer switches on `render` — which *pass* to run — rather than on `kind`,
+// and a new liquid costs it nothing at all.
+//
 // The contract, in full:
 //
-//   kind, label                       identity; the renderer switches on kind
+//   kind, label                       identity, for the UI and the stats panel
+//   render                            which renderer pass draws this
 //   capacity, n                       allocated / live particle count
 //   radius, diameter, depth           geometry, in sim pixels
 //   bounds, inner                     box, and the box inset by radius
@@ -53,7 +60,25 @@ export const MATERIALS = [
     id: 'water',
     label: 'Water',
     tint: '#4e9fc4',
-    create: () => new Fluid(CONFIG.fluid.maxParticles),
+    create: () => new Fluid(CONFIG.fluid.maxParticles, {
+      kind: 'water',
+      label: 'Water',
+      tuning: CONFIG.fluid,
+      look: CONFIG.water,
+    }),
+  },
+  {
+    // Same solver and the same two render passes as water: a liquid is a
+    // liquid, and what separates them is a dozen numbers. See CONFIG.honey.
+    id: 'honey',
+    label: 'Honey',
+    tint: '#d99321',
+    create: () => new Fluid(CONFIG.honey.maxParticles, {
+      kind: 'honey',
+      label: 'Honey',
+      tuning: CONFIG.honey,
+      look: CONFIG.honeyLook,
+    }),
   },
 ];
 

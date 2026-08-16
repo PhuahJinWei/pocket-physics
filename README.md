@@ -56,8 +56,8 @@ python tools/bundle.py
 
 URL parameters: `?stats` opens the stats panel, `?demo` runs a hands-free sway
 (useful for screenshots and for checking the sim without sensors), `?grains=8000`
-and `?r=3` pin the grain count and radius, `?material=water` opens straight into
-water, `?tune=off` disables adaptive quality, `?stick` forces the tilt pad, and
+and `?r=3` pin the grain count and radius, `?material=honey` opens straight into
+a material by id (`sand`, `water`, `honey`), `?tune=off` disables adaptive quality, `?stick` forces the tilt pad, and
 `?capture` enables `preserveDrawingBuffer` so screenshot tools can read the
 canvas.
 
@@ -71,7 +71,7 @@ main.js        frame loop, viewport → sim size, quality changes
     grains.js      sand — sequential impulses
     fluid.js       water — position based fluids
     grid.js        counting-sort spatial hash, shared by both
-  renderer.js    WebGL: both materials as a screen-space field, sand plus specks
+  renderer.js    WebGL: every material as a screen-space field, sand plus specks
     shaders.js       sand field, composite, specks, and the box walls
     water-shaders.js
   tuner.js       adaptive quality
@@ -79,15 +79,62 @@ main.js        frame loop, viewport → sim size, quality changes
 config.js      every tunable, in one place
 ```
 
-**Materials.** Sand and water are separate solvers behind one interface
-(`materials.js` documents it in full). Adding one is a single entry in the
-`MATERIALS` registry: the picker builds itself from that list, so a new material
-appears in the UI with its swatch and needs no markup, styling or wiring. They share the spatial hash, the fixed
-timestep, the tilt input, the shake pulse and the box; they share nothing else,
-because water is not sand with the friction turned off. A Coulomb contact solver
-with `mu = 0` is a *frictionless granular gas* — it resists penetration and
-nothing else, so it stays compressible and never develops the pressure gradient
-that makes water find its own level.
+**Materials.** Sand, water and honey. Adding one is a single entry in the
+`MATERIALS` registry (`materials.js` documents the interface in full): the
+picker builds itself from that list, so a new material appears in the UI with
+its swatch and needs no markup, styling or wiring. The renderer switches on the
+*pass* a material asks for rather than on which material it is, so a new liquid
+costs it nothing.
+
+Sand and water are separate solvers, and share only the spatial hash, the fixed
+timestep, the tilt input, the shake pulse and the box — because water is not
+sand with the friction turned off. A Coulomb contact solver with `mu = 0` is a
+*frictionless granular gas*: it resists penetration and nothing else, so it
+stays compressible and never develops the pressure gradient that makes water
+find its own level.
+
+Honey, though, *is* water with different numbers — same solver, same two passes,
+a dozen constants (`CONFIG.honey`). The interesting part is which constants.
+Viscosity is the obvious answer and, on its own, completely wrong: XSPH only
+equalises neighbouring velocities, so a body sliding as a plug has no shear for
+it to resist. Bulk drag is no better, because gravity re-accelerates every
+substep — it just sets a terminal velocity, and hard enough to look slow it
+deadens the shake too. What makes a liquid thick here is **no-slip at the front
+and back glass**. The box is a slab a few particles deep, so the panes are
+nearly all of the wetted area; holding the liquid against them creates the shear
+profile, and viscosity then carries it inward. Measured under a sustained 20°
+tilt: water answers at 215 px/s and rings — its mean speed climbs *again* two
+seconds in as it sloshes back — while honey answers at 54 and creeps
+monotonically to the same place over about three seconds.
+
+**Honey also falls slowly, and that is the deliberate half of a genuine
+trade.** A body in flight is unavoidably touching both panes in a box this
+shallow, so no-slip decelerates a ballistic arc to about a third of gravity.
+Fading the grip out above a speed threshold does fix the fall — but the two
+regimes sit only about 1.5× apart, a gripped tilt settling near 350 px/s
+against a shake averaging 540, so no threshold separates them. Every setting
+that made the fall look right also released the grip during ordinary tilting
+and left honey behaving like water, which is the one thing it must not do.
+Thickness wins: it is the entire point of the material, and a slow fall reads
+as heavy rather than as wrong.
+
+**Two liquids have to look different, not just be different colours.** Sharing
+a composite makes that easy to get wrong, and three things carry it:
+
+- **Opacity.** The largest one. Water is a tinted window — it lets the box show
+  through wherever it runs thin — and honey is a body you cannot see into, so
+  they are pushed hard apart rather than left near each other.
+- **Surface smoothness.** Honey is *smoother* than water, which is the opposite
+  of the obvious guess. A still honey surface is a mirror; still water is not,
+  because water is never quite still. Set the intuitive way round — honey
+  wrinklier, on the reasoning that a viscous surface holds whatever shape it is
+  given — honey carried nearly twice water's measured surface contrast and read
+  as water in a different colour. What a viscous surface actually holds is
+  *large* shape, and that comes from the solver refusing to level, not from the
+  shader.
+- **Highlight tightness** (`specPower`). A rippled surface throws many small
+  hard glints; a smooth one carries a single broad sheen. This was a constant
+  shared by both for a long time, and a good part of why they read alike.
 
 A material also decides its own particle size and count, because the right
 answer differs: sand wants the finest grain the device can afford since every
@@ -393,6 +440,10 @@ Everything lives in [`src/config.js`](src/config.js). The knobs worth knowing:
 | `render.depthDim` / `fog` | how far, and toward what, the back of the box darkens |
 | `sand.glintStrength` / `glintRate` | sparkle |
 | `render.deep` / `mid` / `lit` | the colour ramp from buried to sunlit |
+| `honey.adhesionGlass` | how thick honey behaves — the no-slip term, not `viscosity` |
+| `honeyLook.absorb` / `deep` | how fast amber deepens, and the hue it deepens *to* |
+| `water/honeyLook.alphaMin` / `opacify` | see-through vs solid — the main thing telling two liquids apart |
+| `water/honeyLook.relief` / `calmRipple` / `specPower` | how rippled and how glossy each surface is |
 
 The three notes above are the ones that cost real debugging time, and each is
 commented where it lives.

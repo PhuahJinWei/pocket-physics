@@ -57,9 +57,20 @@ function scatterDir(i, j) {
 }
 
 export class Fluid {
-  constructor(capacity) {
-    this.kind = 'water';
-    this.label = 'Water';
+  /**
+   * @param {number} capacity
+   * @param {object} def Which liquid this is. `tuning` is the solver's half
+   *   (CONFIG.fluid and friends) and `look` the renderer's (CONFIG.water and
+   *   friends); everything that separates honey from water lives in those two
+   *   objects, so a new liquid is a config entry rather than a subclass.
+   */
+  constructor(capacity, def = {}) {
+    this.kind = def.kind || 'water';
+    this.label = def.label || 'Water';
+    this.tuning = def.tuning || CONFIG.fluid;
+    this.look = def.look || CONFIG.water;
+    // Which pass in the renderer draws this. Every liquid takes the same one.
+    this.render = 'fluid';
     // No into-screen lean. Sand uses one to pile against the back wall, but a
     // liquid answers a tilted gravity with a tilted surface: measured, the
     // sand's 0.45 put the back of the water 22px higher than the front, which
@@ -105,7 +116,7 @@ export class Fluid {
     // Flat neighbour list, rebuilt once per substep and reused by every solver
     // iteration. Gathering is the expensive half, and it does not change while
     // the positions are only being nudged.
-    this.maxNeighbours = CONFIG.fluid.maxNeighbours;
+    this.maxNeighbours = this.tuning.maxNeighbours;
     this.nbr = new Int32Array(0);
     this.nbrCount = new Int32Array(capacity);
 
@@ -134,7 +145,7 @@ export class Fluid {
     this.kickTime = 0;
 
     this.substeps = 1;
-    this.iterations = CONFIG.fluid.solverIterations;
+    this.iterations = this.tuning.solverIterations;
     this.contactCount = 0;
     this._carry = 0;
   }
@@ -158,11 +169,11 @@ export class Fluid {
     // derived from the same number in idealCount, so the body settles at the
     // fill level asked for instead of drifting to whatever the solver likes.
     this.spacing = this.diameter;
-    this.smoothing = this.spacing * CONFIG.fluid.smoothingRatio;
+    this.smoothing = this.spacing * this.tuning.smoothingRatio;
 
     this.depth = Math.max(
       this.diameter * 2,
-      Math.min(CONFIG.fluid.depthLayers * this.diameter, Math.min(width, height) * 0.22),
+      Math.min(this.tuning.depthLayers * this.diameter, Math.min(width, height) * 0.22),
     );
     this.bounds = { x0: 0, y0: 0, x1: width, y1: height };
     this.inner = {
@@ -194,12 +205,12 @@ export class Fluid {
     return pinned ? Math.round(ideal * Math.min(1, qualityScale)) : ideal;
   }
 
-  /** Particle count that fills `CONFIG.fluid.fill` of the front view. */
-  idealCount(fill = CONFIG.fluid.fill) {
+  /** Particle count that fills `this.tuning.fill` of the front view. */
+  idealCount(fill = this.tuning.fill) {
     const { x1, y1 } = this.bounds;
     const volume = x1 * (fill * y1) * this.depth;
     const ideal = volume / (this.spacing * this.spacing * this.spacing);
-    return Math.round(clamp(ideal, CONFIG.fluid.minParticles, Math.min(CONFIG.fluid.maxParticles, this.capacity)));
+    return Math.round(clamp(ideal, this.tuning.minParticles, Math.min(this.tuning.maxParticles, this.capacity)));
   }
 
   ensureNeighbourCapacity(n) {
@@ -352,6 +363,7 @@ export class Fluid {
       // rather than being read back as a spurious impulse this one.
       this.separate();
       this.viscosity();
+      this.adhesion(h);
     }
     this.updateShading(dtFrame);
   }
@@ -359,7 +371,7 @@ export class Fluid {
   predict(h, gx, gy, gz) {
     const n = this.n;
     const { x, y, z, px, py, pz, vx, vy, vz } = this;
-    const damp = Math.exp(-CONFIG.fluid.drag * h);
+    const damp = Math.exp(-this.tuning.drag * h);
     for (let i = 0; i < n; i++) {
       const nvx = (vx[i] + gx * h) * damp;
       const nvy = (vy[i] + gy * h) * damp;
@@ -447,8 +459,8 @@ export class Fluid {
     const inv = 1 / hh;
     const gradK = GRAD_K * inv;
     const rho0 = this.restDensity;
-    const eps = CONFIG.fluid.relaxation;
-    const wallScale = CONFIG.fluid.wallDensity;
+    const eps = this.tuning.relaxation;
+    const wallScale = this.tuning.wallDensity;
 
     for (let i = 0; i < n; i++) {
       const xi = px[i], yi = py[i], zi = pz[i];
@@ -554,8 +566,8 @@ export class Fluid {
     const inv = 1 / hh;
     const gradK = GRAD_K * inv;
     const rho0 = this.restDensity;
-    const k = CONFIG.fluid.surfacePressure;
-    const dq = CONFIG.fluid.surfaceDistance;
+    const k = this.tuning.surfacePressure;
+    const dq = this.tuning.surfaceDistance;
     const wq = Math.pow(1 - dq * dq, 3);
 
     for (let i = 0; i < n; i++) {
@@ -590,7 +602,7 @@ export class Fluid {
       dx[i] = ax * s; dy[i] = ay * s; dz[i] = az * s;
     }
 
-    const maxMove = this.spacing * CONFIG.fluid.maxCorrection;
+    const maxMove = this.spacing * this.tuning.maxCorrection;
     for (let i = 0; i < n; i++) {
       let mx = dx[i], my = dy[i], mz = dz[i];
       const m = Math.hypot(mx, my, mz);
@@ -623,8 +635,8 @@ export class Fluid {
     const n = this.n;
     const { x, y, z, nbr, nbrCount, dx, dy, dz } = this;
     const cap = this.maxNeighbours;
-    const minDist = this.spacing * CONFIG.fluid.minSeparation;
-    const stiffness = CONFIG.fluid.separationStiffness;
+    const minDist = this.spacing * this.tuning.minSeparation;
+    const stiffness = this.tuning.separationStiffness;
 
     for (let i = 0; i < n; i++) {
       const xi = x[i], yi = y[i], zi = z[i];
@@ -665,7 +677,7 @@ export class Fluid {
     const n = this.n;
     const { x, y, z, px, py, pz, vx, vy, vz } = this;
     const invH = 1 / h;
-    const maxV = (this.spacing * CONFIG.fluid.maxTravel) / h;
+    const maxV = (this.spacing * this.tuning.maxTravel) / h;
     for (let i = 0; i < n; i++) {
       let ux = (px[i] - x[i]) * invH;
       let uy = (py[i] - y[i]) * invH;
@@ -691,7 +703,7 @@ export class Fluid {
     const cap = this.maxNeighbours;
     const hh = this.smoothing;
     const inv = 1 / hh;
-    const c = CONFIG.fluid.viscosity;
+    const c = this.tuning.viscosity;
     if (c <= 0) return;
 
     for (let i = 0; i < n; i++) {
@@ -726,11 +738,85 @@ export class Fluid {
     }
   }
 
+  /**
+   * Wall adhesion: a liquid that wets the glass drags against it. Water barely
+   * does at this scale, honey emphatically does — it is what leaves a coating
+   * behind on a wall the body has flowed away from, and without it a thick
+   * liquid is only a slow one.
+   *
+   * Modelled as tangential drag in a thin band along each wall, which is what
+   * the no-slip boundary of a viscous liquid amounts to: the layer touching the
+   * glass is held, and XSPH then carries that shear back into the body a
+   * particle at a time. Applying it as a *velocity* damping rather than an
+   * attraction is deliberate — an attractive force toward the wall would pull
+   * the body flat against the glass and stick it there permanently, whereas
+   * drag can only ever remove motion, so it can never manufacture a film that
+   * was not already flowing.
+   *
+   * The front and back glass get their own strength, and it is the one that
+   * matters. This box is only a few particles deep, so the glass is nearly all
+   * of the wetted area: the liquid is a slab between two plates, and no-slip at
+   * both plates is what makes a thick one crawl. Leaving the glass out — on the
+   * reasoning that it would freeze everything — is what left honey behaving
+   * exactly like water. Measured, the two were indistinguishable: a tilt drew
+   * the same centre-of-mass curve to within a couple of pixels.
+   *
+   * That is also *why* it has to be a boundary effect rather than a bulk one.
+   * XSPH only ever equalises neighbouring velocities, so a body sliding as a
+   * plug has no shear for it to resist and viscosity does nothing. Bulk drag is
+   * no better: gravity re-accelerates every substep, so drag only sets a
+   * terminal velocity and, cranked hard enough to be slow, it deadens the shake
+   * response too. Holding the liquid at the walls is what creates the shear
+   * profile in the first place; XSPH then carries it into the body, and the
+   * result slows down for the reason a real liquid does.
+   *
+   * The grip is deliberately NOT gated on speed. It once was, to keep a shaken
+   * body falling at gravity: because a body in flight is unavoidably touching
+   * both panes, no-slip decelerates a ballistic arc to about 40% of g. Fading
+   * the grip out above a threshold does fix that, but the two regimes are only
+   * about 1.5x apart in speed — a gripped tilt settles near 350 px/s, a shake
+   * averages 540 — so no threshold separates them, and every setting that made
+   * the fall look right also switched the grip off during ordinary tilting and
+   * left the liquid behaving like water. Thickness is the whole point of a
+   * thick liquid, so it wins: honey falls slowly, on purpose.
+   */
+  adhesion(h) {
+    const lateral = this.tuning.adhesion;
+    const glass = this.tuning.adhesionGlass;
+    if (!lateral && !glass) return;
+    const n = this.n;
+    const { x, y, z, vx, vy, vz } = this;
+    const b = this.inner;
+    const band = this.spacing * this.tuning.adhesionBand;
+    if (band <= 0) return;
+    // Per-substep decay, so the amount of grip does not depend on timestep.
+    const keepLat = Math.exp(-lateral * h);
+    const keepGlass = Math.exp(-glass * h);
+    // The gap between the plates is often thinner than the band, so grip from
+    // the glass never reaches zero anywhere — which is the point.
+    const zBand = Math.min(band, (b.z1 - b.z0) * 0.5);
+
+    for (let i = 0; i < n; i++) {
+      let f = 1;
+      if (lateral) {
+        const dx = Math.min(x[i] - b.x0, b.x1 - x[i]);
+        const dy = Math.min(y[i] - b.y0, b.y1 - y[i]);
+        const d = dx < dy ? dx : dy;
+        if (d < band) f *= 1 - (1 - keepLat) * (1 - d / band);
+      }
+      if (glass && zBand > 0) {
+        const dz = Math.min(z[i] - b.z0, b.z1 - z[i]);
+        if (dz < zBand) f *= 1 - (1 - keepGlass) * (1 - dz / zBand);
+      }
+      if (f < 1) { vx[i] *= f; vy[i] *= f; vz[i] *= f; }
+    }
+  }
+
   updateShading(dt) {
     const n = this.n;
     const { vx, vy, vz, speed01 } = this;
     const invSpeed = 1 / this.speedNorm;
-    const blend = 1 - Math.exp(-CONFIG.fluid.foamSmoothing * dt);
+    const blend = 1 - Math.exp(-this.tuning.foamSmoothing * dt);
     for (let i = 0; i < n; i++) {
       const s = clamp(Math.hypot(vx[i], vy[i], vz[i]) * invSpeed, 0, 1);
       speed01[i] += (s - speed01[i]) * blend;
