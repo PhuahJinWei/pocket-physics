@@ -1065,11 +1065,22 @@ export class Grains {
       const target = Math.max(exposed, litAbove[i] * transmit);
       light[i] += (target - light[i]) * blend;
       speed01[i] = clamp(Math.hypot(vx[i], vy[i], vz[i]) * invSpeed, 0, 1);
-      // Touching nothing means genuinely in flight. Smoothed so a grain
-      // entering or leaving the mass fades rather than pops; the graded
-      // version is smoothed for the same reason, since contact counts at a
-      // surface flicker from step to step.
-      const air = contacts[i] === 0 ? 1 : 0;
+      // In flight: touching nothing AND actually moving. Touching nothing is
+      // not enough on its own — `contacts` counts grain-grain pairs only, so a
+      // grain lying by itself on the floor of a bare patch, held up by the
+      // wall, counts as touching nothing while being completely at rest. The
+      // renderer draws sand in flight as spray (half size, dimmed, specks
+      // spread wide), and applying that to a grain that is simply lying there
+      // is what left bare patches as clean empty holes with nothing scattered
+      // in them.
+      //
+      // Speed is safe as a SECOND condition even though it is useless as a
+      // first one: it can only ever remove grains from the set, and the case
+      // being removed is exactly a resting one. The band is low because
+      // speed01 saturates fast — a grain that has fallen two pixels is already
+      // past it — so anything genuinely in flight still reads as 1.
+      const moving = clamp((speed01[i] - cfg.flightSpeed) / cfg.flightSpeedBand, 0, 1);
+      const air = contacts[i] === 0 ? moving : 0;
       airborne[i] += (air - airborne[i]) * blend;
       loose[i] += (packNow - loose[i]) * blend;
     }

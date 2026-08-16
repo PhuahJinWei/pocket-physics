@@ -116,6 +116,12 @@ export const CONFIG = {
     airDrag: 0.1,
     // Hard speed ceiling, in grain diameters travelled per substep.
     maxTravel: 1.0,
+    // Normalised speed above which a grain touching nothing counts as being
+    // in flight rather than simply lying somewhere by itself, and the width of
+    // that ramp. Low, because speed01 saturates after a couple of pixels of
+    // fall — this only has to exclude grains that are genuinely at rest.
+    flightSpeed: 0.008,
+    flightSpeedBand: 0.035,
     // Neighbour search radius for shading, as a multiple of grain diameter.
     shadeRadius: 1.15,
     // Divisor for the "how buried am I" term (sum of upward contact dots).
@@ -216,6 +222,11 @@ export const CONFIG = {
     // sand — which is what you get when the phone is laid flat and the whole
     // bed collapses into a sheet one grain thick.
     bulkSize: 1.25,
+    // Where a grain resting BY ITSELF draws — its own true size. Not spray:
+    // a grain lying alone in a bare patch is a grain of sand lying there, and
+    // shrinking it is what left those patches as clean empty holes with
+    // nothing scattered in them.
+    aloneSize: 1.0,
     // A grain touching nothing draws its blob this much NARROWER (graded by
     // how few contacts it has). This is a width, not a brightness: a narrow
     // blob cannot bridge to the mass and hang off it as a drip. Its peak is
@@ -260,18 +271,21 @@ export const CONFIG = {
     ditherPx: 3.0,
     // Form shading from the field gradient: how strongly the gradient tilts
     // the normal, how much of the result the colour sees, and — the load
-    // bearing one — how far apart the gradient is sampled, in field texels.
-    // Sampled at one texel this is blob noise and it embosses every grain;
-    // sampled several grains apart it is the shape of the pile, which is the
-    // shading that makes a bed look like a heap of sand instead of a slab.
+    // bearing one — how far apart the gradient is sampled, **in grain
+    // diameters**. Sampled within a grain this is blob noise and it embosses
+    // every grain, curdling the mass into clumps; sampled several grains apart
+    // it is the shape of the pile, which is the shading that makes a bed look
+    // like a heap of sand instead of a slab. It has to be a grain-relative
+    // distance: as a pixel count it lands on a different physical scale on
+    // every viewport and device ratio.
     relief: 2.2,
     form: 0.45,
-    formRadius: 7.0,
-    // Silhouette low-pass: radius in field texels, and how much of it the
-    // mask takes. The raw contour is the level set of a sum of 15-20px blobs,
-    // so it carries lumps at physics-grain scale; averaging wider removes
-    // them and the fine dither above puts the fuzz back.
-    edgeRadius: 3.0,
+    formGrains: 2.5,
+    // Silhouette low-pass, also in grain diameters, and how much of it the
+    // mask takes. The raw contour is the level set of a sum of blobs, so it
+    // carries lumps at physics-grain scale; averaging across about a grain
+    // removes them and the fine dither above puts the fuzz back.
+    edgeGrains: 0.7,
     edgeSmooth: 0.75,
     // Fast sand pales a little toward dust.
     pale: 0.15,
@@ -285,16 +299,30 @@ export const CONFIG = {
     // its radius); and how much of a grain's projected disc its own specks
     // cover — the per-grain count follows from that and the grain size.
     speckPx: 2.4,
-    speckSpread: 0.85,
+    // Specks reach the full grain rather than huddling near its centre. Kept
+    // short, they bunch into a little rosette per grain with smooth gaps
+    // between — grouping at speck scale, which is the same tell the field
+    // render exists to avoid, just an order of magnitude smaller.
+    speckSpread: 1.0,
     // Spread for a grain in flight, which is drawn by its specks rather than
     // by the field. The clump has to cover the sand the grain stands for, or
     // a splash reads as dust however many specks it has.
     speckAirSpread: 1.15,
-    speckCoverage: 0.32,
+    // Fraction of a grain's disc its own specks cover. High, because the
+    // specks ARE the sand: the field under them is smooth, and at a third
+    // covered they read as scattered dots on a smooth surface — speckled
+    // paint rather than grains. This was hidden on a desktop, where a grain
+    // is twice the size and carries four times the specks for the same
+    // fraction; on a phone it left the sand looking washed out and flat.
+    speckCoverage: 0.75,
     // Headroom for coarsened grains: the per-grain count scales with the
     // grain's area so the sand keeps the same fineness on screen, and the
     // tuner's lever is now grain size, so this has to reach.
-    speckMax: 48,
+    speckMax: 64,
+    // Floor on how far adaptive quality may thin the specks out. Below about
+    // this the sand stops reading as grains at all, and a smooth bed is worse
+    // than a slightly slow one.
+    speckMinQuality: 0.45,
     speckAlpha: 0.85,
     // Per-speck relief: each speck gets a lit crest and a shadowed far side
     // under one global light. This is where the fine realism lives, and it is

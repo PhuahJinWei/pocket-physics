@@ -443,6 +443,12 @@ const CONFIG = {
     airDrag: 0.1,
     // Hard speed ceiling, in grain diameters travelled per substep.
     maxTravel: 1.0,
+    // Normalised speed above which a grain touching nothing counts as being
+    // in flight rather than simply lying somewhere by itself, and the width of
+    // that ramp. Low, because speed01 saturates after a couple of pixels of
+    // fall — this only has to exclude grains that are genuinely at rest.
+    flightSpeed: 0.008,
+    flightSpeedBand: 0.035,
     // Neighbour search radius for shading, as a multiple of grain diameter.
     shadeRadius: 1.15,
     // Divisor for the "how buried am I" term (sum of upward contact dots).
@@ -543,6 +549,11 @@ const CONFIG = {
     // sand — which is what you get when the phone is laid flat and the whole
     // bed collapses into a sheet one grain thick.
     bulkSize: 1.25,
+    // Where a grain resting BY ITSELF draws — its own true size. Not spray:
+    // a grain lying alone in a bare patch is a grain of sand lying there, and
+    // shrinking it is what left those patches as clean empty holes with
+    // nothing scattered in them.
+    aloneSize: 1.0,
     // A grain touching nothing draws its blob this much NARROWER (graded by
     // how few contacts it has). This is a width, not a brightness: a narrow
     // blob cannot bridge to the mass and hang off it as a drip. Its peak is
@@ -587,18 +598,21 @@ const CONFIG = {
     ditherPx: 3.0,
     // Form shading from the field gradient: how strongly the gradient tilts
     // the normal, how much of the result the colour sees, and — the load
-    // bearing one — how far apart the gradient is sampled, in field texels.
-    // Sampled at one texel this is blob noise and it embosses every grain;
-    // sampled several grains apart it is the shape of the pile, which is the
-    // shading that makes a bed look like a heap of sand instead of a slab.
+    // bearing one — how far apart the gradient is sampled, **in grain
+    // diameters**. Sampled within a grain this is blob noise and it embosses
+    // every grain, curdling the mass into clumps; sampled several grains apart
+    // it is the shape of the pile, which is the shading that makes a bed look
+    // like a heap of sand instead of a slab. It has to be a grain-relative
+    // distance: as a pixel count it lands on a different physical scale on
+    // every viewport and device ratio.
     relief: 2.2,
     form: 0.45,
-    formRadius: 7.0,
-    // Silhouette low-pass: radius in field texels, and how much of it the
-    // mask takes. The raw contour is the level set of a sum of 15-20px blobs,
-    // so it carries lumps at physics-grain scale; averaging wider removes
-    // them and the fine dither above puts the fuzz back.
-    edgeRadius: 3.0,
+    formGrains: 2.5,
+    // Silhouette low-pass, also in grain diameters, and how much of it the
+    // mask takes. The raw contour is the level set of a sum of blobs, so it
+    // carries lumps at physics-grain scale; averaging across about a grain
+    // removes them and the fine dither above puts the fuzz back.
+    edgeGrains: 0.7,
     edgeSmooth: 0.75,
     // Fast sand pales a little toward dust.
     pale: 0.15,
@@ -612,16 +626,30 @@ const CONFIG = {
     // its radius); and how much of a grain's projected disc its own specks
     // cover — the per-grain count follows from that and the grain size.
     speckPx: 2.4,
-    speckSpread: 0.85,
+    // Specks reach the full grain rather than huddling near its centre. Kept
+    // short, they bunch into a little rosette per grain with smooth gaps
+    // between — grouping at speck scale, which is the same tell the field
+    // render exists to avoid, just an order of magnitude smaller.
+    speckSpread: 1.0,
     // Spread for a grain in flight, which is drawn by its specks rather than
     // by the field. The clump has to cover the sand the grain stands for, or
     // a splash reads as dust however many specks it has.
     speckAirSpread: 1.15,
-    speckCoverage: 0.32,
+    // Fraction of a grain's disc its own specks cover. High, because the
+    // specks ARE the sand: the field under them is smooth, and at a third
+    // covered they read as scattered dots on a smooth surface — speckled
+    // paint rather than grains. This was hidden on a desktop, where a grain
+    // is twice the size and carries four times the specks for the same
+    // fraction; on a phone it left the sand looking washed out and flat.
+    speckCoverage: 0.75,
     // Headroom for coarsened grains: the per-grain count scales with the
     // grain's area so the sand keeps the same fineness on screen, and the
     // tuner's lever is now grain size, so this has to reach.
-    speckMax: 48,
+    speckMax: 64,
+    // Floor on how far adaptive quality may thin the specks out. Below about
+    // this the sand stops reading as grains at all, and a smooth bed is worse
+    // than a slightly slow one.
+    speckMinQuality: 0.45,
     speckAlpha: 0.85,
     // Per-speck relief: each speck gets a lit crest and a shadowed far side
     // under one global light. This is where the fine realism lives, and it is
@@ -2049,11 +2077,22 @@ class Grains {
       const target = Math.max(exposed, litAbove[i] * transmit);
       light[i] += (target - light[i]) * blend;
       speed01[i] = clamp(Math.hypot(vx[i], vy[i], vz[i]) * invSpeed, 0, 1);
-      // Touching nothing means genuinely in flight. Smoothed so a grain
-      // entering or leaving the mass fades rather than pops; the graded
-      // version is smoothed for the same reason, since contact counts at a
-      // surface flicker from step to step.
-      const air = contacts[i] === 0 ? 1 : 0;
+      // In flight: touching nothing AND actually moving. Touching nothing is
+      // not enough on its own — `contacts` counts grain-grain pairs only, so a
+      // grain lying by itself on the floor of a bare patch, held up by the
+      // wall, counts as touching nothing while being completely at rest. The
+      // renderer draws sand in flight as spray (half size, dimmed, specks
+      // spread wide), and applying that to a grain that is simply lying there
+      // is what left bare patches as clean empty holes with nothing scattered
+      // in them.
+      //
+      // Speed is safe as a SECOND condition even though it is useless as a
+      // first one: it can only ever remove grains from the set, and the case
+      // being removed is exactly a resting one. The band is low because
+      // speed01 saturates fast — a grain that has fallen two pixels is already
+      // past it — so anything genuinely in flight still reads as 1.
+      const moving = clamp((speed01[i] - cfg.flightSpeed) / cfg.flightSpeedBand, 0, 1);
+      const air = contacts[i] === 0 ? moving : 0;
       airborne[i] += (air - airborne[i]) * blend;
       loose[i] += (packNow - loose[i]) * blend;
     }
@@ -3011,7 +3050,8 @@ uniform float uLooseShrink;
 uniform float uBlob;      // blob radius as a multiple of the grain radius
 uniform float uThreshold; // worst-case coverage the composite calls "sand"
 uniform float uBulkSize;  // where a packed grain's level set lands, in radii
-uniform float uSoloSize;  // and where a grain with nothing to touch does
+uniform float uAloneSize; // ... a grain resting by itself
+uniform float uSoloSize;  // ... and one in flight
 uniform float uAirPow;    // profile exponent for a lone grain (mass uses 2)
 uniform float uAirLight;  // ceiling on the light ramp for sand in flight
 
@@ -3055,30 +3095,34 @@ void main() {
   // whole thing collapses into a sheet one grain thick across the entire
   // screen, where nothing overlaps enough, and the sand tears into holes.
   //
-  // The size a grain draws at depends on how packed it is, which is the part
-  // that matters:
+  // The size a grain draws at depends on how packed it is, and separately on
+  // whether it is in flight. Three cases, and each earns its place:
   //
-  //   packed  -> uBulkSize, a little OUTSIDE its own radius. Deliberate: a
-  //              physics grain stands in for a clump of real sand, and that
-  //              sand fills its neighbourhood rather than an inscribed
-  //              sphere, so a jammed monolayer should read as continuous.
-  //   loose   -> down toward uSoloSize, well inside it. Sand thrown into the
-  //              air is drawn by its SPECKS; the field only puts a soft core
-  //              under them. Drawn generously instead, sparse grains merge
-  //              into rounded lobes and a splash turns to batter.
+  //   packed, at rest -> uBulkSize, a little OUTSIDE its own radius.
+  //              Deliberate: a physics grain stands in for a clump of real
+  //              sand, and that sand fills its neighbourhood rather than an
+  //              inscribed sphere, so a jammed monolayer reads as continuous.
+  //   alone, at rest  -> uAloneSize, its own true size. A grain lying by
+  //              itself in a bare patch is not spray — it is a grain of sand
+  //              lying there, and it should look like one. Shrinking it is
+  //              what left bare patches as clean empty holes with nothing
+  //              scattered in them, which is not how sand ever looks.
+  //   in flight       -> uSoloSize, well inside it, where the SPECKS take
+  //              over. Drawn generously instead, sparse grains merge into
+  //              rounded lobes and a splash turns to batter.
   //
-  // One threshold cannot do both — generous enough to close a monolayer is
-  // generous enough to melt a splash — which is exactly why this is per grain
-  // and keyed on contacts rather than set globally.
+  // One global threshold cannot do this — generous enough to close a monolayer
+  // is generous enough to melt a splash — which is why it is per grain.
   //
   // Depth deliberately does not enter. Sand is opaque however deep it sits;
   // what changes with distance is colour, and that is the composite's job.
   //
-  // A loose grain also gets a gentler blob profile (uAirPow, against 2 for
+  // Sand in flight also gets a gentler blob profile (uAirPow, against 2 for
   // the mass) so its coverage ramps over more pixels and the composite's soft
   // band lands as a porous puff rather than a hard-rimmed pea. The peak is
   // solved against whichever profile the grain is using.
-  float target = mix(uBulkSize, uSoloSize, loose);
+  float target = mix(uBulkSize, uAloneSize, loose);
+  target = mix(target, uSoloSize, air);
   float rn = min(target / (uBlob * shrink), 0.95);
   float e = 1.0 - rn * rn;
   float prof = mix(e * e, pow(e, uAirPow), air);
@@ -3665,6 +3709,9 @@ class Renderer {
     // Parallax offset for the projection eye, in CSS px; set from the tilt.
     this.eyeX = 0;
     this.eyeY = 0;
+    // Adaptive quality, mirrored from the tuner each frame. Only the speck
+    // pass reads it — see speckCountFor.
+    this.quality = 1;
     this.t0 = performance.now();
     // 5 quads (four interior walls + back plane), 6 vertices each, xyz + shade.
     this.wallData = new Float32Array(5 * 6 * 4);
@@ -3774,7 +3821,8 @@ class Renderer {
     };
     this.sandFieldUniform = uniforms(gl, this.sandFieldProgram, [
       'uViewport', 'uFocal', 'uEye', 'uPointSize', 'uDepthRange',
-      'uLooseShrink', 'uBlob', 'uThreshold', 'uBulkSize', 'uSoloSize', 'uAirPow', 'uAirLight',
+      'uLooseShrink', 'uBlob', 'uThreshold', 'uBulkSize', 'uAloneSize', 'uSoloSize',
+      'uAirPow', 'uAirLight',
     ]);
 
     this.sandCompositeProgram = buildProgram(gl, SAND_COMPOSITE_VERTEX, SAND_COMPOSITE_FRAGMENT);
@@ -4015,11 +4063,21 @@ class Renderer {
    * cover a fixed fraction of its projected disc, so a coarse grain (big
    * screen, or a coarsened tuner) carries more of them and the sand keeps the
    * same fineness on screen.
+   *
+   * That leaves the *total* independent of grain size — it works out at
+   * screen area over speck area, which is the right answer for something that
+   * tiles a surface, but it also means the tuner's usual lever does nothing
+   * here: coarsening grains cuts their count and raises the specks per grain
+   * by exactly as much. So quality scales the coverage directly. It is the
+   * one part of the look that thins out on a struggling device, and it is the
+   * right one to give up — fewer specks read as slightly smoother sand, where
+   * fewer grains read as less sand.
    */
   speckCountFor(radius) {
     const s = CONFIG.sand;
     const speckArea = (s.speckPx * 0.5) ** 2;
-    const want = s.speckCoverage * (radius * radius) / Math.max(speckArea, 1e-3);
+    const coverage = s.speckCoverage * Math.min(1, Math.max(s.speckMinQuality, this.quality));
+    const want = coverage * (radius * radius) / Math.max(speckArea, 1e-3);
     return Math.max(1, Math.min(s.speckMax, Math.round(want)));
   }
 
@@ -4140,6 +4198,7 @@ class Renderer {
     // noise happens to land rather than flickering along with it.
     gl.uniform1f(fu.uThreshold, s.surface + s.dither * 0.5);
     gl.uniform1f(fu.uBulkSize, s.bulkSize);
+    gl.uniform1f(fu.uAloneSize, s.aloneSize);
     gl.uniform1f(fu.uSoloSize, s.soloSize);
     gl.uniform1f(fu.uAirPow, s.airPow);
     gl.uniform1f(fu.uAirLight, s.airLight);
@@ -4178,8 +4237,17 @@ class Renderer {
     gl.uniform1f(cu.uPale, s.pale);
     gl.uniform1f(cu.uPatchScale, s.patchScale);
     gl.uniform1f(cu.uPatchAmp, s.patchAmp);
-    gl.uniform1f(cu.uFormRadius, s.formRadius);
-    gl.uniform1f(cu.uEdgeRadius, s.edgeRadius);
+    // Both of these are distances, and the distance that matters is measured
+    // in GRAINS, not in pixels. Set in field texels they came out at 0.7 and
+    // 0.3 grain diameters — the form gradient was sampling *within* a grain,
+    // so it embossed individual grains into the mass as clumps, which is the
+    // opposite of what it is for, and the silhouette low-pass was too narrow
+    // to touch the grain-scale lumps it exists to remove. Both were wrong by a
+    // different factor on every viewport and device ratio, which is exactly
+    // what a screen-space unit buys you here.
+    const grainInField = sand.diameter * this.dpr * s.fieldScale;
+    gl.uniform1f(cu.uFormRadius, s.formGrains * grainInField);
+    gl.uniform1f(cu.uEdgeRadius, s.edgeGrains * grainInField);
     gl.uniform1f(cu.uEdgeSmooth, s.edgeSmooth);
     gl.uniform3fv(cu.uFog, r.fog);
     gl.uniform1f(cu.uDepthDim, r.depthDim);
@@ -5467,6 +5535,9 @@ function frame(now) {
   const P = CONFIG.render.parallax;
   renderer.eyeX = -gravity.gx * P;
   renderer.eyeY = -gravity.gy * P;
+  // Speck density is the one part of the look the tuner can thin out; grain
+  // size, its usual lever, leaves the total speck count unchanged.
+  renderer.quality = tuner.scale;
   renderer.draw(sand);
 
   const workMs = performance.now() - t0;

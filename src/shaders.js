@@ -40,7 +40,8 @@ uniform float uLooseShrink;
 uniform float uBlob;      // blob radius as a multiple of the grain radius
 uniform float uThreshold; // worst-case coverage the composite calls "sand"
 uniform float uBulkSize;  // where a packed grain's level set lands, in radii
-uniform float uSoloSize;  // and where a grain with nothing to touch does
+uniform float uAloneSize; // ... a grain resting by itself
+uniform float uSoloSize;  // ... and one in flight
 uniform float uAirPow;    // profile exponent for a lone grain (mass uses 2)
 uniform float uAirLight;  // ceiling on the light ramp for sand in flight
 
@@ -84,30 +85,34 @@ void main() {
   // whole thing collapses into a sheet one grain thick across the entire
   // screen, where nothing overlaps enough, and the sand tears into holes.
   //
-  // The size a grain draws at depends on how packed it is, which is the part
-  // that matters:
+  // The size a grain draws at depends on how packed it is, and separately on
+  // whether it is in flight. Three cases, and each earns its place:
   //
-  //   packed  -> uBulkSize, a little OUTSIDE its own radius. Deliberate: a
-  //              physics grain stands in for a clump of real sand, and that
-  //              sand fills its neighbourhood rather than an inscribed
-  //              sphere, so a jammed monolayer should read as continuous.
-  //   loose   -> down toward uSoloSize, well inside it. Sand thrown into the
-  //              air is drawn by its SPECKS; the field only puts a soft core
-  //              under them. Drawn generously instead, sparse grains merge
-  //              into rounded lobes and a splash turns to batter.
+  //   packed, at rest -> uBulkSize, a little OUTSIDE its own radius.
+  //              Deliberate: a physics grain stands in for a clump of real
+  //              sand, and that sand fills its neighbourhood rather than an
+  //              inscribed sphere, so a jammed monolayer reads as continuous.
+  //   alone, at rest  -> uAloneSize, its own true size. A grain lying by
+  //              itself in a bare patch is not spray — it is a grain of sand
+  //              lying there, and it should look like one. Shrinking it is
+  //              what left bare patches as clean empty holes with nothing
+  //              scattered in them, which is not how sand ever looks.
+  //   in flight       -> uSoloSize, well inside it, where the SPECKS take
+  //              over. Drawn generously instead, sparse grains merge into
+  //              rounded lobes and a splash turns to batter.
   //
-  // One threshold cannot do both — generous enough to close a monolayer is
-  // generous enough to melt a splash — which is exactly why this is per grain
-  // and keyed on contacts rather than set globally.
+  // One global threshold cannot do this — generous enough to close a monolayer
+  // is generous enough to melt a splash — which is why it is per grain.
   //
   // Depth deliberately does not enter. Sand is opaque however deep it sits;
   // what changes with distance is colour, and that is the composite's job.
   //
-  // A loose grain also gets a gentler blob profile (uAirPow, against 2 for
+  // Sand in flight also gets a gentler blob profile (uAirPow, against 2 for
   // the mass) so its coverage ramps over more pixels and the composite's soft
   // band lands as a porous puff rather than a hard-rimmed pea. The peak is
   // solved against whichever profile the grain is using.
-  float target = mix(uBulkSize, uSoloSize, loose);
+  float target = mix(uBulkSize, uAloneSize, loose);
+  target = mix(target, uSoloSize, air);
   float rn = min(target / (uBlob * shrink), 0.95);
   float e = 1.0 - rn * rn;
   float prof = mix(e * e, pow(e, uAirPow), air);

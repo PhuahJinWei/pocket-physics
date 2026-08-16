@@ -258,6 +258,9 @@ function frame(now) {
   const P = CONFIG.render.parallax;
   renderer.eyeX = -gravity.gx * P;
   renderer.eyeY = -gravity.gy * P;
+  // Speck density is the one part of the look the tuner can thin out; grain
+  // size, its usual lever, leaves the total speck count unchanged.
+  renderer.quality = tuner.scale;
   renderer.draw(sand);
 
   const workMs = performance.now() - t0;

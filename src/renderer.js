@@ -45,6 +45,9 @@ export class Renderer {
     // Parallax offset for the projection eye, in CSS px; set from the tilt.
     this.eyeX = 0;
     this.eyeY = 0;
+    // Adaptive quality, mirrored from the tuner each frame. Only the speck
+    // pass reads it — see speckCountFor.
+    this.quality = 1;
     this.t0 = performance.now();
     // 5 quads (four interior walls + back plane), 6 vertices each, xyz + shade.
     this.wallData = new Float32Array(5 * 6 * 4);
@@ -154,7 +157,8 @@ export class Renderer {
     };
     this.sandFieldUniform = uniforms(gl, this.sandFieldProgram, [
       'uViewport', 'uFocal', 'uEye', 'uPointSize', 'uDepthRange',
-      'uLooseShrink', 'uBlob', 'uThreshold', 'uBulkSize', 'uSoloSize', 'uAirPow', 'uAirLight',
+      'uLooseShrink', 'uBlob', 'uThreshold', 'uBulkSize', 'uAloneSize', 'uSoloSize',
+      'uAirPow', 'uAirLight',
     ]);
 
     this.sandCompositeProgram = buildProgram(gl, SAND_COMPOSITE_VERTEX, SAND_COMPOSITE_FRAGMENT);
@@ -395,11 +399,21 @@ export class Renderer {
    * cover a fixed fraction of its projected disc, so a coarse grain (big
    * screen, or a coarsened tuner) carries more of them and the sand keeps the
    * same fineness on screen.
+   *
+   * That leaves the *total* independent of grain size — it works out at
+   * screen area over speck area, which is the right answer for something that
+   * tiles a surface, but it also means the tuner's usual lever does nothing
+   * here: coarsening grains cuts their count and raises the specks per grain
+   * by exactly as much. So quality scales the coverage directly. It is the
+   * one part of the look that thins out on a struggling device, and it is the
+   * right one to give up — fewer specks read as slightly smoother sand, where
+   * fewer grains read as less sand.
    */
   speckCountFor(radius) {
     const s = CONFIG.sand;
     const speckArea = (s.speckPx * 0.5) ** 2;
-    const want = s.speckCoverage * (radius * radius) / Math.max(speckArea, 1e-3);
+    const coverage = s.speckCoverage * Math.min(1, Math.max(s.speckMinQuality, this.quality));
+    const want = coverage * (radius * radius) / Math.max(speckArea, 1e-3);
     return Math.max(1, Math.min(s.speckMax, Math.round(want)));
   }
 
@@ -520,6 +534,7 @@ export class Renderer {
     // noise happens to land rather than flickering along with it.
     gl.uniform1f(fu.uThreshold, s.surface + s.dither * 0.5);
     gl.uniform1f(fu.uBulkSize, s.bulkSize);
+    gl.uniform1f(fu.uAloneSize, s.aloneSize);
     gl.uniform1f(fu.uSoloSize, s.soloSize);
     gl.uniform1f(fu.uAirPow, s.airPow);
     gl.uniform1f(fu.uAirLight, s.airLight);
@@ -558,8 +573,17 @@ export class Renderer {
     gl.uniform1f(cu.uPale, s.pale);
     gl.uniform1f(cu.uPatchScale, s.patchScale);
     gl.uniform1f(cu.uPatchAmp, s.patchAmp);
-    gl.uniform1f(cu.uFormRadius, s.formRadius);
-    gl.uniform1f(cu.uEdgeRadius, s.edgeRadius);
+    // Both of these are distances, and the distance that matters is measured
+    // in GRAINS, not in pixels. Set in field texels they came out at 0.7 and
+    // 0.3 grain diameters — the form gradient was sampling *within* a grain,
+    // so it embossed individual grains into the mass as clumps, which is the
+    // opposite of what it is for, and the silhouette low-pass was too narrow
+    // to touch the grain-scale lumps it exists to remove. Both were wrong by a
+    // different factor on every viewport and device ratio, which is exactly
+    // what a screen-space unit buys you here.
+    const grainInField = sand.diameter * this.dpr * s.fieldScale;
+    gl.uniform1f(cu.uFormRadius, s.formGrains * grainInField);
+    gl.uniform1f(cu.uEdgeRadius, s.edgeGrains * grainInField);
     gl.uniform1f(cu.uEdgeSmooth, s.edgeSmooth);
     gl.uniform3fv(cu.uFog, r.fog);
     gl.uniform1f(cu.uDepthDim, r.depthDim);

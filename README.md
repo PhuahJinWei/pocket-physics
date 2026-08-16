@@ -216,6 +216,16 @@ already was:
   away which grain owns them, and they fade past the silhouette so a surface is
   fringed with texture rather than flanked by loose dots.
 
+  They also have to be **dense** — `speckCoverage` is most of a grain's disc,
+  not a third of it. The field under them is smooth, so at a third covered they
+  read as scattered dots on a smooth surface: speckled paint rather than sand.
+  This hid on a desktop, where a grain is twice the size and carries four times
+  the specks for the same fraction, and only showed on a phone. The total is
+  screen area over speck area — independent of grain size — so the tuner's
+  usual lever does nothing here and `quality` scales the coverage directly.
+  Thinner specks read as slightly smoother sand; fewer grains read as *less
+  sand*, which is why this is the part that gives way first.
+
 **Sand in flight** is the one case the mass render cannot handle on its own,
 and it takes three separate corrections. All of them are keyed on *contact*
 rather than speed — a speed threshold fires on any grain that has fallen a few
@@ -280,25 +290,46 @@ enough, and the sand tears into black holes. Measured, a quarter of the box
 drew black. The same bug had also been quietly eating the sand that sits only
 against the back wall.
 
-The size a grain draws at follows from how packed it is:
+The size a grain draws at follows from how packed it is, and separately from
+whether it is actually in flight:
 
-- **packed** → a little *outside* its own radius (`bulkSize`). Deliberate: a
-  physics grain stands in for a clump of real sand, and that sand fills its
-  neighbourhood rather than an inscribed sphere, so a jammed single layer
-  should read as continuous sand — because that is what it is.
-- **loose** → down toward `soloSize`, well inside it, where the specks take
+- **packed, at rest** → a little *outside* its own radius (`bulkSize`).
+  Deliberate: a physics grain stands in for a clump of real sand, and that sand
+  fills its neighbourhood rather than an inscribed sphere, so a jammed single
+  layer should read as continuous sand — because that is what it is.
+- **alone, at rest** → its own true size (`aloneSize`). A grain lying by itself
+  in a bare patch is not spray; it is a grain of sand lying there.
+- **in flight** → down to `soloSize`, well inside it, where the specks take
   over. Drawn generously instead, sparse grains merge into rounded lobes and a
   splash turns to batter.
 
-One global threshold cannot do both — generous enough to close a monolayer is
-generous enough to melt a splash — which is exactly why this is per grain.
-"Packed" saturates at **three** contacts, not the six of full 3D coordination:
-a sheet one grain thick genuinely has fewer neighbours than a deep bed, and
-measured against six it read as half loose and tore into holes anyway. The
-renderer only needs to tell a connected mass from a grain flying on its own.
+One global threshold cannot do this — generous enough to close a monolayer is
+generous enough to melt a splash — which is exactly why it is per grain.
+
+Two details in that carry real weight. "Packed" saturates at **three**
+contacts, not the six of full 3D coordination: a sheet one grain thick
+genuinely has fewer neighbours than a deep bed, and measured against six it
+read as half loose and tore into holes anyway. And "in flight" needs contacts
+**and** motion — `contacts` counts grain-grain pairs only, so a grain lying by
+itself on the floor of a bare patch, held up by the wall, counts as touching
+nothing while being completely at rest. Drawing that as spray is what left bare
+patches looking like clean punched holes with nothing scattered in them, which
+is not how sand ever looks. Speed is useless as a *first* test — it fires on
+any grain that has fallen a few pixels — but it is safe as a second one,
+because it can only remove grains from the set and the case it removes is
+exactly the resting one.
 
 Depth deliberately does not enter the coverage at all. Sand is opaque however
 deep it sits; what changes with distance is colour.
+
+**Distances in the composite are measured in grains, not pixels.** The form
+gradient and the silhouette low-pass are both spans across the field, and both
+were first written in field texels — which put them at 0.7 and 0.3 grain
+diameters, a different physical scale on every viewport and device ratio. The
+form gradient was sampling *within* a grain, so instead of lighting the shape
+of the pile it embossed individual grains and curdled the whole mass into
+clumps; the low-pass was too narrow to touch the grain-scale lumps it exists to
+remove. Both now scale with the grain.
 
 None of it is additive and nothing glows. The whole thing costs one to two
 milliseconds against a simulation that costs ten or more.
@@ -348,10 +379,11 @@ Everything lives in [`src/config.js`](src/config.js). The knobs worth knowing:
 | `bed.depthLayers` | how deep the box is, in grain diameters |
 | `render.focal` / `parallax` | how dramatic the perspective is |
 | `render.wallColor` / `wallShade` | the box interior |
-| `sand.bulkSize` / `soloSize` | how big packed sand and flying sand draw, in grain radii |
+| `sand.bulkSize` / `aloneSize` / `soloSize` | how big packed, lone-resting and flying sand draw, in grain radii |
+| `sand.formGrains` / `edgeGrains` | form and silhouette spans, in grain diameters |
 | `sand.blob` / `surface` | blob width, and the field's working scale (not a size) |
-| `sand.edgeRadius` / `edgeSmooth` | the silhouette low-pass that removes grain-scale lumps |
-| `sand.form` / `formRadius` | large-scale shading, and how wide its gradient reaches |
+| `sand.edgeSmooth` | how much of the silhouette low-pass the mask takes |
+| `sand.form` / `relief` | strength of the large-scale shading |
 | `sand.speckPx` / `speckCoverage` | on-screen speck size and density — independent of physics cost |
 | `sand.speckRelief` / `speckRound` | the per-speck lit crest and shadowed side |
 | `sand.looseShrink` | how much narrower a barely-attached grain's blob is |
