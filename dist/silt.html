@@ -525,6 +525,320 @@ html, body {
 }
 
 </style>
+<style id="dev-css">
+/* Dev mode chrome. Loaded by src/devmode.js the first time the panel opens, so
+   a normal page load never fetches it.
+
+   Same instrument language as app.css - one light from the upper left, plates
+   proud and wells cut in - but deliberately a shade colder and tighter than the
+   shipped UI, so a screenshot always says which mode it was taken in. */
+
+#dev-panel {
+  position: absolute;
+  right: calc(12px + env(safe-area-inset-right));
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  z-index: 40;
+  width: min(304px, calc(100vw - 24px));
+  max-height: min(76vh, 720px);
+  overflow: auto;
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.55);
+  border-radius: 12px;
+  background: var(--face);
+  backdrop-filter: blur(10px);
+  box-shadow:
+    inset 1px 1px 0 var(--bevel-lit),
+    inset -1px -1px 0 var(--bevel-dark),
+    0 6px 18px rgba(0, 0, 0, 0.45);
+  font-size: 11px;
+  -webkit-overflow-scrolling: touch;
+}
+#dev-panel[hidden] { display: none; }
+#dev-panel.collapsed .dev-body { display: none; }
+#dev-panel.collapsed { width: auto; }
+
+.dev-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.dev-title {
+  flex: 1;
+  color: var(--lit);
+  letter-spacing: 0.22em;
+  font-size: 10px;
+  text-shadow: 0 1px 0 rgba(255, 232, 190, 0.07);
+}
+/* The two square caps on a header: collapse and close, and the loupe's axis
+   swap. Same plate as everything else, just small. */
+.dev-x {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, 0.5);
+  border-radius: 6px;
+  background: var(--well);
+  box-shadow: inset 1px 1px 0 rgba(246, 228, 190, 0.06);
+  color: var(--dim);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.dev-x:hover { color: var(--ink); }
+
+.dev-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Section rule: an engraved caption with a hairline running off to the right,
+   which is what keeps four stacked sections from reading as one long list. */
+.dev-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+  color: var(--faint);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-size: 9px;
+  text-shadow: 0 1px 0 rgba(255, 232, 190, 0.05);
+}
+.dev-label::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(to right, rgba(246, 228, 190, 0.12), transparent);
+}
+
+.dev-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 3px;
+}
+.dev-row,
+.dev-group {
+  display: flex;
+  gap: 3px;
+}
+.dev-row > *,
+.dev-group > * { flex: 1; }
+
+.dev-btn {
+  position: relative;
+  min-height: 26px;
+  padding: 3px 6px;
+  border: 1px solid rgba(0, 0, 0, 0.5);
+  border-radius: 6px;
+  background: var(--well);
+  box-shadow: inset 1px 1px 0 rgba(246, 228, 190, 0.05);
+  color: var(--dim);
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  text-align: center;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: color 120ms ease, background 120ms ease, box-shadow 120ms ease;
+}
+.dev-btn:hover { color: var(--ink); }
+/* Engaged: the amber the sim's own glints land on, plus a lamp behind the
+   plate, so which pose is pinned is readable at a glance across the room. */
+.dev-btn.on {
+  color: var(--lit);
+  background: linear-gradient(158deg, rgba(90, 68, 36, 0.55), rgba(38, 27, 15, 0.7));
+  box-shadow:
+    inset 1px 1px 0 rgba(246, 228, 190, 0.14),
+    0 0 8px rgba(240, 194, 116, 0.16);
+}
+.dev-btn:active {
+  box-shadow: inset 1px 2px 3px rgba(0, 0, 0, 0.6);
+}
+.dev-wide { width: 100%; }
+
+/* Shortcut cap, tucked into the corner rather than given a column: these
+   buttons are too narrow to spare the width. */
+.dev-btn kbd {
+  position: absolute;
+  top: 1px;
+  right: 3px;
+  color: var(--faint);
+  font: inherit;
+  font-size: 8px;
+  opacity: 0.75;
+}
+
+.dev-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dev-name {
+  width: 34px;
+  flex: none;
+  color: var(--faint);
+  letter-spacing: 0.08em;
+  font-size: 9px;
+  text-transform: uppercase;
+}
+.dev-line > .dev-slider,
+.dev-line > .dev-group { flex: 1; }
+
+.dev-slider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dev-value {
+  width: 34px;
+  flex: none;
+  color: var(--dim);
+  font-size: 10px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+/* A track cut into the plate with a milled thumb on it. Ranges need the
+   appearance reset on both engines or they arrive as blue system widgets. */
+.dev-slider input[type="range"] {
+  flex: 1;
+  width: 100%;
+  height: 18px;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+}
+.dev-slider input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.72), rgba(30, 24, 17, 0.6));
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.7), 0 1px 0 rgba(246, 228, 190, 0.06);
+}
+.dev-slider input[type="range"]::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.72), rgba(30, 24, 17, 0.6));
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.7);
+}
+.dev-slider input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  border-radius: 50%;
+  background: linear-gradient(158deg, #6a5a42, #241c13);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 240, 210, 0.35),
+    0 1px 3px rgba(0, 0, 0, 0.6);
+}
+.dev-slider input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: 0;
+  border-radius: 50%;
+  background: linear-gradient(158deg, #6a5a42, #241c13);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 240, 210, 0.35),
+    0 1px 3px rgba(0, 0, 0, 0.6);
+}
+
+/* ------------------------------------------------------------------- loupe */
+
+/* Opens on the left, opposite the panel: the two are used together and a
+   window that lands on top of its own controls has to be dragged before it is
+   any use. Drag it anywhere from the header. */
+.dev-loupe {
+  position: absolute;
+  top: calc(64px + env(safe-area-inset-top));
+  left: calc(12px + env(safe-area-inset-left));
+  z-index: 45;
+  max-width: min(540px, calc(100vw - 24px));
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 7px;
+  border: 1px solid rgba(0, 0, 0, 0.55);
+  border-radius: 12px;
+  background: var(--face);
+  backdrop-filter: blur(10px);
+  box-shadow:
+    inset 1px 1px 0 var(--bevel-lit),
+    inset -1px -1px 0 var(--bevel-dark),
+    0 8px 24px rgba(0, 0, 0, 0.55);
+}
+.dev-loupe[hidden] { display: none; }
+.dev-drag { cursor: move; touch-action: none; }
+
+/* The magnified strip keeps its true magnified size and the window scrolls,
+   rather than being scaled to fit: fitting it would resample the very pixels
+   the loupe exists to show. */
+.dev-scroll {
+  max-width: 100%;
+  max-height: 46vh;
+  overflow: auto;
+  border-radius: 6px;
+  background: #050403;
+  box-shadow: inset 1px 2px 3px rgba(0, 0, 0, 0.66);
+  -webkit-overflow-scrolling: touch;
+}
+/* The profile, pinned under the image and scrolled in step with it. Its own
+   bar hides: the image's scrollbar is the one you drive. */
+.dev-rail {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-radius: 6px;
+  scrollbar-width: none;
+}
+.dev-rail::-webkit-scrollbar { display: none; }
+
+.dev-scroll canvas,
+.dev-rail canvas {
+  display: block;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+.dev-rail canvas { image-rendering: auto; }
+
+.dev-readout {
+  color: var(--dim);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 0 rgba(255, 232, 190, 0.05);
+}
+
+/* --------------------------------------------------------------- selection */
+
+/* While picking, the whole page is a crosshair and the canvas takes no drags -
+   the marquee is drawn by the picker, not by the browser. */
+body.dev-picking { cursor: crosshair; }
+body.dev-picking #stage { cursor: crosshair; }
+
+.dev-marquee {
+  position: absolute;
+  z-index: 50;
+  pointer-events: none;
+  border: 1px solid var(--lit);
+  background: rgba(240, 194, 116, 0.08);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+}
+.dev-marquee[hidden] { display: none; }
+
+</style>
 </head>
 <body>
 <canvas id="stage"></canvas>
@@ -772,6 +1086,16 @@ const CONFIG = {
     // body there to 2.19x its bulk value, 0.15 to 1.2x, 0.30 undershoots to
     // 0.6x. See WATER_FIELD_FRAGMENT.
     rayFloor: 0.15,
+    // Whether real particles are cut to the box at their own depth, as the wall
+    // images already are. Off, their blobs spill into the strip along each wall
+    // where the view ray has already left the box, and that spill is what
+    // shades as a band there (and, with the liquid on the back wall, as a thin
+    // film over the dry side wall). On, the strip reads as bulk and the film is
+    // gone — but the free surface then shows its true perspective at the side
+    // walls: measured, a 40px drop at the wall at 75 degrees screen-up, 16px
+    // upright, where off it stays flat within 4px. Toggle it live from the dev
+    // panel (Field) and judge in every pose. See WATER_FIELD_FRAGMENT.
+    clipReal: false,
     // The liquid composite refuses to take a surface normal from a strip along
     // each wall, because two things there are box geometry rather than liquid
     // shape: the capacity correction's leftovers, and the first row of
@@ -779,7 +1103,25 @@ const CONFIG = {
     // dead straight line of blobs the full width of the box. This is that strip
     // in particle radii; the composite takes whichever is wider, this or the
     // perspective band. Set by measurement — see WATER_COMPOSITE_FRAGMENT.
-    wallGuardRows: 2.5,
+    //
+    // It has to cover the first TWO rows, not one. Measured on settled mercury,
+    // the rows above the floor sit at 15, 33 and 51px with a 10.1px radius —
+    // 1.5, 3.3 and 5.0 radii, spaced about 1.8r rather than 2r because the
+    // liquid is packed. At 2.5 the guard reached 25px, so it swallowed the
+    // first row and left the SECOND lit: measured, a dark trough at 42px and a
+    // bright ridge at 29px above the floor, an 11.7-tone step across 6px, which
+    // reads as the floor of the box seen through the metal. Mercury shows it
+    // worst because it is non-wetting and stands off the glass, pushing every
+    // row further in. At 4.5 (45px) the step falls to 3.6 and stops being a
+    // line: the sharpest gradient moves elsewhere and becomes a ramp.
+    //
+    // The cost is bounded and was measured: the body's own texture is untouched
+    // (grain 51.38 either way, out to 5.5), only the margin loses relief, and
+    // water and honey do not change at all when settled and improve when
+    // sloshing (step 5.2 -> 2.7 water, 2.4 -> 1.9 honey). Past ~7 the guard
+    // starts eating into the body — grain falls to 48.8 — so do not raise it
+    // further to chase a wave crest, which is what the remaining swing is.
+    wallGuardRows: 4.5,
     // How far the back of the box falls into shadow: sand and specks fade
     // this fraction of the way toward `fog` at full depth. A colour, never a
     // coverage — sand deep in the box is opaque sand, just further away.
@@ -4343,6 +4685,7 @@ uniform vec2 uBox;
 uniform float uDepthRange;
 uniform float uRadius;
 uniform float uRayFloor;
+uniform float uClipReal;   // 1: real particles are clipped to the box like images
 
 // Depth-fade integrals, so a ray's capacity is weighted exactly as the field
 // weights the balls it sums: P is the integral of vFade, Q of z * vFade.
@@ -4424,22 +4767,33 @@ void main() {
   // sitting at the back, dropped floor images into plain view as detached grey
   // blobs — six lit regions, five of them with no particle in them at all.
   //
-  // Real particles are deliberately NOT clipped. Clipping them is defensible on
-  // paper — a back-row blob reaching past the back wall's projected position is
-  // claiming pixels it cannot be seen through — but it strips the near-wall
-  // band of every layer except the frontmost, and that band is exactly where
-  // the liquid meets the glass. Measured on water: clipped, the surface fell
-  // 27px over the last 43px into each wall while the physics was flat there;
-  // unclipped it sits within a few px of the bulk. A real particle is inside
-  // the box, so its blob spilling a little past the projected outline invents
-  // nothing that is not there — it is the halo of liquid that genuinely exists.
+  // Whether REAL particles are clipped too is a switch (uClipReal, from
+  // CONFIG.render.clipReal), because it is a trade and not a bug either way.
+  //
+  // Unclipped, a real blob spills across the outline of its own layer into
+  // the strip where the ray has already left the box. That spill is what the
+  // capacity divide then amplifies: measured on water at 75 degrees, the field
+  // reads 2.35x bulk 2px from a side wall and is not back within 5% until
+  // 24px, which shades as a band along every wall; and with the liquid lying
+  // on the back wall the same spill paints a 55% film of liquid over the dry
+  // side wall, ending in a visible step where the images take over. Neither
+  // the images nor the capacity floor touch it — measured, images change the
+  // first 12px by exactly zero, and rayFloor moves only the last column.
+  //
+  // Clipped, the strip reads bulk (0.94-1.02 from 4px in) and the film is
+  // gone: the pool ends where the wall is. But it also restores the true
+  // perspective of the free surface, which the spill was hiding: the
+  // waterline on the side glass runs from the front-top corner to the
+  // back-top corner, and screen-up the pool leans back as well, so measured
+  // the silhouette drops 40px at the wall at 75 degrees and 16px upright.
+  // Unclipped it is flat within 4px, which is the look that was asked for.
   vec2 fc = gl_FragCoord.xy;
   float box =
       clamp((fc.x - vNear.x) / max(vFar.x - vNear.x, 0.5), 0.0, 1.0)
     * clamp((vNear.y - fc.x) / max(vNear.y - vFar.y, 0.5), 0.0, 1.0)
     * clamp((fc.y - vNear.z) / max(vFar.z - vNear.z, 0.5), 0.0, 1.0)
     * clamp((vNear.w - fc.y) / max(vNear.w - vFar.w, 0.5), 0.0, 1.0);
-  float inside = mix(1.0, box, vIsImage);
+  float inside = mix(mix(1.0, box, uClipReal), box, vIsImage);
   if (inside <= 0.0) discard;
 
   // Squared falloff: smooth enough that overlapping blobs merge without a seam,
@@ -4946,6 +5300,7 @@ class Renderer {
       radius: gl.getUniformLocation(this.fieldProgram, 'uRadius'),
       origin: gl.getUniformLocation(this.fieldProgram, 'uOrigin'),
       rayFloor: gl.getUniformLocation(this.fieldProgram, 'uRayFloor'),
+      clipReal: gl.getUniformLocation(this.fieldProgram, 'uClipReal'),
     };
     this.waterBuffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, this.waterBuffer);
@@ -5581,6 +5936,7 @@ class Renderer {
     gl.uniform2f(this.fieldUniform.fieldSize, this.fieldW, this.fieldH);
     gl.uniform1f(this.fieldUniform.radius, fluid.radius);
     gl.uniform1f(this.fieldUniform.rayFloor, CONFIG.render.rayFloor);
+    gl.uniform1f(this.fieldUniform.clipReal, CONFIG.render.clipReal ? 1 : 0);
     // Sprite size is in field pixels, so it carries both the device ratio and
     // the field's own downscale.
     gl.uniform1f(
@@ -5786,6 +6142,9 @@ class GravityInput {
     this.mode = 'keys';
     this.sensorActive = false;
     this.flipped = false;
+    // Dev mode pins the box at an exact attitude: a unit-ish vector in box
+    // space, or null for whatever the hand and the keys are doing.
+    this.pose = null;
     this.lastError = '';
 
     this.onShake = null;
@@ -6009,6 +6368,11 @@ class GravityInput {
   sourceVector() {
     const zBias = this.zBias;
 
+    // A pinned pose outranks every live input, which is the whole point of it:
+    // it holds an attitude no hand can, so a phone lying on the desk still
+    // sending perfectly good readings must not win.
+    if (this.pose) return { x: this.pose.x, y: this.pose.y, z: this.pose.z };
+
     if (this.demo) {
       // Roughly what a hand does: a lazy roll, never fully on its side.
       return normalise(
@@ -6081,6 +6445,7 @@ class GravityInput {
   }
 
   describe() {
+    if (this.pose) return 'pose';
     if (this.demo) return 'demo sway';
     if (this.stick.active) return 'stick';
     if (this.keys.size) return 'keys';
@@ -6514,6 +6879,743 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 }
 
+// ---- src/devmode.js ----
+// Developer mode: a rig for reproducing and inspecting rendering artefacts.
+//
+// It exists because "is this intended?" is very hard to answer from a
+// screenshot. Three things make it answerable:
+//
+//   Pose   Pin the box at an exact attitude. A bug that only shows at "about
+//          70-80 degrees from flat, screen facing up" cannot be held steady by
+//          hand, and every report of it describes a slightly different angle.
+//          As two numbers it is the same box every time, on every device.
+//   Time   Pause, single-step and slow motion. A transient can be stopped and
+//          looked at instead of chased, and a settle can be watched at 1/8
+//          speed to see which frame the artefact appears on.
+//   Loupe  A live magnified readback of a dragged-out region, with a contrast
+//          gain and a profile plot. The artefacts this renderer produces are
+//          5-10 tone steps out of 255 - invisible at 1x on a phone, obvious at
+//          12x, and a *number* on the plot underneath.
+//
+// Off unless asked for, and it injects its own stylesheet the first time it
+// opens, so a normal page load carries none of this.
+
+// Not DEG: tools/bundle.py concatenates every module into one scope, so a
+// top-level name that already exists in another module is a SyntaxError in the
+// bundled build and nowhere else. gravity.js owns DEG.
+const TO_RAD = Math.PI / 180;
+const SPEEDS = [1, 0.5, 0.25, 0.125];
+const ZOOMS = [2, 4, 8, 16];
+const GAINS = [1, 4, 12, 30];
+const STORE_KEY = 'silt.dev';
+
+// The attitudes worth having one press away. Pitch is the angle away from
+// lying flat with the screen up, rolled about the screen's own normal:
+//   0 face up -> 90 upright -> 180 face down -> 270 upside down.
+// Tilt 75 is here because that is where the wall artefacts show up.
+const POSES = [
+  { label: 'Face up', pitch: 0, roll: 0 },
+  { label: 'Tilt 45', pitch: 45, roll: 0 },
+  { label: 'Tilt 75', pitch: 75, roll: 0 },
+  { label: 'Upright', pitch: 90, roll: 0 },
+  { label: 'Face down', pitch: 180, roll: 0 },
+  { label: 'Inverted', pitch: 270, roll: 0 },
+  // Named for the wall the liquid ends up against, not for which way the phone
+  // was turned to get there — you press these to go and look at a wall, and
+  // the two readings are mirror images of each other. Measured: roll +90 puts
+  // gravity at x = -1, so the pool goes left.
+  { label: 'Pool L', pitch: 90, roll: 90 },
+  { label: 'Pool R', pitch: 90, roll: -90 },
+];
+
+class DevMode {
+  constructor({ canvas, gravity, renderer, hud, config }) {
+    this.canvas = canvas;
+    this.gravity = gravity;
+    this.renderer = renderer;
+    this.hud = hud;
+    // Live render switches live here so a candidate can be judged in every
+    // pose on the device before it is made the default.
+    this.config = config;
+
+    this.active = false;
+    this.collapsed = false;
+
+    this.poseOn = false;
+    this.pitch = 75;
+    this.roll = 0;
+
+    this.paused = false;
+    this.speed = 1;
+    this.stepPending = false;
+
+    // Region is in CSS pixels relative to the viewport, which is also the
+    // canvas: #stage is position:fixed inset:0, so the two frames coincide.
+    this.region = null;
+    this.zoom = 4;
+    this.gain = 12;
+    this.axis = 'x';
+
+    this.el = null;
+    this._pixels = null;
+    this._picking = false;
+
+    this.bindLongPress();
+  }
+
+  // ------------------------------------------------------------- activation
+
+  /**
+   * Long-press the existing menu button. A phone has no keyboard and the point
+   * of this mode is that it leaves no mark on the normal UI, so the way in has
+   * to be a gesture on something already there.
+   */
+  bindLongPress() {
+    const trigger = this.hud && this.hud.menuButton;
+    if (!trigger) return;
+    let timer = 0;
+    let fired = false;
+    const cancel = () => clearTimeout(timer);
+    trigger.addEventListener('pointerdown', () => {
+      fired = false;
+      timer = setTimeout(() => {
+        fired = true;
+        this.hud.showMenu(false);
+        this.toggle();
+      }, 650);
+    });
+    trigger.addEventListener('pointerup', cancel);
+    trigger.addEventListener('pointerleave', cancel);
+    trigger.addEventListener('pointercancel', cancel);
+    // Swallow the click the long press is about to produce, before it reaches
+    // the button's own handler and opens the menu. Capture on window runs
+    // ahead of a bubble listener on the target; registration order does not
+    // help here, since the Hud binds its listener first.
+    window.addEventListener('click', (e) => {
+      if (!fired) return;
+      fired = false;
+      if (e.target.closest && e.target.closest('#menu')) e.stopPropagation();
+    }, true);
+  }
+
+  static wanted(params) {
+    if (params.has('dev')) return params.get('dev') !== '0';
+    try {
+      return localStorage.getItem(STORE_KEY) === '1';
+    } catch {
+      return false;
+    }
+  }
+
+  toggle(on) {
+    const next = on === undefined ? !this.active : !!on;
+    if (next === this.active) return;
+    this.active = next;
+    try {
+      localStorage.setItem(STORE_KEY, next ? '1' : '0');
+    } catch {
+      /* storage blocked - the mode just will not be remembered */
+    }
+    if (next) {
+      this.build();
+      this.el.hidden = false;
+    } else {
+      // Leaving must put everything back: a pinned pose or a paused sim that
+      // outlived the panel would look like the app had broken.
+      this.poseOn = false;
+      this.paused = false;
+      this.speed = 1;
+      this.region = null;
+      this.gravity.pose = null;
+      if (this.el) this.el.hidden = true;
+      if (this.loupeWin) this.loupeWin.hidden = true;
+    }
+  }
+
+  // ------------------------------------------------------------ frame hooks
+
+  /**
+   * Simulation dt for this frame. Zero while paused; a single step delivers
+   * one nominal frame regardless of the slow-motion factor, so stepping is
+   * always the same size of nudge.
+   */
+  scaleDt(dt) {
+    if (!this.active) return dt;
+    if (this.stepPending) {
+      this.stepPending = false;
+      return 1 / 60;
+    }
+    if (this.paused) return 0;
+    return dt * this.speed;
+  }
+
+  /** Push the pinned attitude into the gravity input, or release it. */
+  applyPose() {
+    if (!this.active || !this.poseOn) {
+      this.gravity.pose = null;
+      return;
+    }
+    const th = this.pitch * TO_RAD;
+    const ph = this.roll * TO_RAD;
+    const s = Math.sin(th);
+    this.gravity.pose = {
+      x: -Math.sin(ph) * s,
+      y: Math.cos(ph) * s,
+      z: Math.cos(th),
+    };
+  }
+
+  /**
+   * Grab the loupe's region straight after the draw. It has to happen here:
+   * the context is created without preserveDrawingBuffer, so the colour buffer
+   * is only guaranteed to hold the frame until the task that drew it ends.
+   */
+  afterDraw() {
+    if (!this.active || !this.region || !this.loupeWin || this.loupeWin.hidden) return;
+    const R = this.renderer;
+    const gl = R.gl;
+    if (!gl || R.contextLost) return;
+    const dpr = R.dpr;
+    const r = this.region;
+    const dw = Math.max(1, Math.round(r.w * dpr));
+    const dh = Math.max(1, Math.round(r.h * dpr));
+    const dx = Math.max(0, Math.round(r.x * dpr));
+    // readPixels counts rows up from the bottom of the buffer, CSS counts down
+    // from the top. Getting this backwards reads a mirrored strip from the
+    // opposite side of the box, which looks plausible and is not the region.
+    const dy = Math.max(0, Math.round((R.height - r.y - r.h) * dpr));
+    const need = dw * dh * 4;
+    if (!this._pixels || this._pixels.length < need) this._pixels = new Uint8Array(need);
+    const buf = this._pixels;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.readPixels(dx, dy, dw, dh, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    this.paint(buf, dw, dh);
+  }
+
+  // --------------------------------------------------------------- keyboard
+
+  /** Returns true when the key belonged to dev mode and must not fall through. */
+  handleKey(code, shift) {
+    if (code === 'KeyG' && shift) {
+      this.toggle();
+      return true;
+    }
+    if (!this.active) return false;
+    switch (code) {
+      case 'KeyP':
+        this.paused = !this.paused;
+        this.sync();
+        return true;
+      case 'KeyO':
+        this.paused = true;
+        this.stepPending = true;
+        this.sync();
+        return true;
+      case 'KeyL':
+        this.speed = SPEEDS[(SPEEDS.indexOf(this.speed) + 1) % SPEEDS.length];
+        this.sync();
+        return true;
+      case 'KeyZ':
+        this.pick();
+        return true;
+      default:
+        break;
+    }
+    if (/^Digit[1-8]$/.test(code)) {
+      this.setPose(POSES[Number(code.slice(5)) - 1]);
+      return true;
+    }
+    return false;
+  }
+
+  // ------------------------------------------------------------------- panel
+
+  build() {
+    if (this.el) return;
+    if (!document.getElementById('dev-css')) {
+      const link = document.createElement('link');
+      link.id = 'dev-css';
+      link.rel = 'stylesheet';
+      link.href = 'styles/dev.css';
+      document.head.append(link);
+    }
+
+    const panel = el('div', 'dev-panel');
+    panel.id = 'dev-panel';
+    panel.hidden = true;
+
+    const head = el('div', 'dev-head');
+    head.append(el('span', 'dev-title', 'DEV'));
+    const collapse = button('dev-x', '−', () => {
+      this.collapsed = !this.collapsed;
+      panel.classList.toggle('collapsed', this.collapsed);
+      collapse.firstChild.textContent = this.collapsed ? '+' : '−';
+    });
+    const close = button('dev-x', '×', () => this.toggle(false));
+    head.append(collapse, close);
+    panel.append(head);
+
+    const body = el('div', 'dev-body');
+    panel.append(body);
+
+    // --- pose
+    body.append(el('div', 'dev-label', 'Pose'));
+    const poseGrid = el('div', 'dev-grid');
+    this._poseButtons = POSES.map((p, i) =>
+      button('dev-btn', p.label, () => this.setPose(p), String(i + 1)),
+    );
+    poseGrid.append(...this._poseButtons);
+    body.append(poseGrid);
+
+    this._live = button('dev-btn dev-wide', 'Release to live input', () => {
+      this.poseOn = false;
+      this.sync();
+    });
+    body.append(this._live);
+
+    this._pitch = slider(0, 360, 1, this.pitch, (v) => {
+      this.pitch = v;
+      this.poseOn = true;
+      this.sync();
+    });
+    this._roll = slider(-180, 180, 1, this.roll, (v) => {
+      this.roll = v;
+      this.poseOn = true;
+      this.sync();
+    });
+    body.append(row('pitch', this._pitch.el), row('roll', this._roll.el));
+
+    // --- time
+    body.append(el('div', 'dev-label', 'Time'));
+    const timeRow = el('div', 'dev-row');
+    this._pause = button('dev-btn', 'Pause', () => {
+      this.paused = !this.paused;
+      this.sync();
+    }, 'P');
+    this._step = button('dev-btn', 'Step', () => {
+      this.paused = true;
+      this.stepPending = true;
+      this.sync();
+    }, 'O');
+    timeRow.append(this._pause, this._step);
+    body.append(timeRow);
+    this._speeds = SPEEDS.map((s) =>
+      button('dev-btn', s === 1 ? '1x' : '1/' + Math.round(1 / s), () => {
+        this.speed = s;
+        this.sync();
+      }),
+    );
+    body.append(group(this._speeds));
+
+    // --- loupe
+    body.append(el('div', 'dev-label', 'Loupe'));
+    const loupeRow = el('div', 'dev-row');
+    this._pickBtn = button('dev-btn', 'Select area', () => this.pick(), 'Z');
+    this._clearBtn = button('dev-btn', 'Clear', () => {
+      this.region = null;
+      if (this.loupeWin) this.loupeWin.hidden = true;
+      this.sync();
+    });
+    loupeRow.append(this._pickBtn, this._clearBtn);
+    body.append(loupeRow);
+    this._zooms = ZOOMS.map((z) =>
+      button('dev-btn', z + 'x', () => {
+        this.zoom = z;
+        this.sync();
+      }),
+    );
+    this._gains = GAINS.map((g) =>
+      button('dev-btn', g === 1 ? 'true' : 'g' + g, () => {
+        this.gain = g;
+        this.sync();
+      }),
+    );
+    body.append(row('zoom', group(this._zooms)), row('gain', group(this._gains)));
+
+    // --- field: render switches under evaluation
+    if (this.config) {
+      body.append(el('div', 'dev-label', 'Field'));
+      this._clipBtn = button('dev-btn dev-wide', 'Clip real particles to the box', () => {
+        this.config.render.clipReal = !this.config.render.clipReal;
+        this.sync();
+      });
+      body.append(this._clipBtn);
+    }
+
+    document.getElementById('ui').append(panel);
+    this.el = panel;
+
+    this.buildLoupe();
+    this.buildSelection();
+    this.sync();
+  }
+
+  buildLoupe() {
+    const win = el('div', 'dev-loupe');
+    win.hidden = true;
+    const head = el('div', 'dev-head dev-drag');
+    head.append(el('span', 'dev-title', 'LOUPE'));
+    this._axisBtn = button('dev-x dev-axis', '↔', () => {
+      this.axis = this.axis === 'x' ? 'y' : 'x';
+      this.sync();
+    });
+    head.append(this._axisBtn, button('dev-x', '×', () => {
+      win.hidden = true;
+      this.region = null;
+      this.sync();
+    }));
+    // The plot lives outside the image's scroller, or a tall magnification
+    // pushes it below the fold and the one number worth reading is the one you
+    // have to go looking for. The two scroll together instead, so a feature in
+    // the picture still sits over its own value however far across you are.
+    const scroll = el('div', 'dev-scroll');
+    this._view = document.createElement('canvas');
+    scroll.append(this._view);
+    const rail = el('div', 'dev-rail');
+    this._plot = document.createElement('canvas');
+    rail.append(this._plot);
+    let syncing = false;
+    const link = (from, to) => from.addEventListener('scroll', () => {
+      if (syncing) return;
+      syncing = true;
+      to.scrollLeft = from.scrollLeft;
+      syncing = false;
+    });
+    link(scroll, rail);
+    link(rail, scroll);
+    this._readout = el('div', 'dev-readout');
+    win.append(head, scroll, rail, this._readout);
+    document.getElementById('ui').append(win);
+    this.loupeWin = win;
+    dragBy(head, win);
+  }
+
+  buildSelection() {
+    this._marquee = el('div', 'dev-marquee');
+    this._marquee.hidden = true;
+    document.getElementById('ui').append(this._marquee);
+  }
+
+  setPose(p) {
+    if (!p) return;
+    this.pitch = p.pitch;
+    this.roll = p.roll;
+    this.poseOn = true;
+    if (this._pitch) this._pitch.set(p.pitch);
+    if (this._roll) this._roll.set(p.roll);
+    this.sync();
+  }
+
+  /** Reflect state onto the controls. One place, called after every change. */
+  sync() {
+    if (!this.el) return;
+    const near = (a, b) => Math.abs(a - b) < 0.5;
+    this._poseButtons.forEach((b, i) =>
+      b.classList.toggle(
+        'on',
+        this.poseOn && near(POSES[i].pitch, this.pitch) && near(POSES[i].roll, this.roll),
+      ),
+    );
+    this._live.classList.toggle('on', !this.poseOn);
+    this._pitch.label(Math.round(this.pitch) + '°');
+    this._roll.label(Math.round(this.roll) + '°');
+    this._pause.classList.toggle('on', this.paused);
+    this._pause.firstChild.textContent = this.paused ? 'Resume' : 'Pause';
+    this._speeds.forEach((b, i) => b.classList.toggle('on', SPEEDS[i] === this.speed));
+    this._zooms.forEach((b, i) => b.classList.toggle('on', ZOOMS[i] === this.zoom));
+    this._gains.forEach((b, i) => b.classList.toggle('on', GAINS[i] === this.gain));
+    this._pickBtn.classList.toggle('on', this._picking);
+    if (this._axisBtn) this._axisBtn.firstChild.textContent = this.axis === 'x' ? '↔' : '↕';
+    if (this._clipBtn) this._clipBtn.classList.toggle('on', !!this.config.render.clipReal);
+  }
+
+  // ------------------------------------------------------------- area picker
+
+  /**
+   * Drag a rectangle over the canvas. Listeners are on window in the capture
+   * phase so the pick never reaches the poke input underneath and pours the
+   * liquid around while an area is being chosen.
+   */
+  pick() {
+    if (this._picking) return;
+    this._picking = true;
+    document.body.classList.add('dev-picking');
+    this.sync();
+
+    let x0 = 0;
+    let y0 = 0;
+    let rect = null;
+    const stop = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    const shape = (x1, y1) => {
+      const W = this.renderer.width;
+      const H = this.renderer.height;
+      const x = Math.max(0, Math.min(x0, x1));
+      const y = Math.max(0, Math.min(y0, y1));
+      rect = {
+        x,
+        y,
+        w: Math.min(Math.abs(x1 - x0), W - x),
+        h: Math.min(Math.abs(y1 - y0), H - y),
+      };
+      const s = this._marquee.style;
+      s.left = rect.x + 'px';
+      s.top = rect.y + 'px';
+      s.width = rect.w + 'px';
+      s.height = rect.h + 'px';
+    };
+    const move = (e) => {
+      stop(e);
+      shape(e.clientX, e.clientY);
+    };
+    const up = (e) => {
+      stop(e);
+      window.removeEventListener('pointermove', move, true);
+      window.removeEventListener('pointerup', up, true);
+      this._marquee.hidden = true;
+      document.body.classList.remove('dev-picking');
+      this._picking = false;
+      // Too small to be a deliberate drag: treat it as a cancel rather than
+      // opening a four-pixel window.
+      if (rect && rect.w > 8 && rect.h > 8) {
+        this.region = rect;
+        this.loupeWin.hidden = false;
+      }
+      this.sync();
+    };
+    const down = (e) => {
+      stop(e);
+      window.removeEventListener('pointerdown', down, true);
+      x0 = e.clientX;
+      y0 = e.clientY;
+      this._marquee.hidden = false;
+      shape(x0, y0);
+      window.addEventListener('pointermove', move, true);
+      window.addEventListener('pointerup', up, true);
+    };
+    window.addEventListener('pointerdown', down, true);
+  }
+
+  // ------------------------------------------------------------------ output
+
+  /**
+   * Magnify the grabbed strip, and plot its profile underneath.
+   *
+   * At gain 1 the pixels are shown as they are. Above that the strip is
+   * flattened to luminance and stretched about its own mean: a real colour
+   * image saturates into confetti at 12x, while the greyscale stretch turns a
+   * six-tone step - which is what these artefacts are - into a wall.
+   */
+  paint(buf, dw, dh) {
+    const zoom = this.zoom;
+    const view = this._view;
+    if (view.width !== dw * zoom || view.height !== dh * zoom) {
+      view.width = dw * zoom;
+      view.height = dh * zoom;
+    }
+    const ctx = view.getContext('2d');
+    const img = ctx.createImageData(view.width, view.height);
+    const out = img.data;
+
+    let sum = 0;
+    let lo = 255;
+    let hi = 0;
+    const n = dw * dh;
+    for (let i = 0; i < n; i++) {
+      const o = i * 4;
+      const lum = (buf[o] + buf[o + 1] + buf[o + 2]) / 3;
+      sum += lum;
+      if (lum < lo) lo = lum;
+      if (lum > hi) hi = lum;
+    }
+    const mean = sum / n;
+    const gain = this.gain;
+
+    for (let j = 0; j < dh; j++) {
+      // Flip: row 0 of the readback is the bottom of the region.
+      const src = (dh - 1 - j) * dw;
+      for (let i = 0; i < dw; i++) {
+        const o = (src + i) * 4;
+        let r = buf[o];
+        let g = buf[o + 1];
+        let b = buf[o + 2];
+        if (gain > 1) {
+          const v = clamp8(128 + ((r + g + b) / 3 - mean) * gain);
+          r = v;
+          g = v;
+          b = v;
+        }
+        for (let dy = 0; dy < zoom; dy++) {
+          let p = ((j * zoom + dy) * view.width + i * zoom) * 4;
+          for (let dx = 0; dx < zoom; dx++) {
+            out[p] = r;
+            out[p + 1] = g;
+            out[p + 2] = b;
+            out[p + 3] = 255;
+            p += 4;
+          }
+        }
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+
+    this.plot(buf, dw, dh, view.width);
+    this._readout.textContent =
+      dw + '×' + dh + 'px  µ' + mean.toFixed(1) +
+      '  lo' + lo.toFixed(0) + '  hi' + hi.toFixed(0);
+  }
+
+  /**
+   * Mean luminance per column (or per row), drawn at the same width as the
+   * magnified strip above it so a feature in the picture sits directly over
+   * its own number. The span printed with it is the whole point: a flat body
+   * reads under a tone or two, and a band reads five or more.
+   */
+  plot(buf, dw, dh, width) {
+    const cross = this.axis === 'x';
+    const count = cross ? dw : dh;
+    const other = cross ? dh : dw;
+    const series = new Float64Array(count);
+    for (let a = 0; a < count; a++) {
+      let s = 0;
+      for (let b = 0; b < other; b++) {
+        const i = cross ? b * dw + a : (dh - 1 - a) * dw + b;
+        const o = i * 4;
+        s += (buf[o] + buf[o + 1] + buf[o + 2]) / 3;
+      }
+      series[a] = s / other;
+    }
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (let a = 0; a < count; a++) {
+      if (series[a] < lo) lo = series[a];
+      if (series[a] > hi) hi = series[a];
+    }
+    const span = hi - lo;
+
+    const plot = this._plot;
+    const H = 56;
+    if (plot.width !== width || plot.height !== H) {
+      plot.width = width;
+      plot.height = H;
+    }
+    const ctx = plot.getContext('2d');
+    ctx.clearRect(0, 0, width, H);
+    ctx.fillStyle = 'rgba(7,6,4,0.9)';
+    ctx.fillRect(0, 0, width, H);
+    ctx.strokeStyle = 'rgba(240,194,116,0.9)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    const pad = 6;
+    const range = Math.max(span, 1e-3);
+    for (let a = 0; a < count; a++) {
+      const x = count === 1 ? 0 : (a / (count - 1)) * (width - 1);
+      const y = H - pad - ((series[a] - lo) / range) * (H - pad * 2);
+      if (a === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(226,213,189,0.55)';
+    ctx.font = '10px ui-monospace, Menlo, Consolas, monospace';
+    ctx.fillText((cross ? 'per column' : 'per row') + '  span ' + span.toFixed(1), 6, 12);
+  }
+}
+
+// ------------------------------------------------------------------- helpers
+
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function button(cls, text, onClick, key) {
+  const b = el('button', cls);
+  b.type = 'button';
+  b.append(document.createTextNode(text));
+  if (key) b.append(el('kbd', '', key));
+  b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    b.blur();
+    onClick();
+  });
+  // The panel floats over the canvas; a press on it must not also start a drag
+  // in the liquid underneath.
+  b.addEventListener('pointerdown', (e) => e.stopPropagation());
+  return b;
+}
+
+function group(buttons) {
+  const g = el('div', 'dev-group');
+  g.append(...buttons);
+  return g;
+}
+
+function row(name, control) {
+  const r = el('div', 'dev-line');
+  r.append(el('span', 'dev-name', name), control);
+  return r;
+}
+
+function slider(min, max, step, value, onInput) {
+  const wrap = el('div', 'dev-slider');
+  const input = document.createElement('input');
+  input.type = 'range';
+  input.min = String(min);
+  input.max = String(max);
+  input.step = String(step);
+  input.value = String(value);
+  const out = el('span', 'dev-value');
+  input.addEventListener('input', () => onInput(Number(input.value)));
+  input.addEventListener('pointerdown', (e) => e.stopPropagation());
+  wrap.append(input, out);
+  return {
+    el: wrap,
+    set: (v) => {
+      input.value = String(v);
+    },
+    label: (t) => {
+      out.textContent = t;
+    },
+  };
+}
+
+/** Drag a floating window by its header. */
+function dragBy(handle, win) {
+  let id = null;
+  let ox = 0;
+  let oy = 0;
+  handle.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('button')) return;
+    e.stopPropagation();
+    id = e.pointerId;
+    handle.setPointerCapture(id);
+    const r = win.getBoundingClientRect();
+    ox = e.clientX - r.left;
+    oy = e.clientY - r.top;
+    win.style.right = 'auto';
+    win.style.bottom = 'auto';
+  });
+  handle.addEventListener('pointermove', (e) => {
+    if (id !== e.pointerId) return;
+    e.stopPropagation();
+    win.style.left = Math.max(0, e.clientX - ox) + 'px';
+    win.style.top = Math.max(0, e.clientY - oy) + 'px';
+  });
+  const release = (e) => {
+    if (id === e.pointerId) id = null;
+  };
+  handle.addEventListener('pointerup', release);
+  handle.addEventListener('pointercancel', release);
+}
+
+function clamp8(v) {
+  return v < 0 ? 0 : v > 255 ? 255 : v | 0;
+}
+
 // ---- src/main.js ----
 // Wiring: viewport -> box size, input -> gravity, frame loop, adaptive quality.
 
@@ -6683,6 +7785,13 @@ layout(true);
 gravity.zBias = sand.zBias;
 hud.setMaterials(MATERIALS, materials.id);
 
+// The developer rig: pose presets, a simulation clock and the loupe. Nothing
+// of it is built or fetched until it is switched on, and there are three ways
+// in — long-press the menu button (the only one a phone has), Shift+G, or
+// ?dev. The choice is remembered, so a phone stays in dev mode across reloads.
+const dev = new DevMode({ canvas, gravity, renderer, hud, config: CONFIG });
+if (DevMode.wanted(params)) dev.toggle(true);
+
 // ---------------------------------------------------------------- input setup
 
 gravity.onShake = (strength) => sand.splash(strength);
@@ -6732,6 +7841,11 @@ window.addEventListener('keydown', (e) => {
   // While either list is open the keyboard belongs to it — otherwise arrowing
   // through the options also tilts the box, and space splashes it.
   if (hud.materialOpen || hud.menuOpen) return;
+  // Dev keys get first refusal, so a sim shortcut can never shadow one.
+  if (dev.handleKey(e.code, e.shiftKey)) {
+    e.preventDefault();
+    return;
+  }
   gravity.setKey(e.code, true);
   // Before the switch: the movement keys fall through to `default` and would
   // otherwise never get here.
@@ -6792,10 +7906,19 @@ function frame(now) {
 
   const t0 = performance.now();
 
-  gravity.update(dt);
+  // Dev mode owns the simulation clock — it can slow it or stop it. The frame
+  // clock is left alone on purpose: the box keeps redrawing while paused, so a
+  // pose can be swept and a metal's reflections watched over a body that is
+  // holding still. That is also why gravity falls back to the real dt when the
+  // sim is stopped, rather than freezing mid-ease.
+  const simDt = dev.scaleDt(dt);
+  dev.applyPose();
+  gravity.update(simDt > 0 ? simDt : dt);
   const magnitude = sand.gravityMagnitude;
-  poke.apply(sand, dt);
-  sand.step(dt, gravity.gx * magnitude, gravity.gy * magnitude, gravity.gz * magnitude);
+  if (simDt > 0) {
+    poke.apply(sand, simDt);
+    sand.step(simDt, gravity.gx * magnitude, gravity.gy * magnitude, gravity.gz * magnitude);
+  }
 
   // Parallax: shift the projection eye against the tilt, so tipping the device
   // lets you peek around the grains — a cheap but convincing depth cue.
@@ -6816,6 +7939,10 @@ function frame(now) {
   // size, its usual lever, leaves the total speck count unchanged.
   renderer.quality = tuner.scale;
   renderer.draw(sand);
+  // Has to be in the same task as the draw: the context is created without
+  // preserveDrawingBuffer, so the colour buffer only reliably holds this frame
+  // until we return to the browser.
+  dev.afterDraw();
 
   const workMs = performance.now() - t0;
 
@@ -6866,7 +7993,7 @@ window.SILT = {
   get sand() { return sand; },
   get material() { return sand; },
   materials, switchMaterial,
-  gravity, poke, tuner, renderer, hud, reset, applyQuality, CONFIG,
+  gravity, poke, tuner, renderer, hud, dev, reset, applyQuality, CONFIG,
 };
 
 })();

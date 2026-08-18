@@ -104,6 +104,7 @@ uniform vec2 uBox;
 uniform float uDepthRange;
 uniform float uRadius;
 uniform float uRayFloor;
+uniform float uClipReal;   // 1: real particles are clipped to the box like images
 
 // Depth-fade integrals, so a ray's capacity is weighted exactly as the field
 // weights the balls it sums: P is the integral of vFade, Q of z * vFade.
@@ -185,22 +186,33 @@ void main() {
   // sitting at the back, dropped floor images into plain view as detached grey
   // blobs — six lit regions, five of them with no particle in them at all.
   //
-  // Real particles are deliberately NOT clipped. Clipping them is defensible on
-  // paper — a back-row blob reaching past the back wall's projected position is
-  // claiming pixels it cannot be seen through — but it strips the near-wall
-  // band of every layer except the frontmost, and that band is exactly where
-  // the liquid meets the glass. Measured on water: clipped, the surface fell
-  // 27px over the last 43px into each wall while the physics was flat there;
-  // unclipped it sits within a few px of the bulk. A real particle is inside
-  // the box, so its blob spilling a little past the projected outline invents
-  // nothing that is not there — it is the halo of liquid that genuinely exists.
+  // Whether REAL particles are clipped too is a switch (uClipReal, from
+  // CONFIG.render.clipReal), because it is a trade and not a bug either way.
+  //
+  // Unclipped, a real blob spills across the outline of its own layer into
+  // the strip where the ray has already left the box. That spill is what the
+  // capacity divide then amplifies: measured on water at 75 degrees, the field
+  // reads 2.35x bulk 2px from a side wall and is not back within 5% until
+  // 24px, which shades as a band along every wall; and with the liquid lying
+  // on the back wall the same spill paints a 55% film of liquid over the dry
+  // side wall, ending in a visible step where the images take over. Neither
+  // the images nor the capacity floor touch it — measured, images change the
+  // first 12px by exactly zero, and rayFloor moves only the last column.
+  //
+  // Clipped, the strip reads bulk (0.94-1.02 from 4px in) and the film is
+  // gone: the pool ends where the wall is. But it also restores the true
+  // perspective of the free surface, which the spill was hiding: the
+  // waterline on the side glass runs from the front-top corner to the
+  // back-top corner, and screen-up the pool leans back as well, so measured
+  // the silhouette drops 40px at the wall at 75 degrees and 16px upright.
+  // Unclipped it is flat within 4px, which is the look that was asked for.
   vec2 fc = gl_FragCoord.xy;
   float box =
       clamp((fc.x - vNear.x) / max(vFar.x - vNear.x, 0.5), 0.0, 1.0)
     * clamp((vNear.y - fc.x) / max(vNear.y - vFar.y, 0.5), 0.0, 1.0)
     * clamp((fc.y - vNear.z) / max(vFar.z - vNear.z, 0.5), 0.0, 1.0)
     * clamp((vNear.w - fc.y) / max(vNear.w - vFar.w, 0.5), 0.0, 1.0);
-  float inside = mix(1.0, box, vIsImage);
+  float inside = mix(mix(1.0, box, uClipReal), box, vIsImage);
   if (inside <= 0.0) discard;
 
   // Squared falloff: smooth enough that overlapping blobs merge without a seam,

@@ -97,11 +97,17 @@ def build_script(modules: list[Path]) -> str:
 def main() -> int:
     html = HTML.read_text(encoding="utf-8")
     css = (ROOT / "styles" / "app.css").read_text(encoding="utf-8")
+    # Dev mode fetches its own stylesheet at runtime, which a single-file build
+    # has nowhere to fetch from. Carrying it here in the block it looks for
+    # means the panel is styled in a bundle too — which is the build that ends
+    # up on a phone, and the phone is where the tilt bugs are. It skips the
+    # fetch when it finds this already in the document.
+    dev_css = (ROOT / "styles" / "dev.css").read_text(encoding="utf-8")
     script = build_script(collect(ENTRY))
 
     page = re.sub(
         r'\s*<link rel="stylesheet"[^>]*>',
-        f"\n<style>\n{css}\n</style>",
+        f'\n<style>\n{css}\n</style>\n<style id="dev-css">\n{dev_css}\n</style>',
         html,
         count=1,
     )
@@ -126,14 +132,16 @@ def main() -> int:
     # head, so it has to be carried across explicitly or the page ships unstyled.
     body = re.search(r"<body>(.*)</body>", page, re.S)
     title = re.search(r"<title>(.*?)</title>", page, re.S)
-    style = re.search(r"<style>.*?</style>", page, re.S)
+    # Every style block, not just the first: the dev panel's is a second one,
+    # and a lone non-greedy search would quietly leave it in the head.
+    styles = re.findall(r"<style[^>]*>.*?</style>", page, re.S)
     if not body:
         raise SystemExit("index.html: no <body> found")
-    if not style:
+    if not styles:
         raise SystemExit("bundle: inlined <style> block went missing")
     fragment = (
         f"<title>{title.group(1) if title else 'Silt'}</title>\n"
-        f"{style.group(0)}\n"
+        f"{chr(10).join(styles)}\n"
         f"{body.group(1).strip()}\n"
     )
     artifact = DIST / "silt.artifact.html"

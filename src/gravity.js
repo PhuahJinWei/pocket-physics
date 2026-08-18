@@ -60,6 +60,9 @@ export class GravityInput {
     this.mode = 'keys';
     this.sensorActive = false;
     this.flipped = false;
+    // Dev mode pins the box at an exact attitude: a unit-ish vector in box
+    // space, or null for whatever the hand and the keys are doing.
+    this.pose = null;
     this.lastError = '';
 
     this.onShake = null;
@@ -283,6 +286,11 @@ export class GravityInput {
   sourceVector() {
     const zBias = this.zBias;
 
+    // A pinned pose outranks every live input, which is the whole point of it:
+    // it holds an attitude no hand can, so a phone lying on the desk still
+    // sending perfectly good readings must not win.
+    if (this.pose) return { x: this.pose.x, y: this.pose.y, z: this.pose.z };
+
     if (this.demo) {
       // Roughly what a hand does: a lazy roll, never fully on its side.
       return normalise(
@@ -355,6 +363,7 @@ export class GravityInput {
   }
 
   describe() {
+    if (this.pose) return 'pose';
     if (this.demo) return 'demo sway';
     if (this.stick.active) return 'stick';
     if (this.keys.size) return 'keys';

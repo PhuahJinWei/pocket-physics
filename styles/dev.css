@@ -1,0 +1,311 @@
+/* Dev mode chrome. Loaded by src/devmode.js the first time the panel opens, so
+   a normal page load never fetches it.
+
+   Same instrument language as app.css - one light from the upper left, plates
+   proud and wells cut in - but deliberately a shade colder and tighter than the
+   shipped UI, so a screenshot always says which mode it was taken in. */
+
+#dev-panel {
+  position: absolute;
+  right: calc(12px + env(safe-area-inset-right));
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  z-index: 40;
+  width: min(304px, calc(100vw - 24px));
+  max-height: min(76vh, 720px);
+  overflow: auto;
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.55);
+  border-radius: 12px;
+  background: var(--face);
+  backdrop-filter: blur(10px);
+  box-shadow:
+    inset 1px 1px 0 var(--bevel-lit),
+    inset -1px -1px 0 var(--bevel-dark),
+    0 6px 18px rgba(0, 0, 0, 0.45);
+  font-size: 11px;
+  -webkit-overflow-scrolling: touch;
+}
+#dev-panel[hidden] { display: none; }
+#dev-panel.collapsed .dev-body { display: none; }
+#dev-panel.collapsed { width: auto; }
+
+.dev-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.dev-title {
+  flex: 1;
+  color: var(--lit);
+  letter-spacing: 0.22em;
+  font-size: 10px;
+  text-shadow: 0 1px 0 rgba(255, 232, 190, 0.07);
+}
+/* The two square caps on a header: collapse and close, and the loupe's axis
+   swap. Same plate as everything else, just small. */
+.dev-x {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, 0.5);
+  border-radius: 6px;
+  background: var(--well);
+  box-shadow: inset 1px 1px 0 rgba(246, 228, 190, 0.06);
+  color: var(--dim);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.dev-x:hover { color: var(--ink); }
+
+.dev-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Section rule: an engraved caption with a hairline running off to the right,
+   which is what keeps four stacked sections from reading as one long list. */
+.dev-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+  color: var(--faint);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-size: 9px;
+  text-shadow: 0 1px 0 rgba(255, 232, 190, 0.05);
+}
+.dev-label::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(to right, rgba(246, 228, 190, 0.12), transparent);
+}
+
+.dev-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 3px;
+}
+.dev-row,
+.dev-group {
+  display: flex;
+  gap: 3px;
+}
+.dev-row > *,
+.dev-group > * { flex: 1; }
+
+.dev-btn {
+  position: relative;
+  min-height: 26px;
+  padding: 3px 6px;
+  border: 1px solid rgba(0, 0, 0, 0.5);
+  border-radius: 6px;
+  background: var(--well);
+  box-shadow: inset 1px 1px 0 rgba(246, 228, 190, 0.05);
+  color: var(--dim);
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  text-align: center;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: color 120ms ease, background 120ms ease, box-shadow 120ms ease;
+}
+.dev-btn:hover { color: var(--ink); }
+/* Engaged: the amber the sim's own glints land on, plus a lamp behind the
+   plate, so which pose is pinned is readable at a glance across the room. */
+.dev-btn.on {
+  color: var(--lit);
+  background: linear-gradient(158deg, rgba(90, 68, 36, 0.55), rgba(38, 27, 15, 0.7));
+  box-shadow:
+    inset 1px 1px 0 rgba(246, 228, 190, 0.14),
+    0 0 8px rgba(240, 194, 116, 0.16);
+}
+.dev-btn:active {
+  box-shadow: inset 1px 2px 3px rgba(0, 0, 0, 0.6);
+}
+.dev-wide { width: 100%; }
+
+/* Shortcut cap, tucked into the corner rather than given a column: these
+   buttons are too narrow to spare the width. */
+.dev-btn kbd {
+  position: absolute;
+  top: 1px;
+  right: 3px;
+  color: var(--faint);
+  font: inherit;
+  font-size: 8px;
+  opacity: 0.75;
+}
+
+.dev-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dev-name {
+  width: 34px;
+  flex: none;
+  color: var(--faint);
+  letter-spacing: 0.08em;
+  font-size: 9px;
+  text-transform: uppercase;
+}
+.dev-line > .dev-slider,
+.dev-line > .dev-group { flex: 1; }
+
+.dev-slider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dev-value {
+  width: 34px;
+  flex: none;
+  color: var(--dim);
+  font-size: 10px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+/* A track cut into the plate with a milled thumb on it. Ranges need the
+   appearance reset on both engines or they arrive as blue system widgets. */
+.dev-slider input[type="range"] {
+  flex: 1;
+  width: 100%;
+  height: 18px;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+}
+.dev-slider input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.72), rgba(30, 24, 17, 0.6));
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.7), 0 1px 0 rgba(246, 228, 190, 0.06);
+}
+.dev-slider input[type="range"]::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.72), rgba(30, 24, 17, 0.6));
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.7);
+}
+.dev-slider input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  border-radius: 50%;
+  background: linear-gradient(158deg, #6a5a42, #241c13);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 240, 210, 0.35),
+    0 1px 3px rgba(0, 0, 0, 0.6);
+}
+.dev-slider input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: 0;
+  border-radius: 50%;
+  background: linear-gradient(158deg, #6a5a42, #241c13);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 240, 210, 0.35),
+    0 1px 3px rgba(0, 0, 0, 0.6);
+}
+
+/* ------------------------------------------------------------------- loupe */
+
+/* Opens on the left, opposite the panel: the two are used together and a
+   window that lands on top of its own controls has to be dragged before it is
+   any use. Drag it anywhere from the header. */
+.dev-loupe {
+  position: absolute;
+  top: calc(64px + env(safe-area-inset-top));
+  left: calc(12px + env(safe-area-inset-left));
+  z-index: 45;
+  max-width: min(540px, calc(100vw - 24px));
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 7px;
+  border: 1px solid rgba(0, 0, 0, 0.55);
+  border-radius: 12px;
+  background: var(--face);
+  backdrop-filter: blur(10px);
+  box-shadow:
+    inset 1px 1px 0 var(--bevel-lit),
+    inset -1px -1px 0 var(--bevel-dark),
+    0 8px 24px rgba(0, 0, 0, 0.55);
+}
+.dev-loupe[hidden] { display: none; }
+.dev-drag { cursor: move; touch-action: none; }
+
+/* The magnified strip keeps its true magnified size and the window scrolls,
+   rather than being scaled to fit: fitting it would resample the very pixels
+   the loupe exists to show. */
+.dev-scroll {
+  max-width: 100%;
+  max-height: 46vh;
+  overflow: auto;
+  border-radius: 6px;
+  background: #050403;
+  box-shadow: inset 1px 2px 3px rgba(0, 0, 0, 0.66);
+  -webkit-overflow-scrolling: touch;
+}
+/* The profile, pinned under the image and scrolled in step with it. Its own
+   bar hides: the image's scrollbar is the one you drive. */
+.dev-rail {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-radius: 6px;
+  scrollbar-width: none;
+}
+.dev-rail::-webkit-scrollbar { display: none; }
+
+.dev-scroll canvas,
+.dev-rail canvas {
+  display: block;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+.dev-rail canvas { image-rendering: auto; }
+
+.dev-readout {
+  color: var(--dim);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 0 rgba(255, 232, 190, 0.05);
+}
+
+/* --------------------------------------------------------------- selection */
+
+/* While picking, the whole page is a crosshair and the canvas takes no drags -
+   the marquee is drawn by the picker, not by the browser. */
+body.dev-picking { cursor: crosshair; }
+body.dev-picking #stage { cursor: crosshair; }
+
+.dev-marquee {
+  position: absolute;
+  z-index: 50;
+  pointer-events: none;
+  border: 1px solid var(--lit);
+  background: rgba(240, 194, 116, 0.08);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+}
+.dev-marquee[hidden] { display: none; }

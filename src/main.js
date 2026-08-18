@@ -7,6 +7,7 @@ import { GravityInput } from './gravity.js';
 import { PokeInput } from './poke.js';
 import { Tuner } from './tuner.js';
 import { Hud } from './hud.js';
+import { DevMode } from './devmode.js';
 import { clamp, isTouchDevice } from './util.js';
 
 const params = new URLSearchParams(location.search);
@@ -174,6 +175,13 @@ layout(true);
 gravity.zBias = sand.zBias;
 hud.setMaterials(MATERIALS, materials.id);
 
+// The developer rig: pose presets, a simulation clock and the loupe. Nothing
+// of it is built or fetched until it is switched on, and there are three ways
+// in — long-press the menu button (the only one a phone has), Shift+G, or
+// ?dev. The choice is remembered, so a phone stays in dev mode across reloads.
+const dev = new DevMode({ canvas, gravity, renderer, hud, config: CONFIG });
+if (DevMode.wanted(params)) dev.toggle(true);
+
 // ---------------------------------------------------------------- input setup
 
 gravity.onShake = (strength) => sand.splash(strength);
@@ -223,6 +231,11 @@ window.addEventListener('keydown', (e) => {
   // While either list is open the keyboard belongs to it — otherwise arrowing
   // through the options also tilts the box, and space splashes it.
   if (hud.materialOpen || hud.menuOpen) return;
+  // Dev keys get first refusal, so a sim shortcut can never shadow one.
+  if (dev.handleKey(e.code, e.shiftKey)) {
+    e.preventDefault();
+    return;
+  }
   gravity.setKey(e.code, true);
   // Before the switch: the movement keys fall through to `default` and would
   // otherwise never get here.
@@ -283,10 +296,19 @@ function frame(now) {
 
   const t0 = performance.now();
 
-  gravity.update(dt);
+  // Dev mode owns the simulation clock — it can slow it or stop it. The frame
+  // clock is left alone on purpose: the box keeps redrawing while paused, so a
+  // pose can be swept and a metal's reflections watched over a body that is
+  // holding still. That is also why gravity falls back to the real dt when the
+  // sim is stopped, rather than freezing mid-ease.
+  const simDt = dev.scaleDt(dt);
+  dev.applyPose();
+  gravity.update(simDt > 0 ? simDt : dt);
   const magnitude = sand.gravityMagnitude;
-  poke.apply(sand, dt);
-  sand.step(dt, gravity.gx * magnitude, gravity.gy * magnitude, gravity.gz * magnitude);
+  if (simDt > 0) {
+    poke.apply(sand, simDt);
+    sand.step(simDt, gravity.gx * magnitude, gravity.gy * magnitude, gravity.gz * magnitude);
+  }
 
   // Parallax: shift the projection eye against the tilt, so tipping the device
   // lets you peek around the grains — a cheap but convincing depth cue.
@@ -307,6 +329,10 @@ function frame(now) {
   // size, its usual lever, leaves the total speck count unchanged.
   renderer.quality = tuner.scale;
   renderer.draw(sand);
+  // Has to be in the same task as the draw: the context is created without
+  // preserveDrawingBuffer, so the colour buffer only reliably holds this frame
+  // until we return to the browser.
+  dev.afterDraw();
 
   const workMs = performance.now() - t0;
 
@@ -357,5 +383,5 @@ window.SILT = {
   get sand() { return sand; },
   get material() { return sand; },
   materials, switchMaterial,
-  gravity, poke, tuner, renderer, hud, reset, applyQuality, CONFIG,
+  gravity, poke, tuner, renderer, hud, dev, reset, applyQuality, CONFIG,
 };

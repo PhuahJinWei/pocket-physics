@@ -190,6 +190,16 @@ export const CONFIG = {
     // body there to 2.19x its bulk value, 0.15 to 1.2x, 0.30 undershoots to
     // 0.6x. See WATER_FIELD_FRAGMENT.
     rayFloor: 0.15,
+    // Whether real particles are cut to the box at their own depth, as the wall
+    // images already are. Off, their blobs spill into the strip along each wall
+    // where the view ray has already left the box, and that spill is what
+    // shades as a band there (and, with the liquid on the back wall, as a thin
+    // film over the dry side wall). On, the strip reads as bulk and the film is
+    // gone — but the free surface then shows its true perspective at the side
+    // walls: measured, a 40px drop at the wall at 75 degrees screen-up, 16px
+    // upright, where off it stays flat within 4px. Toggle it live from the dev
+    // panel (Field) and judge in every pose. See WATER_FIELD_FRAGMENT.
+    clipReal: false,
     // The liquid composite refuses to take a surface normal from a strip along
     // each wall, because two things there are box geometry rather than liquid
     // shape: the capacity correction's leftovers, and the first row of
@@ -197,7 +207,25 @@ export const CONFIG = {
     // dead straight line of blobs the full width of the box. This is that strip
     // in particle radii; the composite takes whichever is wider, this or the
     // perspective band. Set by measurement — see WATER_COMPOSITE_FRAGMENT.
-    wallGuardRows: 2.5,
+    //
+    // It has to cover the first TWO rows, not one. Measured on settled mercury,
+    // the rows above the floor sit at 15, 33 and 51px with a 10.1px radius —
+    // 1.5, 3.3 and 5.0 radii, spaced about 1.8r rather than 2r because the
+    // liquid is packed. At 2.5 the guard reached 25px, so it swallowed the
+    // first row and left the SECOND lit: measured, a dark trough at 42px and a
+    // bright ridge at 29px above the floor, an 11.7-tone step across 6px, which
+    // reads as the floor of the box seen through the metal. Mercury shows it
+    // worst because it is non-wetting and stands off the glass, pushing every
+    // row further in. At 4.5 (45px) the step falls to 3.6 and stops being a
+    // line: the sharpest gradient moves elsewhere and becomes a ramp.
+    //
+    // The cost is bounded and was measured: the body's own texture is untouched
+    // (grain 51.38 either way, out to 5.5), only the margin loses relief, and
+    // water and honey do not change at all when settled and improve when
+    // sloshing (step 5.2 -> 2.7 water, 2.4 -> 1.9 honey). Past ~7 the guard
+    // starts eating into the body — grain falls to 48.8 — so do not raise it
+    // further to chase a wave crest, which is what the remaining swing is.
+    wallGuardRows: 4.5,
     // How far the back of the box falls into shadow: sand and specks fade
     // this fraction of the way toward `fog` at full depth. A colour, never a
     // coverage — sand deep in the box is opaque sand, just further away.

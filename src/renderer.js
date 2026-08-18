@@ -227,6 +227,7 @@ export class Renderer {
       radius: gl.getUniformLocation(this.fieldProgram, 'uRadius'),
       origin: gl.getUniformLocation(this.fieldProgram, 'uOrigin'),
       rayFloor: gl.getUniformLocation(this.fieldProgram, 'uRayFloor'),
+      clipReal: gl.getUniformLocation(this.fieldProgram, 'uClipReal'),
     };
     this.waterBuffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, this.waterBuffer);
@@ -862,6 +863,7 @@ export class Renderer {
     gl.uniform2f(this.fieldUniform.fieldSize, this.fieldW, this.fieldH);
     gl.uniform1f(this.fieldUniform.radius, fluid.radius);
     gl.uniform1f(this.fieldUniform.rayFloor, CONFIG.render.rayFloor);
+    gl.uniform1f(this.fieldUniform.clipReal, CONFIG.render.clipReal ? 1 : 0);
     // Sprite size is in field pixels, so it carries both the device ratio and
     // the field's own downscale.
     gl.uniform1f(
