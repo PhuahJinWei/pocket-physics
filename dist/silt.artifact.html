@@ -1055,16 +1055,24 @@ const CONFIG = {
     //   honey       18/1    8/-6   5/-9   3/-12
     //   mercury     82/69  55/48  44/40  35/35
     //
-    // 2.0 halves it while keeping real convergence (the box's back face still
-    // insets 23px on screen, against 43 at 1.0). Past that it stops paying:
+    // 2.0 halved it while keeping real convergence (the box's back face still
+    // insets 23px on screen, against 43 at 1.0). Past that it stopped paying:
     // mercury plateaus at 35 because it genuinely stands 20px off every wall
     // (non-wetting), and water goes negative — its ends rise, which is its real
     // wetting meniscus showing once the perspective slope stops masking it.
     //
+    // Raised again to 3.0 when `clipReal` was turned on below. That table was
+    // measured with the spill still filling the near-wall strip, which masked
+    // most of the slope; clipping stops the mask and the true drop appears —
+    // measured on water, 34px at the wall at 75 degrees and 22px upright. Focal
+    // is the only lever against it: 3.0 brings those to 22/12 and 4.5 to 16/5.
+    // 3.0 is the point where the slope stops reading as sag while the box still
+    // visibly converges; past it the box starts to read flat.
+    //
     // This costs less than it looks. Parallax — the eye sliding against tilt,
     // set below — is the strongest depth cue available on a phone because it is
     // coupled to the hand, and it is untouched by focal.
-    focal: 2.0,
+    focal: 3.0,
     // The liquid field divides each blob by how much of the box its pixel's
     // view ray actually crosses, so a brim-full box reads as full right up to
     // the glass instead of thinning out into it. A ray that only clips a corner
@@ -1073,17 +1081,51 @@ const CONFIG = {
     // by. Measured on water, at the very last pixel column: 0.05 boosted the
     // body there to 2.19x its bulk value, 0.15 to 1.2x, 0.30 undershoots to
     // 0.6x. See WATER_FIELD_FRAGMENT.
-    rayFloor: 0.15,
+    // Lowered from 0.15 when `clipReal` was turned on. The floor existed to stop
+    // the near-wall SPILL being amplified by a tiny divisor; with the spill
+    // clipped there is far less left to amplify, and the floor itself became
+    // the artefact — it under-corrects the outermost column, leaving it thin,
+    // hence pale, hence a bright hairline against the wall. Measured on water
+    // at 75 degrees, that column's excess over the body: 14.2 tones at 0.15,
+    // 6.2 at 0.08, 3.8 at 0.05, and no further gain below that. Everything from
+    // 2px in sits within 0.5 of the body, which is flatter than the 2.8 the
+    // unclipped path managed. Do not raise this again without turning clipReal
+    // off with it — the two are set together.
+    rayFloor: 0.05,
     // Whether real particles are cut to the box at their own depth, as the wall
-    // images already are. Off, their blobs spill into the strip along each wall
-    // where the view ray has already left the box, and that spill is what
-    // shades as a band there (and, with the liquid on the back wall, as a thin
-    // film over the dry side wall). On, the strip reads as bulk and the film is
-    // gone — but the free surface then shows its true perspective at the side
-    // walls: measured, a 40px drop at the wall at 75 degrees screen-up, 16px
-    // upright, where off it stays flat within 4px. Toggle it live from the dev
-    // panel (Field) and judge in every pose. See WATER_FIELD_FRAGMENT.
-    clipReal: false,
+    // images already are — that is, whether a pixel may only count liquid its
+    // own view ray actually reaches.
+    //
+    // Off, a blob's splat is ~3.5 diameters wide against a ball 1 diameter
+    // across, and those tails spill into the strip along each wall where the
+    // ray has already left the box. The capacity divide then amplifies the
+    // spill. With the liquid lying on the BACK wall (screen near flat, face up)
+    // that lands at 67% of bulk thickness — above the surface threshold, so
+    // liquid is drawn, but thin enough that its alpha is under 1. The result is
+    // a translucent film of liquid painted over the dry inner side wall, ending
+    // in a hard 15.6-tone edge where the thickness recovers and it goes opaque.
+    // That edge is the "line down the side" reported over and over; it is not
+    // the wall showing through the liquid, it is liquid drawn on the wall.
+    // Ruled out by ablation at that pose: relief 0, guard 9 and absorb 0 all
+    // leave it unchanged, so it is neither shading, the wall guard, nor
+    // Beer-Lambert.
+    //
+    // On, the strip reads bulk and the film is gone: the wall stays wall
+    // (tone 30) out to the wedge and the liquid starts clean. A second
+    // formulation was tried and measured — ramping by depth against the same
+    // integral capacityAt uses, so numerator and denominator share one geometry
+    // — and it produces IDENTICAL numbers, because it encodes the same physical
+    // condition. There is no third option short of rebuilding the capacity
+    // model, so do not go looking for one.
+    //
+    // The cost is that the free surface then shows its true perspective where
+    // it meets the side glass, which the spill had been hiding: measured on
+    // water, the waterline drops 34px at the wall at 75 degrees and 22px
+    // upright, against 1-4px with the spill. `focal` is the lever against that
+    // (see above) and is set to 3.0 for it, which halves the drop to 22/12
+    // while keeping most of the box's depth. Toggle live from the dev panel
+    // under Field. See WATER_FIELD_FRAGMENT.
+    clipReal: true,
     // The liquid composite refuses to take a surface normal from a strip along
     // each wall, because two things there are box geometry rather than liquid
     // shape: the capacity correction's leftovers, and the first row of
