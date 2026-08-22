@@ -36,11 +36,24 @@ import { Grid } from './grid.js';
 import { clamp, makeRandom } from './util.js';
 
 export class Grains {
-  constructor(capacity) {
-    this.kind = 'sand';
-    this.label = 'Sand';
-    // Which pass in the renderer draws this.
-    this.render = 'grains';
+  /**
+   * @param {number} capacity
+   * @param {object} def Which granular material this is. `tuning` is the
+   *   solver's half (CONFIG.grains and anything layered over it) and `look` the
+   *   renderer's (CONFIG.sand and friends); everything that separates one
+   *   granular material from another lives in those two objects, so a new one
+   *   is a config entry rather than a subclass. Mirrors Fluid's constructor.
+   */
+  constructor(capacity, def = {}) {
+    this.kind = def.kind || 'sand';
+    this.label = def.label || 'Sand';
+    this.tuning = def.tuning || CONFIG.grains;
+    this.look = def.look || CONFIG.sand;
+    // Which pass in the renderer draws this. Sand and anything else drawn as a
+    // MASS share one pass; marbles ask for their own, because a marble is the
+    // object rather than a grain of it. The renderer switches on this rather
+    // than on `kind`, so a new material picks a pass instead of adding a branch.
+    this.render = def.render || 'grains';
     // Lean the bed against the back wall: a granular pile holds whatever slope
     // it is given, and the lean is a strong 3D cue on a desktop with no sensor.
     this.zBias = CONFIG.input.zBias;
@@ -71,6 +84,19 @@ export class Grains {
     this.loose = f32();
     this.cover = f32();
     this.litAbove = f32();
+
+    // Rotation, for materials that ask for it. Spheres in a sliding-friction
+    // solver do not need it — sand never did — but a marble that slides
+    // instead of rolling is wrong in a way you can see the moment it carries
+    // any mark. Angular velocity in rad/s, and an orientation quaternion the
+    // renderer reads so the surface turns with the body.
+    this.wx = f32();
+    this.wy = f32();
+    this.wz = f32();
+    this.qx = f32();
+    this.qy = f32();
+    this.qz = f32();
+    this.qw = f32();
 
     this.rank = new Int32Array(capacity);
     // Per-grain radius (px). this.radius stays the mean, and most solver
@@ -133,7 +159,7 @@ export class Grains {
     this.kickZ = 0;
     this.kickTime = 0;
     this.substeps = 1;
-    this.iterations = CONFIG.sim.velocityIterations;
+    this.iterations = this.tuning.velocityIterations;
     this._carry = 0;
   }
 
@@ -149,10 +175,10 @@ export class Grains {
     this.diameter = radius * 2;
     // Must cover the speculative contact radius, or the 3x3x3 scan misses pairs
     // that are about to collide.
-    this.cellSize = this.diameter * CONFIG.sim.cellMul;
+    this.cellSize = this.diameter * this.tuning.cellMul;
     this.depth = Math.max(
       this.diameter * 2,
-      Math.min(CONFIG.bed.depthLayers * this.diameter, Math.min(width, height) * 0.22),
+      Math.min(this.tuning.depthLayers * this.diameter, Math.min(width, height) * 0.22),
     );
     this.bounds = { x0: 0, y0: 0, x1: width, y1: height };
     this.inner = {
@@ -210,7 +236,7 @@ export class Grains {
    * full; it is only made of fewer, larger grains.
    */
   preferredRadius(width, height, qualityScale = 1) {
-    const g = CONFIG.grain;
+    const g = this.tuning;
     const base = clamp(Math.min(width, height) / g.divisor, g.minRadius, g.maxRadius);
     return clamp(base / Math.cbrt(qualityScale), g.minRadius, g.coarseRadius);
   }
@@ -220,19 +246,19 @@ export class Grains {
     return this.idealCount();
   }
 
-  /** Grain count that fills `CONFIG.bed.fill` of the front view when settled. */
-  idealCount(fill = CONFIG.bed.fill) {
+  /** Grain count that fills `this.tuning.fill` of the front view when settled. */
+  idealCount(fill = this.tuning.fill) {
     const { x1, y1 } = this.bounds;
-    const v = CONFIG.grain.polydispersity;
+    const v = this.tuning.polydispersity;
     const grainVol = (4 / 3) * Math.PI * this.radius ** 3 * (1 + 3 * v * v);
     const volume = x1 * (fill * y1) * this.depth;
-    const ideal = (volume * CONFIG.bed.packing) / grainVol;
+    const ideal = (volume * this.tuning.packing) / grainVol;
     const ceiling = Math.min(
-      CONFIG.bed.maxGrains,
+      this.tuning.maxGrains,
       this.capacity,
-      (x1 * (0.6 * y1) * this.depth * CONFIG.bed.packing) / grainVol,
+      (x1 * (0.6 * y1) * this.depth * this.tuning.packing) / grainVol,
     );
-    return Math.round(clamp(ideal, CONFIG.bed.minGrains, ceiling));
+    return Math.round(clamp(ideal, this.tuning.minGrains, ceiling));
   }
 
   _spawnAt(i, x, y, z) {
@@ -245,7 +271,7 @@ export class Grains {
     this.vz[i] = 0;
     this.light[i] = 0.5;
     this.speed01[i] = 0;
-    const v = CONFIG.grain.polydispersity;
+    const v = this.tuning.polydispersity;
     this.rad[i] = this.radius * (1 - v + 2 * v * rand());
     // The renderer reads this as the sprite size ratio (and as the cluster
     // seed — any per-grain float works for hashing).
@@ -256,6 +282,28 @@ export class Grains {
     this.litAbove[i] = 0;
     this.airborne[i] = 0;
     this.loose[i] = 0;
+    this.wx[i] = 0;
+    this.wy[i] = 0;
+    this.wz[i] = 0;
+    // A starting tumble, so a fresh jar is not a grid of marbles all facing the
+    // same way — hashed FROM THE INDEX rather than drawn from this.random.
+    // Taking three numbers off the shared stream here would shift every later
+    // draw, and fill() uses that same stream for position jitter: sand would
+    // lay out differently for no reason but a feature it does not even use.
+    // (Found the hard way — it broke the bit-identical check.)
+    let hsh = Math.imul(i + 1, 0x9E3779B1) >>> 0;
+    hsh = (hsh ^ (hsh >>> 15)) >>> 0;
+    hsh = Math.imul(hsh, 0x85EBCA6B) >>> 0;
+    hsh = (hsh ^ (hsh >>> 13)) >>> 0;
+    const a0 = ((hsh & 1023) / 1023) * 6.283185307179586;
+    const c0 = (((hsh >>> 10) & 1023) / 1023) * 2 - 1;
+    const s0 = Math.sqrt(Math.max(0, 1 - c0 * c0));
+    const ang = (((hsh >>> 20) & 1023) / 1023) * 3.141592653589793;
+    const sa = Math.sin(ang);
+    this.qx[i] = s0 * Math.cos(a0) * sa;
+    this.qy[i] = s0 * Math.sin(a0) * sa;
+    this.qz[i] = c0 * sa;
+    this.qw[i] = Math.cos(ang);
   }
 
   /**
@@ -279,7 +327,7 @@ export class Grains {
     const b = this.inner;
     // Spacing must clear the largest possible pair, not the mean, or the
     // biggest grains spawn overlapped and hand the solver stored energy.
-    const d = this.diameter * (1 + CONFIG.grain.polydispersity);
+    const d = this.diameter * (1 + this.tuning.polydispersity);
     const pitch = d * 1.05;
     // With a half-pitch offset in both x and z, the nearest grain in the layer
     // below sits at sqrt((p/2)^2 + yp^2 + (p/2)^2); 0.78d keeps that over d.
@@ -320,7 +368,7 @@ export class Grains {
 
     const rand = this.random;
     const b = this.inner;
-    const pitch = this.diameter * (1 + CONFIG.grain.polydispersity) * 1.1;
+    const pitch = this.diameter * (1 + this.tuning.polydispersity) * 1.1;
     const perX = Math.max(1, Math.floor((b.x1 - b.x0) / pitch) + 1);
     const perZ = Math.max(1, Math.floor((b.z1 - b.z0) / pitch) + 1);
     const perLayer = perX * perZ;
@@ -372,6 +420,9 @@ export class Grains {
    */
   splash(strength) {
     const rand = this.random;
+    // The world's shake, not the material's: a jerk of the container is the
+    // same jerk whatever is inside it, and the fluid solver reads these from
+    // the same place. They are the keys CONFIG.grains deliberately leaves out.
     const cfg = CONFIG.sim;
 
     // Drive against gravity, not up the screen: on a tilted phone the sand
@@ -422,7 +473,7 @@ export class Grains {
   step(dtFrame, gx, gy, gz) {
     const n = this.n;
     if (n === 0) return;
-    const cfg = CONFIG.sim;
+    const cfg = this.tuning;
 
     // Fixed timestep with a carry, so the feel never depends on frame rate.
     const h = 1 / cfg.fixedHz;
@@ -475,7 +526,7 @@ export class Grains {
   applyGravity(h, gx, gy, gz) {
     const n = this.n;
     const { vx, vy, vz } = this;
-    const damp = Math.exp(-CONFIG.sim.airDrag * h);
+    const damp = Math.exp(-this.tuning.airDrag * h);
     const dvx = gx * h;
     const dvy = gy * h;
     const dvz = gz * h;
@@ -591,13 +642,13 @@ export class Grains {
     const cellOrder = grid.order;
     const cellOf = grid.cellOf;
     const D = this.diameter;
-    const skinD = CONFIG.sim.skin * D;
+    const skinD = this.tuning.skin * D;
     // The list is built with a skin so it outlives several substeps; whether a
     // pair is actually active is decided per substep in refreshGaps(). Scan
     // radius covers the largest possible pair plus skin, and the shading reach.
-    const RS = Math.max(D * (1 + CONFIG.grain.polydispersity) + skinD, D * CONFIG.sim.shadeRadius);
+    const RS = Math.max(D * (1 + this.tuning.polydispersity) + skinD, D * this.tuning.shadeRadius);
     const RS2 = RS * RS;
-    const DS2 = (D * CONFIG.sim.shadeRadius) ** 2;
+    const DS2 = (D * this.tuning.shadeRadius) ** 2;
     const B = this.bounds;
     const cap = this.contactCapacity;
 
@@ -717,7 +768,7 @@ export class Grains {
   listStale() {
     const n = this.n;
     const { x, y, z, refX, refY, refZ } = this;
-    const limit = CONFIG.sim.skin * this.diameter * 0.5;
+    const limit = this.tuning.skin * this.diameter * 0.5;
     const limit2 = limit * limit;
     for (let i = 0; i < n; i++) {
       const dx = x[i] - refX[i], dy = y[i] - refY[i], dz = z[i] - refZ[i];
@@ -737,7 +788,7 @@ export class Grains {
     const { ci, cj, cnx, cny, cnz, cgap, crest, cjn, cfx, cfy, cfz, active, x, y, z, rad } = this;
     const B = this.bounds;
     const depth = this.depth;
-    const margin = CONFIG.sim.contactMargin * this.diameter;
+    const margin = this.tuning.contactMargin * this.diameter;
     let a = 0;
     for (let c = 0; c < cnt; c++) {
       const i = ci[c];
@@ -791,18 +842,52 @@ export class Grains {
     const cnt = this.activeCount;
     if (cnt === 0) return;
     const { ci, cj, cnx, cny, cnz, cgap, cjn, cfx, cfy, cfz, cbounce, active, vx, vy, vz } = this;
+    const { wx, wy, wz, rad } = this;
     const invH = 1 / h;
-    const iters = CONFIG.sim.velocityIterations;
-    const mu = CONFIG.sim.friction;
-    const muWall = CONFIG.sim.wallFriction;
+    const iters = this.tuning.velocityIterations;
+    const mu = this.tuning.friction;
+    const muWall = this.tuning.wallFriction;
+
+    // Rolling.
+    //
+    // Off, this is a pure sliding-friction solver and every line below runs
+    // exactly as it always has — sand is bit-identical. On, friction stops
+    // being a force between two centres and becomes a force at the CONTACT
+    // POINT, which changes two things.
+    //
+    // First, what friction is trying to cancel. The surface of a spinning
+    // sphere is already moving: the velocity that matters is v + w x r, and a
+    // marble rolling without slipping has ZERO of it, which is precisely why
+    // it keeps going instead of being ground to a halt.
+    //
+    // Second, friction now feeds back as torque, t = r x f. For a sphere the
+    // contact sits on the line of centres, so r is parallel to the normal —
+    // which means the NORMAL impulse contributes no torque at all and only
+    // friction spins anything. That is the one simplification that keeps this
+    // cheap.
+    //
+    // The effective mass changes with it. A tangential impulse now has to
+    // shift the centre AND spin the body: for a unit sphere the angular share
+    // is |r x t|^2 / I = R^2 / (0.4 R^2) = 2.5 per body. Two grains come to
+    // 1 + 1 + 2.5 + 2.5 = 7 where sliding alone was 2; a wall (immovable, no
+    // spin of its own) comes to 1 + 2.5 = 3.5 where it was 1. Leaving the old
+    // 0.5 and 1.0 in place would over-apply friction by 3.5x and the bed
+    // buzzes itself apart.
+    const spin = this.tuning.rotation ? 1 : 0;
+    const tanPair = spin ? 1 / 7 : 0.5;
+    const tanWall = spin ? 1 / 3.5 : 1;
+    // 1 / I for a unit-mass sphere is 1 / (0.4 R^2); the R from the torque arm
+    // cancels one of them, leaving this per unit of (n x f).
+    const invInertia = 0.4;
 
     // Restitution, measured from the approach speed *before* the solve runs.
     // Only genuine impacts bounce: below the threshold a contact is resting,
     // and letting those bounce would make the whole bed buzz. Without any of
     // this, sand slammed into a wall absorbs every bit of its momentum and
     // stops dead, which is what kills the slosh-back.
-    const rest = CONFIG.sim.restitution;
-    const restCut = CONFIG.sim.restitutionCut * this.diameter;
+    const rest = this.tuning.restitution;
+    const restCut = this.tuning.restitutionCut * this.diameter;
+
     for (let a = 0; a < cnt; a++) {
       const c = active[a];
       const i = ci[c];
@@ -825,6 +910,23 @@ export class Grains {
       const pz = -cnz[c] * jn + cfz[c];
       vx[i] += px; vy[i] += py; vz[i] += pz;
       if (j >= 0) { vx[j] -= px; vy[j] -= py; vz[j] -= pz; }
+      // The stored friction is an impulse at the contact point, so re-applying
+      // it has to re-apply its torque as well — otherwise every step begins
+      // with linear grip the spin has not been told about, and a resting
+      // marble creeps.
+      if (spin) {
+        const fx = cfx[c], fy = cfy[c], fz = cfz[c];
+        const nx = cnx[c], ny = cny[c], nz = cnz[c];
+        const tx = ny * fz - nz * fy;
+        const ty = nz * fx - nx * fz;
+        const tz = nx * fy - ny * fx;
+        const ki = 1 / (invInertia * rad[i]);
+        wx[i] += tx * ki; wy[i] += ty * ki; wz[i] += tz * ki;
+        if (j >= 0) {
+          const kj = 1 / (invInertia * rad[j]);
+          wx[j] += tx * kj; wy[j] += ty * kj; wz[j] += tz * kj;
+        }
+      }
     }
 
     for (let it = 0; it < iters; it++) {
@@ -840,6 +942,7 @@ export class Grains {
         const target = gap > 0 ? -gap * invH : cbounce[c];
 
         if (j >= 0) {
+
           // Two unit masses: 1/mi + 1/mj = 2, so the impulse is halved.
           let rx = vx[j] - vx[i], ry = vy[j] - vy[i], rz = vz[j] - vz[i];
           const vn = rx * nx + ry * ny + rz * nz;
@@ -853,12 +956,21 @@ export class Grains {
           }
 
           rx = vx[j] - vx[i]; ry = vy[j] - vy[i]; rz = vz[j] - vz[i];
+          if (spin) {
+            // Surface velocity, not centre velocity: subtract each body's own
+            // spin at the contact. r_i = +rad_i * n and r_j = -rad_j * n, so
+            // both terms come out with the same sign.
+            const ri = rad[i], rj = rad[j];
+            rx -= rj * (wy[j] * nz - wz[j] * ny) + ri * (wy[i] * nz - wz[i] * ny);
+            ry -= rj * (wz[j] * nx - wx[j] * nz) + ri * (wz[i] * nx - wx[i] * nz);
+            rz -= rj * (wx[j] * ny - wy[j] * nx) + ri * (wx[i] * ny - wy[i] * nx);
+          }
           const vn2 = rx * nx + ry * ny + rz * nz;
           // Impulse that would cancel all remaining sliding, added to what this
           // contact already holds, then clamped as a whole.
-          let fx = cfx[c] + (rx - vn2 * nx) * 0.5;
-          let fy = cfy[c] + (ry - vn2 * ny) * 0.5;
-          let fz = cfz[c] + (rz - vn2 * nz) * 0.5;
+          let fx = cfx[c] + (rx - vn2 * nx) * tanPair;
+          let fy = cfy[c] + (ry - vn2 * ny) * tanPair;
+          let fz = cfz[c] + (rz - vn2 * nz) * tanPair;
           const cap = mu * cjn[c];
           const m2 = fx * fx + fy * fy + fz * fz;
           if (m2 > cap * cap) {
@@ -869,6 +981,15 @@ export class Grains {
           cfx[c] = fx; cfy[c] = fy; cfz[c] = fz;
           vx[i] += dfx; vy[i] += dfy; vz[i] += dfz;
           vx[j] -= dfx; vy[j] -= dfy; vz[j] -= dfz;
+          if (spin) {
+            const tx = ny * dfz - nz * dfy;
+            const ty = nz * dfx - nx * dfz;
+            const tz = nx * dfy - ny * dfx;
+            const ki = 1 / (invInertia * rad[i]);
+            const kj = 1 / (invInertia * rad[j]);
+            wx[i] += tx * ki; wy[i] += ty * ki; wz[i] += tz * ki;
+            wx[j] += tx * kj; wy[j] += ty * kj; wz[j] += tz * kj;
+          }
         } else {
           // Static wall: infinite mass, zero velocity.
           const vn = -(vx[i] * nx + vy[i] * ny + vz[i] * nz);
@@ -880,11 +1001,17 @@ export class Grains {
             vx[i] -= dj * nx; vy[i] -= dj * ny; vz[i] -= dj * nz;
           }
 
-          const rx = -vx[i], ry = -vy[i], rz = -vz[i];
+          let rx = -vx[i], ry = -vy[i], rz = -vz[i];
+          if (spin) {
+            const ri = rad[i];
+            rx -= ri * (wy[i] * nz - wz[i] * ny);
+            ry -= ri * (wz[i] * nx - wx[i] * nz);
+            rz -= ri * (wx[i] * ny - wy[i] * nx);
+          }
           const vn2 = rx * nx + ry * ny + rz * nz;
-          let fx = cfx[c] + (rx - vn2 * nx);
-          let fy = cfy[c] + (ry - vn2 * ny);
-          let fz = cfz[c] + (rz - vn2 * nz);
+          let fx = cfx[c] + (rx - vn2 * nx) * tanWall;
+          let fy = cfy[c] + (ry - vn2 * ny) * tanWall;
+          let fz = cfz[c] + (rz - vn2 * nz) * tanWall;
           const cap = muWall * cjn[c];
           const m2 = fx * fx + fy * fy + fz * fz;
           if (m2 > cap * cap) {
@@ -894,6 +1021,13 @@ export class Grains {
           const dfx = fx - cfx[c], dfy = fy - cfy[c], dfz = fz - cfz[c];
           cfx[c] = fx; cfy[c] = fy; cfz[c] = fz;
           vx[i] += dfx; vy[i] += dfy; vz[i] += dfz;
+          if (spin) {
+            const tx = ny * dfz - nz * dfy;
+            const ty = nz * dfx - nx * dfz;
+            const tz = nx * dfy - ny * dfx;
+            const ki = 1 / (invInertia * rad[i]);
+            wx[i] += tx * ki; wy[i] += ty * ki; wz[i] += tz * ki;
+          }
         }
       }
     }
@@ -917,14 +1051,14 @@ export class Grains {
     if (cnt === 0) return;
     const { ci, cj, cnx, cny, cnz, cgap, active, vx, vy, vz } = this;
     const invH = 1 / h;
-    const passes = CONFIG.sim.shockIterations;
+    const passes = this.tuning.shockIterations;
     // Only quasi-static contacts get the ground treatment. Treating the
     // supported grain as immovable is what holds a pile up, but it also dumps
     // the incoming momentum of a fast impact into "ground" instead of passing
     // it along the contact chain — so sand slamming into a wall is swallowed
     // rather than spraying back. Above this approach speed the symmetric,
     // momentum-conserving solve is left to handle it alone.
-    const gate = -CONFIG.sim.shockMaxApproach * this.diameter;
+    const gate = -this.tuning.shockMaxApproach * this.diameter;
 
     for (let p = 0; p < passes; p++) {
       for (let a = 0; a < cnt; a++) {
@@ -957,7 +1091,7 @@ export class Grains {
     const { x, y, z, vx, vy, vz } = this;
     // Nothing may cross more than about its own width per substep, or contacts
     // are found only once grains are already deep inside each other.
-    const maxV = (CONFIG.sim.maxTravel * this.diameter) / h;
+    const maxV = (this.tuning.maxTravel * this.diameter) / h;
     const maxV2 = maxV * maxV;
     for (let i = 0; i < n; i++) {
       let ux = vx[i], uy = vy[i], uz = vz[i];
@@ -970,6 +1104,55 @@ export class Grains {
       x[i] += ux * h;
       y[i] += uy * h;
       z[i] += uz * h;
+    }
+    if (this.tuning.rotation) this.integrateSpin(h);
+  }
+
+  /**
+   * Carry each body's orientation forward by its angular velocity.
+   *
+   * The quaternion is what the renderer reads: angular velocity alone would
+   * make a marble roll correctly and still LOOK like it was sliding, because
+   * nothing on its surface would move. dq/dt = 0.5 * w * q, integrated
+   * explicitly and renormalised, which is standard and is accurate enough at
+   * 120Hz that the drift never reaches the eye.
+   *
+   * Angular drag is separate from airDrag and much stronger than it looks it
+   * should be. A sphere on a flat floor rolling without slipping has no
+   * contact-point sliding for friction to resist, so nothing in the solver can
+   * ever slow it down — a marble given a nudge would circle the box forever.
+   * Real ones stop because they deform slightly and lose energy at the
+   * contact, which is rolling resistance; this stands in for it.
+   */
+  integrateSpin(h) {
+    const n = this.n;
+    const { wx, wy, wz, qx, qy, qz, qw } = this;
+    const keep = Math.exp(-this.tuning.angularDrag * h);
+    // Cap the spin the same way linear travel is capped, so one bad contact
+    // cannot hand a marble a rotation the integrator cannot represent.
+    const maxW = this.tuning.maxSpin;
+    const maxW2 = maxW * maxW;
+    for (let i = 0; i < n; i++) {
+      let ax = wx[i] * keep, ay = wy[i] * keep, az = wz[i] * keep;
+      const s2 = ax * ax + ay * ay + az * az;
+      if (s2 > maxW2) {
+        const k = maxW / Math.sqrt(s2);
+        ax *= k; ay *= k; az *= k;
+      }
+      wx[i] = ax; wy[i] = ay; wz[i] = az;
+      if (s2 < 1e-10) continue;
+
+      const bx = qx[i], by = qy[i], bz = qz[i], bw = qw[i];
+      const hh = 0.5 * h;
+      // (0, w) * q
+      const dw = -(ax * bx + ay * by + az * bz);
+      const dx = ay * bz - az * by + ax * bw;
+      const dy = az * bx - ax * bz + ay * bw;
+      const dz = ax * by - ay * bx + az * bw;
+      let nx = bx + dx * hh, ny = by + dy * hh, nz = bz + dz * hh, nw = bw + dw * hh;
+      const m = Math.sqrt(nx * nx + ny * ny + nz * nz + nw * nw) || 1;
+      const inv = 1 / m;
+      qx[i] = nx * inv; qy[i] = ny * inv; qz[i] = nz * inv; qw[i] = nw * inv;
     }
   }
 
@@ -984,11 +1167,11 @@ export class Grains {
   solvePosition() {
     const cnt = this.activeCount;
     const { ci, cj, cnx, cny, cnz, crest, active, x, y, z, rad } = this;
-    const iters = CONFIG.sim.positionIterations;
-    const beta = CONFIG.sim.positionBeta;
+    const iters = this.tuning.positionIterations;
+    const beta = this.tuning.positionBeta;
     const D = this.diameter;
-    const slop = CONFIG.sim.slop * D;
-    const maxFix = CONFIG.sim.maxCorrection * D;
+    const slop = this.tuning.slop * D;
+    const maxFix = this.tuning.maxCorrection * D;
     const B = this.bounds;
     const depth = this.depth;
 
@@ -1042,7 +1225,7 @@ export class Grains {
 
   updateShading(dt) {
     const n = this.n;
-    const cfg = CONFIG.sim;
+    const cfg = this.tuning;
     const { light, cover, contacts, litAbove, speed01, airborne, loose, vx, vy, vz } = this;
     const invCover = 1 / cfg.coverNorm;
     const invSpeed = 1 / this.speedNorm;

@@ -11,7 +11,7 @@
 
 import { CONFIG } from './config.js';
 // One line: tools/bundle.py resolves imports by matching single-line statements.
-import { SAND_FIELD_VERTEX, SAND_FIELD_FRAGMENT, SAND_COMPOSITE_VERTEX, SAND_COMPOSITE_FRAGMENT, SPECK_VERTEX, SPECK_FRAGMENT, WALL_VERTEX_SHADER, WALL_FRAGMENT_SHADER } from './shaders.js';
+import { SAND_FIELD_VERTEX, SAND_FIELD_FRAGMENT, SAND_COMPOSITE_VERTEX, SAND_COMPOSITE_FRAGMENT, SPECK_VERTEX, SPECK_FRAGMENT, MARBLE_VERTEX, MARBLE_FRAGMENT, WALL_VERTEX_SHADER, WALL_FRAGMENT_SHADER } from './shaders.js';
 import { WATER_FIELD_VERTEX, WATER_FIELD_FRAGMENT, WATER_COMPOSITE_VERTEX, WATER_COMPOSITE_FRAGMENT } from './water-shaders.js';
 import { makeRandom } from './util.js';
 
@@ -20,6 +20,8 @@ const STRIDE = FLOATS_PER_GRAIN * 4;
 const FLOATS_PER_SPECK = 9; // x,y,z | light, tone, size, phase | speed, airborne
 const SPECK_STRIDE = FLOATS_PER_SPECK * 4;
 const FLOATS_PER_DROP = 5; // x, y, z, speed, weight
+const FLOATS_PER_MARBLE = 11; // x, y, z | sizeJitter, hue, speed, light | quat xyzw
+const MARBLE_STRIDE = FLOATS_PER_MARBLE * 4;
 const DROP_STRIDE = FLOATS_PER_DROP * 4;
 
 // Speck layouts are drawn from a fixed table rather than hashed per frame:
@@ -202,6 +204,28 @@ export class Renderer {
       'uSpeckRelief', 'uSpeckRound', 'uGlint', 'uGlintRate', 'uTime',
       'uField', 'uInvCanvas', 'uSurface', 'uAirLight',
     ]);
+
+    this.marbleBuffer = gl.createBuffer();
+    this.marbleBufferBytes = 0;
+    this.marbleProgram = buildProgram(gl, MARBLE_VERTEX, MARBLE_FRAGMENT);
+    this.marbleAttrib = {
+      pos: gl.getAttribLocation(this.marbleProgram, 'aPos'),
+      data: gl.getAttribLocation(this.marbleProgram, 'aData'),
+      spin: gl.getAttribLocation(this.marbleProgram, 'aSpin'),
+    };
+    this.marbleUniform = uniforms(gl, this.marbleProgram, [
+      'uViewport', 'uFocal', 'uEye', 'uPointSize', 'uDepthRange', 'uMaxPoint',
+      'uIor', 'uInterior', 'uSky', 'uGround', 'uUp', 'uPitch', 'uEnvSharp',
+      'uLampAt', 'uLampWidth', 'uLampGain', 'uSaturation', 'uBodyTint', 'uCoreGain', 'uCore', 'uCoreSoft',
+      'uVane', 'uVaneWidth', 'uVaneTint', 'uSpecular', 'uSpecPower', 'uBurial',
+      'uFog', 'uDepthDim', 'uFogStart',
+    ]);
+    // How big a point this driver will actually rasterise. A marble sprite is
+    // an order of magnitude wider than a speck, and the guaranteed minimum in
+    // the spec is 1px — so this is read rather than assumed, and the shader
+    // clamps to it.
+    const range = gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE);
+    this.maxPointSize = (range && range[1]) || 64;
   }
 
   setupWaterPrograms() {
@@ -435,7 +459,144 @@ export class Renderer {
     // Switch on the pass a material asks for, not on which material it is:
     // every liquid takes the same one and differs only in its `look`.
     if (material.render === 'fluid') this.drawFluid(material, focal);
+    else if (material.render === 'marbles') this.drawMarbles(material, focal);
     else this.drawSand(material, focal);
+  }
+
+  // --------------------------------------------------------------- marbles
+
+  /**
+   * Marbles, packed FAR TO NEAR.
+   *
+   * This is the one pass that has to sort. Everything else in the app either
+   * accumulates additively (the fields, where order cannot matter) or draws a
+   * single full-screen triangle. Marbles are discrete alpha-blended sprites
+   * that genuinely overlap, and the context is created with `depth: false` —
+   * there is no depth buffer to sort them for us, and adding one would cost a
+   * buffer for the sake of a couple of hundred sprites. Sorting an index array
+   * is cheaper and exact: painter's algorithm, back of the box first.
+   *
+   * Insertion sort, because the order is almost always already correct — the
+   * marbles moved a few pixels since last frame — and it is linear on nearly
+   * sorted input where a comparison sort is not.
+   */
+  packMarbles(m) {
+    const n = Math.min(m.n, this.capacity);
+    const need = n * FLOATS_PER_MARBLE * 4;
+    if (this.marbleCpu === undefined || this.marbleCpu.length < n * FLOATS_PER_MARBLE) {
+      this.marbleCpu = new Float32Array(n * FLOATS_PER_MARBLE + 256 * FLOATS_PER_MARBLE);
+    }
+    if (this.marbleOrder === undefined || this.marbleOrder.length < n) {
+      this.marbleOrder = new Int32Array(n + 256);
+      this.marbleOrderCount = 0;
+    }
+    const order = this.marbleOrder;
+    // Rebuild the index list if the count changed, then re-sort by depth.
+    if (this.marbleOrderCount !== n) {
+      for (let i = 0; i < n; i++) order[i] = i;
+      this.marbleOrderCount = n;
+    }
+    const z = m.z;
+    for (let a = 1; a < n; a++) {
+      const v = order[a];
+      const key = z[v];
+      let b = a - 1;
+      while (b >= 0 && z[order[b]] < key) { order[b + 1] = order[b]; b--; }
+      order[b + 1] = v;
+    }
+
+    const cpu = this.marbleCpu;
+    const { x, y, sizeJitter, hueJitter, speed01, light, qx, qy, qz, qw } = m;
+    let o = 0;
+    for (let a = 0; a < n; a++) {
+      const i = order[a];
+      cpu[o] = x[i];
+      cpu[o + 1] = y[i];
+      cpu[o + 2] = z[i];
+      cpu[o + 3] = sizeJitter[i];
+      cpu[o + 4] = hueJitter[i];
+      cpu[o + 5] = speed01[i];
+      // How lit this body is where it sits — the solver already derives it from
+      // how buried the body is, and a pile without it reads as flat stickers.
+      cpu[o + 6] = light[i];
+      // Orientation, which is the entire reason the roll is visible: without a
+      // mark that turns with the body a rolling sphere and a sliding one draw
+      // the same pixels.
+      cpu[o + 7] = qx[i];
+      cpu[o + 8] = qy[i];
+      cpu[o + 9] = qz[i];
+      cpu[o + 10] = qw[i];
+      o += FLOATS_PER_MARBLE;
+    }
+    return n;
+  }
+
+  drawMarbles(marbles, focal) {
+    const gl = this.gl;
+    const s = marbles.look || CONFIG.marbleLook;
+    const n = this.packMarbles(marbles);
+    if (n === 0) return;
+
+    // Straight alpha, drawn far to near: these are solid objects that hide
+    // each other, not light being added together like the fields.
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.useProgram(this.marbleProgram);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.marbleBuffer);
+    const bytes = n * MARBLE_STRIDE;
+    if (bytes > this.marbleBufferBytes) {
+      gl.bufferData(gl.ARRAY_BUFFER, this.marbleCpu.byteLength, gl.DYNAMIC_DRAW);
+      this.marbleBufferBytes = this.marbleCpu.byteLength;
+    }
+    if (this.isWebGL2) {
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.marbleCpu, 0, n * FLOATS_PER_MARBLE);
+    } else {
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.marbleCpu.subarray(0, n * FLOATS_PER_MARBLE));
+    }
+    const ma = this.marbleAttrib;
+    gl.enableVertexAttribArray(ma.pos);
+    gl.vertexAttribPointer(ma.pos, 3, gl.FLOAT, false, MARBLE_STRIDE, 0);
+    gl.enableVertexAttribArray(ma.data);
+    gl.vertexAttribPointer(ma.data, 4, gl.FLOAT, false, MARBLE_STRIDE, 12);
+    gl.enableVertexAttribArray(ma.spin);
+    gl.vertexAttribPointer(ma.spin, 4, gl.FLOAT, false, MARBLE_STRIDE, 28);
+
+    const mu = this.marbleUniform;
+    const r = CONFIG.render;
+    gl.uniform2f(mu.uViewport, this.width, this.height);
+    gl.uniform1f(mu.uFocal, focal);
+    gl.uniform2f(mu.uEye, this.width * 0.5 + this.eyeX, this.height * 0.5 + this.eyeY);
+    gl.uniform1f(mu.uPointSize, marbles.diameter * this.dpr);
+    gl.uniform1f(mu.uDepthRange, marbles.depth);
+    gl.uniform1f(mu.uMaxPoint, this.maxPointSize);
+    gl.uniform1f(mu.uIor, s.ior);
+    gl.uniform3fv(mu.uInterior, s.interior);
+    gl.uniform3fv(mu.uSky, s.sky);
+    gl.uniform3fv(mu.uGround, s.ground);
+    gl.uniform2f(mu.uUp, this.tiltUp[0], this.tiltUp[1]);
+    gl.uniform1f(mu.uPitch, this.tiltPitch * s.pitchGain);
+    gl.uniform1f(mu.uEnvSharp, s.envSharp);
+    gl.uniform1f(mu.uLampAt, s.lampAt);
+    gl.uniform1f(mu.uLampWidth, s.lampWidth);
+    gl.uniform1f(mu.uLampGain, s.lampGain);
+    gl.uniform1f(mu.uSaturation, s.saturation);
+    gl.uniform1f(mu.uBodyTint, s.bodyTint);
+    gl.uniform1f(mu.uCoreGain, s.coreGain);
+    gl.uniform1f(mu.uCore, s.core);
+    gl.uniform1f(mu.uCoreSoft, s.coreSoft);
+    gl.uniform1f(mu.uVane, s.vane);
+    gl.uniform1f(mu.uVaneWidth, s.vaneWidth);
+    gl.uniform1f(mu.uVaneTint, s.vaneTint);
+    gl.uniform1f(mu.uSpecular, s.specular);
+    gl.uniform1f(mu.uSpecPower, s.specPower);
+    gl.uniform1f(mu.uBurial, s.burial);
+    gl.uniform3fv(mu.uFog, r.fog);
+    gl.uniform1f(mu.uDepthDim, r.depthDim);
+    gl.uniform1f(mu.uFogStart, r.fogStart);
+
+    gl.drawArrays(gl.POINTS, 0, n);
+    gl.disableVertexAttribArray(ma.pos);
+    gl.disableVertexAttribArray(ma.data);
+    gl.disableVertexAttribArray(ma.spin);
   }
 
   // ------------------------------------------------------------------ sand
@@ -482,12 +643,14 @@ export class Renderer {
    * right one to give up — fewer specks read as slightly smoother sand, where
    * fewer grains read as less sand.
    */
-  speckCountFor(radius) {
-    const s = CONFIG.sand;
+  speckCountFor(radius, look = CONFIG.sand) {
+    const s = look;
     const speckArea = (s.speckPx * 0.5) ** 2;
     const coverage = s.speckCoverage * Math.min(1, Math.max(s.speckMinQuality, this.quality));
     const want = coverage * (radius * radius) / Math.max(speckArea, 1e-3);
-    return Math.max(1, Math.min(s.speckMax, Math.round(want)));
+    // The speck table is built once, with CONFIG.sand.speckMax rows per seed, so
+    // a material asking for more than that would index past the end of it.
+    return Math.max(1, Math.min(s.speckMax, CONFIG.sand.speckMax, Math.round(want)));
   }
 
   /**
@@ -496,9 +659,9 @@ export class Renderer {
    * layout for a grain comes from the table row picked by its own random.
    */
   packSpecks(sand) {
-    const s = CONFIG.sand;
+    const s = sand.look || CONFIG.sand;
     const n = Math.min(sand.n, this.capacity);
-    const per = this.speckCountFor(sand.radius);
+    const per = this.speckCountFor(sand.radius, s);
     this.specksPerGrain = per;
     // Sand in flight is drawn by its specks alone, so it gets more of them —
     // a splash wants to read as spray, and a handful of specks spread over a
@@ -561,8 +724,15 @@ export class Renderer {
 
   drawSand(sand, focal) {
     const gl = this.gl;
-    const s = CONFIG.sand;
+    // The material's own palette. Every granular material takes this same pass;
+    // what separates them is this object and the solver tuning beside it.
+    const s = sand.look || CONFIG.sand;
     const r = CONFIG.render;
+    // deep/mid/lit have always lived in CONFIG.render, which made the bed's
+    // colour a property of the renderer rather than of what is in the box. A
+    // look may now carry its own; one that does not falls through to the
+    // original, so sand is untouched.
+    const pal = s.deep ? s : r;
     const deviceW = this.canvas.width;
     const deviceH = this.canvas.height;
     const eyeX = this.width * 0.5 + this.eyeX;
@@ -634,9 +804,9 @@ export class Renderer {
     gl.uniform1i(cu.uField, 0);
     gl.uniform2f(cu.uTexel, 1 / this.fieldW, 1 / this.fieldH);
     gl.uniform1f(cu.uDpr, this.dpr);
-    gl.uniform3fv(cu.uDeep, r.deep);
-    gl.uniform3fv(cu.uMid, r.mid);
-    gl.uniform3fv(cu.uLit, r.lit);
+    gl.uniform3fv(cu.uDeep, pal.deep);
+    gl.uniform3fv(cu.uMid, pal.mid);
+    gl.uniform3fv(cu.uLit, pal.lit);
     gl.uniform1f(cu.uSurface, s.surface);
     gl.uniform1f(cu.uSoft, s.soft);
     gl.uniform1f(cu.uDither, s.dither);
@@ -694,9 +864,9 @@ export class Renderer {
     gl.uniform2f(su.uEye, eyeX, eyeY);
     gl.uniform1f(su.uPointSize, s.speckPx * this.dpr);
     gl.uniform1f(su.uDepthRange, sand.depth);
-    gl.uniform3fv(su.uDeep, r.deep);
-    gl.uniform3fv(su.uMid, r.mid);
-    gl.uniform3fv(su.uLit, r.lit);
+    gl.uniform3fv(su.uDeep, pal.deep);
+    gl.uniform3fv(su.uMid, pal.mid);
+    gl.uniform3fv(su.uLit, pal.lit);
     gl.uniform1f(su.uAlpha, s.speckAlpha);
     gl.uniform1f(su.uDepthFade, s.speckDepthFade);
     gl.uniform3fv(su.uFog, r.fog);

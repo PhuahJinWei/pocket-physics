@@ -475,3 +475,194 @@ void main() {
   gl_FragColor = vec4(uWallColor * vShade, 1.0);
 }
 `;
+
+// ---------------------------------------------------------------- marbles
+//
+// Marbles are the one material NOT drawn as a mass. Sand and the liquids are
+// fields because their particles must not be visible; a marble IS the object,
+// so it gets drawn as itself — one point sprite per marble, shaded as a glass
+// sphere.
+//
+// The sprite is a billboard, and the sphere is entirely in the fragment shader:
+// the normal comes from the sprite's own coordinates, which is exact for a
+// sphere and costs nothing. Three things then do the work of saying "glass":
+// a tight specular highlight, a Fresnel rim that brightens toward the
+// silhouette, and — the one that actually sells it — a bright spot on the side
+// AWAY from the light, because a glass sphere is a lens and focuses what passes
+// through it. Without that last term the same shader reads as a snooker ball.
+//
+// Note it never rotates, and cannot: the solver has no rotational degree of
+// freedom. That is invisible here only because the shading is radially
+// symmetric about the light rather than painted on the surface — the moment a
+// marble gets a swirl or a stripe, the missing spin becomes obvious.
+export const MARBLE_VERTEX = `
+precision highp float;
+
+attribute vec3 aPos;    // marble centre, CSS px + depth
+attribute vec4 aData;   // x: size ratio, y: hue, z: speed, w: burial light
+attribute vec4 aSpin;   // orientation quaternion, xyzw
+
+uniform vec2 uViewport;
+uniform float uFocal;
+uniform vec2 uEye;
+uniform float uPointSize;   // marble diameter in device px
+uniform float uDepthRange;
+uniform float uMaxPoint;    // hardware ceiling on gl_PointSize
+
+varying float vHue;
+varying float vDepth;
+varying float vSpeed;
+varying float vLight;
+varying vec4 vSpin;
+
+void main() {
+  float persp = uFocal / (uFocal + aPos.z);
+  vec2 p = uEye + (aPos.xy - uEye) * persp;
+  vec2 unit = p / uViewport;
+  gl_Position = vec4(unit.x * 2.0 - 1.0, 1.0 - unit.y * 2.0, 0.0, 1.0);
+  // Clamped, because a marble sprite is far larger than a speck and drivers
+  // differ on how big a point may be. Past the ceiling the sprite silently
+  // stops growing, which is a wrong size rather than a missing marble.
+  gl_PointSize = min(uPointSize * aData.x * persp, uMaxPoint);
+  vHue = aData.y;
+  vDepth = clamp(aPos.z / uDepthRange, 0.0, 1.0);
+  vSpeed = aData.z;
+  vLight = aData.w;
+  vSpin = aSpin;
+}
+`;
+
+export const MARBLE_FRAGMENT = `
+precision highp float;
+
+varying float vHue;
+varying float vDepth;
+varying float vSpeed;
+varying float vLight;
+varying vec4 vSpin;
+
+uniform float uIor;        // ratio n_air / n_glass, so ~0.66
+uniform vec3 uInterior;    // what shows THROUGH: the dark of the box behind
+uniform vec3 uSky;         // reflected environment, above the horizon
+uniform vec3 uGround;      // and below it
+uniform vec2 uUp;          // world up in screen space, from the tilt
+uniform float uPitch;      // how far face-up the device is held
+uniform float uEnvSharp;
+uniform float uLampAt;
+uniform float uLampWidth;
+uniform float uLampGain;
+uniform float uSaturation;
+uniform float uBodyTint;   // colour wash through the whole body
+uniform float uCoreGain;   // brightness of the dense knot at the centre
+uniform float uCore;       // core radius, fraction of the marble
+uniform float uCoreSoft;
+uniform float uVane;
+uniform float uVaneWidth;  // vane disc radius
+uniform float uVaneTint;
+uniform float uSpecular;
+uniform float uSpecPower;
+uniform float uBurial;     // how much a buried marble darkens
+uniform vec3 uFog;
+uniform float uDepthDim;
+uniform float uFogStart;
+
+// Rotate a vector by a quaternion. Used with the CONJUGATE below, to carry the
+// surface normal from the screen back into the marble's own frame — which is
+// what lets a mark stay painted on the glass while the glass turns.
+vec3 qrot(vec4 q, vec3 v) {
+  return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
+}
+
+// Hue to RGB, so one float per marble buys the whole jar of colours.
+vec3 hue2rgb(float h) {
+  vec3 k = vec3(1.0, 2.0 / 3.0, 1.0 / 3.0);
+  vec3 p = abs(fract(vec3(h) + k) * 6.0 - 3.0);
+  return clamp(p - 1.0, 0.0, 1.0);
+}
+
+void main() {
+  vec2 uv = gl_PointCoord * 2.0 - 1.0;
+  float r2 = dot(uv, uv);
+  if (r2 > 1.0) discard;
+  float zc = sqrt(max(1.0 - r2, 0.0));
+  // gl_PointCoord runs DOWN the sprite; negate so +y is up the screen and this
+  // light agrees with every other pass.
+  vec3 nrm = vec3(uv.x, -uv.y, zc);
+  vec3 view = vec3(0.0, 0.0, 1.0);
+  vec3 lightDir = normalize(vec3(-0.40, 0.55, 0.73));
+
+  // Glass is a Fresnel mix of what it REFLECTS and what it TRANSMITS, and
+  // almost none of it is diffuse. Shading a marble with Lambert and an ambient
+  // term is what makes it read as clay: a diffuse ball is the same brightness
+  // whichever way you look at it, where glass is nearly black head-on and a
+  // mirror at the edges. Schlick, with F0 = 0.04 for glass against air.
+  float cosT = clamp(zc, 0.0, 1.0);
+  float fres = 0.04 + 0.96 * pow(1.0 - cosT, 5.0);
+
+  // ---- what it transmits
+  //
+  // The ray bends on the way in, and everything inside is seen ALONG THAT BENT
+  // RAY. That is the whole reason a marble's core looks magnified and swims as
+  // you turn it; a flat disc painted on the sprite cannot do either.
+  vec3 rd = refract(-view, nrm, uIor);
+  vec3 p = nrm;                       // entry point on the unit sphere
+
+  // The core is a real sphere at the centre, so the test is the distance from
+  // the centre to the refracted ray.
+  float tc = -dot(p, rd);
+  float dCore = length(p + rd * tc);
+  float core = 1.0 - smoothstep(uCore - uCoreSoft, uCore + uCoreSoft, dCore);
+
+  vec3 tint = mix(vec3(1.0), hue2rgb(vHue), uSaturation);
+  // The glass BODY carries only a wash of colour — a real cat's eye is mostly
+  // clear, and the colour lives in the vane suspended in the middle of it. The
+  // core is a small denser knot at the centre, not the whole marble: at 0.52 it
+  // swallowed the sphere and every marble came out as a solid coloured ball
+  // with a rim, which is the plastic look again by another route.
+  vec3 transmit = uInterior + tint * uBodyTint;
+  transmit = mix(transmit, tint * uCoreGain, core);
+
+  // The vane is a flat disc through the middle in the marble's OWN frame, and
+  // it is found the same way: carry the refracted ray into object space and
+  // see where it crosses the disc's plane. Being a real disc rather than a
+  // band on the normal is what makes it foreshorten to a slot edge-on and
+  // open out to a circle face-on — which is what actually reads as spin.
+  vec4 conj = vec4(-vSpin.xyz, vSpin.w);
+  vec3 pObj = qrot(conj, p);
+  vec3 rObj = qrot(conj, rd);
+  float denom = abs(rObj.y) < 1e-4 ? 1e-4 : rObj.y;
+  float tv = -pObj.y / denom;
+  vec3 hit = pObj + rObj * tv;
+  float rr = length(hit.xz);
+  float vane = tv > 0.0 ? (1.0 - smoothstep(uVaneWidth * 0.72, uVaneWidth, rr)) : 0.0;
+  vane *= uVane;
+  transmit = mix(transmit, mix(vec3(1.0), hue2rgb(fract(vHue + 0.5)), uVaneTint), vane);
+
+  // ---- what it reflects
+  //
+  // The same room mercury reflects, for the same reason: a reflection has to
+  // stay put while the object moves, or it reads as paint. Anchored to gravity
+  // so tipping the box sweeps the horizon across every marble at once.
+  vec3 refl = reflect(-view, nrm);
+  float tip = clamp(dot(refl.xy, uUp) * uEnvSharp + uPitch, -1.0, 1.0);
+  vec3 env = mix(uGround, uSky, smoothstep(-0.6, 0.6, tip));
+  float d = tip - uLampAt;
+  env += uLampGain * exp(-d * d * uLampWidth);
+
+  vec3 c = mix(transmit, env, fres);
+
+  // One tight highlight, the specular reflection of the lamp itself.
+  vec3 half3 = normalize(lightDir + view);
+  c += pow(max(dot(nrm, half3), 0.0), uSpecPower) * uSpecular;
+
+  // A marble buried in the pile gets less light, exactly as a grain of sand
+  // does — the solver already works this out per body from how covered it is,
+  // and ignoring it is what makes a heap look like stickers on a page.
+  c *= mix(1.0 - uBurial, 1.0, vLight);
+
+  c = mix(c, uFog, uDepthDim * smoothstep(uFogStart, 1.0, vDepth));
+
+  float a = smoothstep(1.0, 0.965, r2);
+  gl_FragColor = vec4(c, a);
+}
+`;

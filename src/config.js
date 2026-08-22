@@ -663,6 +663,128 @@ export const CONFIG = {
   },
 };
 
+// -------------------------------------------------------------------- grains
+//
+// The granular solver's tuning, as one object per material — the same shape the
+// fluid side has had since honey, and for the same reason. Grains read `sim`,
+// `bed` and `grain` directly for a long time, which meant the solver was
+// hardcoded to exactly one granular material: a second one would silently run
+// on sand's friction, restitution and grain-size distribution however its own
+// config was written. That is the identical bug the fluid solver had (see the
+// note in Fluid.step) and it is invisible until the new material needs a knob
+// to differ, so it is fixed here BEFORE there is a second material rather than
+// after.
+//
+// The three source objects have no overlapping keys, so the merge is lossless
+// and every existing knob keeps its name and value — sand is unchanged.
+//
+// `gravityScale` and the splash constants are deliberately left OUT and still
+// read from CONFIG.sim: they are properties of the world, not of the material,
+// and the fluid solver reads them from there too. Copying them here would mean
+// editing CONFIG.sim moved the liquids and not the sand.
+const { gravityScale, splashAccel, splashGain, splashDuration, splashLean, ...GRANULAR } = CONFIG.sim;
+CONFIG.grains = Object.assign({}, GRANULAR, CONFIG.bed, CONFIG.grain, {
+  // Whether bodies spin. Off for sand, and off is the original solver to the
+  // bit — a granular mass drawn as a field has no visible surface to turn, so
+  // the whole cost would buy nothing. See Grains.solveVelocity.
+  rotation: 0,
+  // Rolling resistance, per second. Only meaningful with rotation on, and it
+  // has to exist: a sphere rolling without slipping presents no sliding for
+  // friction to bite on, so nothing else in the solver can ever slow one down.
+  // Measured on a single marble shoved at 320 px/s across a clear floor, by how
+  // far it travels in three seconds: 1.6 -> 382px, 0.5 -> 545px, 0.15 -> 620px
+  // and still going. 0.6 keeps a marble travelling like a marble while still
+  // letting a jar of them come to rest.
+  angularDrag: 0.6,
+  // Ceiling on spin, rad/s.
+  maxSpin: 40,
+});
+
+// ------------------------------------------------------------------ marbles
+//
+// The granular solver again, but the first material that is not drawn as a
+// mass: a marble IS the object, so it gets its own pass (see MARBLE_FRAGMENT).
+// That is the whole reason it reads as a different substance rather than as
+// recoloured sand — the speck texture is what says "sand", and marbles do not
+// use it at all.
+//
+// What differs from sand, in order of how much it matters:
+//
+//   radius     Twenty-odd pixels instead of eight, which is the point: you are
+//              meant to track individual objects. Count follows from the same
+//              volume maths sand uses, so a bigger grain simply means fewer —
+//              about 150 of them rather than 2500.
+//   friction   Glass on glass, and low. Sand's 0.28 is what holds a slope; a
+//              heap of marbles should not hold one, it should find its level.
+//   restitution Raised. Marbles click off each other and off the glass, and
+//              this is the one material where that is the whole character.
+//   polydispersity  Nearly off. Sand needs a spread or identical spheres
+//              crystallise into a visible lattice; marbles ARE near-identical
+//              and a regular pack is what a jar of them genuinely does, so
+//              only enough spread is left to keep the pack from looking
+//              machined.
+CONFIG.marble = Object.assign({}, CONFIG.grains, {
+  divisor: 27,
+  minRadius: 14,
+  maxRadius: 26,
+  coarseRadius: 32,
+  polydispersity: 0.08,
+  rotation: 1,
+  friction: 0.08,
+  wallFriction: 0.05,
+  restitution: 0.45,
+  // In grain diameters per second, and a marble diameter is now large, so this
+  // has to come down or nothing ever counts as an impact and none of them ever
+  // bounce at all.
+  restitutionCut: 2.5,
+  airDrag: 0.05,
+  // Fewer layers than sand: marbles are big, and a box five diameters deep
+  // would hide most of them behind each other.
+  depthLayers: 3.0,
+  fill: 0.30,
+  minGrains: 40,
+});
+
+CONFIG.marbleLook = {
+  // Air into glass. Everything inside the marble is seen along the ray this
+  // bends, which is what makes the core magnify and swim as the body turns.
+  ior: 1.0 / 1.52,
+  // What shows THROUGH a marble. The box behind it is nearly black, and that
+  // is the point: glass is dark where it transmits and bright only where it
+  // reflects, and that contrast is most of what separates it from plastic.
+  interior: [0.045, 0.05, 0.065],
+  // The room it reflects, anchored to gravity so tipping the box sweeps the
+  // horizon across the whole jar at once. Same idea as mercury.
+  sky: [0.62, 0.68, 0.80],
+  ground: [0.16, 0.13, 0.10],
+  envSharp: 1.5,
+  pitchGain: 0.45,
+  lampAt: 0.55,
+  lampWidth: 26,
+  lampGain: 0.45,
+  saturation: 0.80,
+  bodyTint: 0.16,
+  coreGain: 0.55,
+  // Core radius as a fraction of the marble, measured against the REFRACTED
+  // ray, so it is a real sphere inside the glass rather than a disc on the
+  // sprite. Well inside, leaving a ring of clear glass at the rim.
+  core: 0.26,
+  coreSoft: 0.16,
+  // The cat's eye: a flat disc through the middle in the body's own frame.
+  vane: 0.85,
+  // Radius of the disc IN THE GLASS, which is not what you see: the sphere is
+  // a lens, so it comes out magnified by about 1.4x. 0.42 reads as a vane
+  // filling a little over half the marble face-on, which is a cat's eye; at
+  // 0.60 it swelled to fill nearly the whole face and went back to looking
+  // like a solid coloured ball.
+  vaneWidth: 0.42,
+  vaneTint: 0.72,
+  specular: 1.15,
+  specPower: 90,
+  // How far a fully buried marble darkens.
+  burial: 0.55,
+};
+
 // --------------------------------------------------------------------- honey
 //
 // The same solver and the same two passes as water — a liquid is a liquid — so

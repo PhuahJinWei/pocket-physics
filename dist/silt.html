@@ -1559,6 +1559,128 @@ const CONFIG = {
   },
 };
 
+// -------------------------------------------------------------------- grains
+//
+// The granular solver's tuning, as one object per material — the same shape the
+// fluid side has had since honey, and for the same reason. Grains read `sim`,
+// `bed` and `grain` directly for a long time, which meant the solver was
+// hardcoded to exactly one granular material: a second one would silently run
+// on sand's friction, restitution and grain-size distribution however its own
+// config was written. That is the identical bug the fluid solver had (see the
+// note in Fluid.step) and it is invisible until the new material needs a knob
+// to differ, so it is fixed here BEFORE there is a second material rather than
+// after.
+//
+// The three source objects have no overlapping keys, so the merge is lossless
+// and every existing knob keeps its name and value — sand is unchanged.
+//
+// `gravityScale` and the splash constants are deliberately left OUT and still
+// read from CONFIG.sim: they are properties of the world, not of the material,
+// and the fluid solver reads them from there too. Copying them here would mean
+// editing CONFIG.sim moved the liquids and not the sand.
+const { gravityScale, splashAccel, splashGain, splashDuration, splashLean, ...GRANULAR } = CONFIG.sim;
+CONFIG.grains = Object.assign({}, GRANULAR, CONFIG.bed, CONFIG.grain, {
+  // Whether bodies spin. Off for sand, and off is the original solver to the
+  // bit — a granular mass drawn as a field has no visible surface to turn, so
+  // the whole cost would buy nothing. See Grains.solveVelocity.
+  rotation: 0,
+  // Rolling resistance, per second. Only meaningful with rotation on, and it
+  // has to exist: a sphere rolling without slipping presents no sliding for
+  // friction to bite on, so nothing else in the solver can ever slow one down.
+  // Measured on a single marble shoved at 320 px/s across a clear floor, by how
+  // far it travels in three seconds: 1.6 -> 382px, 0.5 -> 545px, 0.15 -> 620px
+  // and still going. 0.6 keeps a marble travelling like a marble while still
+  // letting a jar of them come to rest.
+  angularDrag: 0.6,
+  // Ceiling on spin, rad/s.
+  maxSpin: 40,
+});
+
+// ------------------------------------------------------------------ marbles
+//
+// The granular solver again, but the first material that is not drawn as a
+// mass: a marble IS the object, so it gets its own pass (see MARBLE_FRAGMENT).
+// That is the whole reason it reads as a different substance rather than as
+// recoloured sand — the speck texture is what says "sand", and marbles do not
+// use it at all.
+//
+// What differs from sand, in order of how much it matters:
+//
+//   radius     Twenty-odd pixels instead of eight, which is the point: you are
+//              meant to track individual objects. Count follows from the same
+//              volume maths sand uses, so a bigger grain simply means fewer —
+//              about 150 of them rather than 2500.
+//   friction   Glass on glass, and low. Sand's 0.28 is what holds a slope; a
+//              heap of marbles should not hold one, it should find its level.
+//   restitution Raised. Marbles click off each other and off the glass, and
+//              this is the one material where that is the whole character.
+//   polydispersity  Nearly off. Sand needs a spread or identical spheres
+//              crystallise into a visible lattice; marbles ARE near-identical
+//              and a regular pack is what a jar of them genuinely does, so
+//              only enough spread is left to keep the pack from looking
+//              machined.
+CONFIG.marble = Object.assign({}, CONFIG.grains, {
+  divisor: 27,
+  minRadius: 14,
+  maxRadius: 26,
+  coarseRadius: 32,
+  polydispersity: 0.08,
+  rotation: 1,
+  friction: 0.08,
+  wallFriction: 0.05,
+  restitution: 0.45,
+  // In grain diameters per second, and a marble diameter is now large, so this
+  // has to come down or nothing ever counts as an impact and none of them ever
+  // bounce at all.
+  restitutionCut: 2.5,
+  airDrag: 0.05,
+  // Fewer layers than sand: marbles are big, and a box five diameters deep
+  // would hide most of them behind each other.
+  depthLayers: 3.0,
+  fill: 0.30,
+  minGrains: 40,
+});
+
+CONFIG.marbleLook = {
+  // Air into glass. Everything inside the marble is seen along the ray this
+  // bends, which is what makes the core magnify and swim as the body turns.
+  ior: 1.0 / 1.52,
+  // What shows THROUGH a marble. The box behind it is nearly black, and that
+  // is the point: glass is dark where it transmits and bright only where it
+  // reflects, and that contrast is most of what separates it from plastic.
+  interior: [0.045, 0.05, 0.065],
+  // The room it reflects, anchored to gravity so tipping the box sweeps the
+  // horizon across the whole jar at once. Same idea as mercury.
+  sky: [0.62, 0.68, 0.80],
+  ground: [0.16, 0.13, 0.10],
+  envSharp: 1.5,
+  pitchGain: 0.45,
+  lampAt: 0.55,
+  lampWidth: 26,
+  lampGain: 0.45,
+  saturation: 0.80,
+  bodyTint: 0.16,
+  coreGain: 0.55,
+  // Core radius as a fraction of the marble, measured against the REFRACTED
+  // ray, so it is a real sphere inside the glass rather than a disc on the
+  // sprite. Well inside, leaving a ring of clear glass at the rim.
+  core: 0.26,
+  coreSoft: 0.16,
+  // The cat's eye: a flat disc through the middle in the body's own frame.
+  vane: 0.85,
+  // Radius of the disc IN THE GLASS, which is not what you see: the sphere is
+  // a lens, so it comes out magnified by about 1.4x. 0.42 reads as a vane
+  // filling a little over half the marble face-on, which is a cat's eye; at
+  // 0.60 it swelled to fill nearly the whole face and went back to looking
+  // like a solid coloured ball.
+  vaneWidth: 0.42,
+  vaneTint: 0.72,
+  specular: 1.15,
+  specPower: 90,
+  // How far a fully buried marble darkens.
+  burial: 0.55,
+};
+
 // --------------------------------------------------------------------- honey
 //
 // The same solver and the same two passes as water — a liquid is a liquid — so
@@ -1971,11 +2093,24 @@ function isIOS() {
 
 
 class Grains {
-  constructor(capacity) {
-    this.kind = 'sand';
-    this.label = 'Sand';
-    // Which pass in the renderer draws this.
-    this.render = 'grains';
+  /**
+   * @param {number} capacity
+   * @param {object} def Which granular material this is. `tuning` is the
+   *   solver's half (CONFIG.grains and anything layered over it) and `look` the
+   *   renderer's (CONFIG.sand and friends); everything that separates one
+   *   granular material from another lives in those two objects, so a new one
+   *   is a config entry rather than a subclass. Mirrors Fluid's constructor.
+   */
+  constructor(capacity, def = {}) {
+    this.kind = def.kind || 'sand';
+    this.label = def.label || 'Sand';
+    this.tuning = def.tuning || CONFIG.grains;
+    this.look = def.look || CONFIG.sand;
+    // Which pass in the renderer draws this. Sand and anything else drawn as a
+    // MASS share one pass; marbles ask for their own, because a marble is the
+    // object rather than a grain of it. The renderer switches on this rather
+    // than on `kind`, so a new material picks a pass instead of adding a branch.
+    this.render = def.render || 'grains';
     // Lean the bed against the back wall: a granular pile holds whatever slope
     // it is given, and the lean is a strong 3D cue on a desktop with no sensor.
     this.zBias = CONFIG.input.zBias;
@@ -2006,6 +2141,19 @@ class Grains {
     this.loose = f32();
     this.cover = f32();
     this.litAbove = f32();
+
+    // Rotation, for materials that ask for it. Spheres in a sliding-friction
+    // solver do not need it — sand never did — but a marble that slides
+    // instead of rolling is wrong in a way you can see the moment it carries
+    // any mark. Angular velocity in rad/s, and an orientation quaternion the
+    // renderer reads so the surface turns with the body.
+    this.wx = f32();
+    this.wy = f32();
+    this.wz = f32();
+    this.qx = f32();
+    this.qy = f32();
+    this.qz = f32();
+    this.qw = f32();
 
     this.rank = new Int32Array(capacity);
     // Per-grain radius (px). this.radius stays the mean, and most solver
@@ -2068,7 +2216,7 @@ class Grains {
     this.kickZ = 0;
     this.kickTime = 0;
     this.substeps = 1;
-    this.iterations = CONFIG.sim.velocityIterations;
+    this.iterations = this.tuning.velocityIterations;
     this._carry = 0;
   }
 
@@ -2084,10 +2232,10 @@ class Grains {
     this.diameter = radius * 2;
     // Must cover the speculative contact radius, or the 3x3x3 scan misses pairs
     // that are about to collide.
-    this.cellSize = this.diameter * CONFIG.sim.cellMul;
+    this.cellSize = this.diameter * this.tuning.cellMul;
     this.depth = Math.max(
       this.diameter * 2,
-      Math.min(CONFIG.bed.depthLayers * this.diameter, Math.min(width, height) * 0.22),
+      Math.min(this.tuning.depthLayers * this.diameter, Math.min(width, height) * 0.22),
     );
     this.bounds = { x0: 0, y0: 0, x1: width, y1: height };
     this.inner = {
@@ -2145,7 +2293,7 @@ class Grains {
    * full; it is only made of fewer, larger grains.
    */
   preferredRadius(width, height, qualityScale = 1) {
-    const g = CONFIG.grain;
+    const g = this.tuning;
     const base = clamp(Math.min(width, height) / g.divisor, g.minRadius, g.maxRadius);
     return clamp(base / Math.cbrt(qualityScale), g.minRadius, g.coarseRadius);
   }
@@ -2155,19 +2303,19 @@ class Grains {
     return this.idealCount();
   }
 
-  /** Grain count that fills `CONFIG.bed.fill` of the front view when settled. */
-  idealCount(fill = CONFIG.bed.fill) {
+  /** Grain count that fills `this.tuning.fill` of the front view when settled. */
+  idealCount(fill = this.tuning.fill) {
     const { x1, y1 } = this.bounds;
-    const v = CONFIG.grain.polydispersity;
+    const v = this.tuning.polydispersity;
     const grainVol = (4 / 3) * Math.PI * this.radius ** 3 * (1 + 3 * v * v);
     const volume = x1 * (fill * y1) * this.depth;
-    const ideal = (volume * CONFIG.bed.packing) / grainVol;
+    const ideal = (volume * this.tuning.packing) / grainVol;
     const ceiling = Math.min(
-      CONFIG.bed.maxGrains,
+      this.tuning.maxGrains,
       this.capacity,
-      (x1 * (0.6 * y1) * this.depth * CONFIG.bed.packing) / grainVol,
+      (x1 * (0.6 * y1) * this.depth * this.tuning.packing) / grainVol,
     );
-    return Math.round(clamp(ideal, CONFIG.bed.minGrains, ceiling));
+    return Math.round(clamp(ideal, this.tuning.minGrains, ceiling));
   }
 
   _spawnAt(i, x, y, z) {
@@ -2180,7 +2328,7 @@ class Grains {
     this.vz[i] = 0;
     this.light[i] = 0.5;
     this.speed01[i] = 0;
-    const v = CONFIG.grain.polydispersity;
+    const v = this.tuning.polydispersity;
     this.rad[i] = this.radius * (1 - v + 2 * v * rand());
     // The renderer reads this as the sprite size ratio (and as the cluster
     // seed — any per-grain float works for hashing).
@@ -2191,6 +2339,28 @@ class Grains {
     this.litAbove[i] = 0;
     this.airborne[i] = 0;
     this.loose[i] = 0;
+    this.wx[i] = 0;
+    this.wy[i] = 0;
+    this.wz[i] = 0;
+    // A starting tumble, so a fresh jar is not a grid of marbles all facing the
+    // same way — hashed FROM THE INDEX rather than drawn from this.random.
+    // Taking three numbers off the shared stream here would shift every later
+    // draw, and fill() uses that same stream for position jitter: sand would
+    // lay out differently for no reason but a feature it does not even use.
+    // (Found the hard way — it broke the bit-identical check.)
+    let hsh = Math.imul(i + 1, 0x9E3779B1) >>> 0;
+    hsh = (hsh ^ (hsh >>> 15)) >>> 0;
+    hsh = Math.imul(hsh, 0x85EBCA6B) >>> 0;
+    hsh = (hsh ^ (hsh >>> 13)) >>> 0;
+    const a0 = ((hsh & 1023) / 1023) * 6.283185307179586;
+    const c0 = (((hsh >>> 10) & 1023) / 1023) * 2 - 1;
+    const s0 = Math.sqrt(Math.max(0, 1 - c0 * c0));
+    const ang = (((hsh >>> 20) & 1023) / 1023) * 3.141592653589793;
+    const sa = Math.sin(ang);
+    this.qx[i] = s0 * Math.cos(a0) * sa;
+    this.qy[i] = s0 * Math.sin(a0) * sa;
+    this.qz[i] = c0 * sa;
+    this.qw[i] = Math.cos(ang);
   }
 
   /**
@@ -2214,7 +2384,7 @@ class Grains {
     const b = this.inner;
     // Spacing must clear the largest possible pair, not the mean, or the
     // biggest grains spawn overlapped and hand the solver stored energy.
-    const d = this.diameter * (1 + CONFIG.grain.polydispersity);
+    const d = this.diameter * (1 + this.tuning.polydispersity);
     const pitch = d * 1.05;
     // With a half-pitch offset in both x and z, the nearest grain in the layer
     // below sits at sqrt((p/2)^2 + yp^2 + (p/2)^2); 0.78d keeps that over d.
@@ -2255,7 +2425,7 @@ class Grains {
 
     const rand = this.random;
     const b = this.inner;
-    const pitch = this.diameter * (1 + CONFIG.grain.polydispersity) * 1.1;
+    const pitch = this.diameter * (1 + this.tuning.polydispersity) * 1.1;
     const perX = Math.max(1, Math.floor((b.x1 - b.x0) / pitch) + 1);
     const perZ = Math.max(1, Math.floor((b.z1 - b.z0) / pitch) + 1);
     const perLayer = perX * perZ;
@@ -2307,6 +2477,9 @@ class Grains {
    */
   splash(strength) {
     const rand = this.random;
+    // The world's shake, not the material's: a jerk of the container is the
+    // same jerk whatever is inside it, and the fluid solver reads these from
+    // the same place. They are the keys CONFIG.grains deliberately leaves out.
     const cfg = CONFIG.sim;
 
     // Drive against gravity, not up the screen: on a tilted phone the sand
@@ -2357,7 +2530,7 @@ class Grains {
   step(dtFrame, gx, gy, gz) {
     const n = this.n;
     if (n === 0) return;
-    const cfg = CONFIG.sim;
+    const cfg = this.tuning;
 
     // Fixed timestep with a carry, so the feel never depends on frame rate.
     const h = 1 / cfg.fixedHz;
@@ -2410,7 +2583,7 @@ class Grains {
   applyGravity(h, gx, gy, gz) {
     const n = this.n;
     const { vx, vy, vz } = this;
-    const damp = Math.exp(-CONFIG.sim.airDrag * h);
+    const damp = Math.exp(-this.tuning.airDrag * h);
     const dvx = gx * h;
     const dvy = gy * h;
     const dvz = gz * h;
@@ -2526,13 +2699,13 @@ class Grains {
     const cellOrder = grid.order;
     const cellOf = grid.cellOf;
     const D = this.diameter;
-    const skinD = CONFIG.sim.skin * D;
+    const skinD = this.tuning.skin * D;
     // The list is built with a skin so it outlives several substeps; whether a
     // pair is actually active is decided per substep in refreshGaps(). Scan
     // radius covers the largest possible pair plus skin, and the shading reach.
-    const RS = Math.max(D * (1 + CONFIG.grain.polydispersity) + skinD, D * CONFIG.sim.shadeRadius);
+    const RS = Math.max(D * (1 + this.tuning.polydispersity) + skinD, D * this.tuning.shadeRadius);
     const RS2 = RS * RS;
-    const DS2 = (D * CONFIG.sim.shadeRadius) ** 2;
+    const DS2 = (D * this.tuning.shadeRadius) ** 2;
     const B = this.bounds;
     const cap = this.contactCapacity;
 
@@ -2652,7 +2825,7 @@ class Grains {
   listStale() {
     const n = this.n;
     const { x, y, z, refX, refY, refZ } = this;
-    const limit = CONFIG.sim.skin * this.diameter * 0.5;
+    const limit = this.tuning.skin * this.diameter * 0.5;
     const limit2 = limit * limit;
     for (let i = 0; i < n; i++) {
       const dx = x[i] - refX[i], dy = y[i] - refY[i], dz = z[i] - refZ[i];
@@ -2672,7 +2845,7 @@ class Grains {
     const { ci, cj, cnx, cny, cnz, cgap, crest, cjn, cfx, cfy, cfz, active, x, y, z, rad } = this;
     const B = this.bounds;
     const depth = this.depth;
-    const margin = CONFIG.sim.contactMargin * this.diameter;
+    const margin = this.tuning.contactMargin * this.diameter;
     let a = 0;
     for (let c = 0; c < cnt; c++) {
       const i = ci[c];
@@ -2726,18 +2899,52 @@ class Grains {
     const cnt = this.activeCount;
     if (cnt === 0) return;
     const { ci, cj, cnx, cny, cnz, cgap, cjn, cfx, cfy, cfz, cbounce, active, vx, vy, vz } = this;
+    const { wx, wy, wz, rad } = this;
     const invH = 1 / h;
-    const iters = CONFIG.sim.velocityIterations;
-    const mu = CONFIG.sim.friction;
-    const muWall = CONFIG.sim.wallFriction;
+    const iters = this.tuning.velocityIterations;
+    const mu = this.tuning.friction;
+    const muWall = this.tuning.wallFriction;
+
+    // Rolling.
+    //
+    // Off, this is a pure sliding-friction solver and every line below runs
+    // exactly as it always has — sand is bit-identical. On, friction stops
+    // being a force between two centres and becomes a force at the CONTACT
+    // POINT, which changes two things.
+    //
+    // First, what friction is trying to cancel. The surface of a spinning
+    // sphere is already moving: the velocity that matters is v + w x r, and a
+    // marble rolling without slipping has ZERO of it, which is precisely why
+    // it keeps going instead of being ground to a halt.
+    //
+    // Second, friction now feeds back as torque, t = r x f. For a sphere the
+    // contact sits on the line of centres, so r is parallel to the normal —
+    // which means the NORMAL impulse contributes no torque at all and only
+    // friction spins anything. That is the one simplification that keeps this
+    // cheap.
+    //
+    // The effective mass changes with it. A tangential impulse now has to
+    // shift the centre AND spin the body: for a unit sphere the angular share
+    // is |r x t|^2 / I = R^2 / (0.4 R^2) = 2.5 per body. Two grains come to
+    // 1 + 1 + 2.5 + 2.5 = 7 where sliding alone was 2; a wall (immovable, no
+    // spin of its own) comes to 1 + 2.5 = 3.5 where it was 1. Leaving the old
+    // 0.5 and 1.0 in place would over-apply friction by 3.5x and the bed
+    // buzzes itself apart.
+    const spin = this.tuning.rotation ? 1 : 0;
+    const tanPair = spin ? 1 / 7 : 0.5;
+    const tanWall = spin ? 1 / 3.5 : 1;
+    // 1 / I for a unit-mass sphere is 1 / (0.4 R^2); the R from the torque arm
+    // cancels one of them, leaving this per unit of (n x f).
+    const invInertia = 0.4;
 
     // Restitution, measured from the approach speed *before* the solve runs.
     // Only genuine impacts bounce: below the threshold a contact is resting,
     // and letting those bounce would make the whole bed buzz. Without any of
     // this, sand slammed into a wall absorbs every bit of its momentum and
     // stops dead, which is what kills the slosh-back.
-    const rest = CONFIG.sim.restitution;
-    const restCut = CONFIG.sim.restitutionCut * this.diameter;
+    const rest = this.tuning.restitution;
+    const restCut = this.tuning.restitutionCut * this.diameter;
+
     for (let a = 0; a < cnt; a++) {
       const c = active[a];
       const i = ci[c];
@@ -2760,6 +2967,23 @@ class Grains {
       const pz = -cnz[c] * jn + cfz[c];
       vx[i] += px; vy[i] += py; vz[i] += pz;
       if (j >= 0) { vx[j] -= px; vy[j] -= py; vz[j] -= pz; }
+      // The stored friction is an impulse at the contact point, so re-applying
+      // it has to re-apply its torque as well — otherwise every step begins
+      // with linear grip the spin has not been told about, and a resting
+      // marble creeps.
+      if (spin) {
+        const fx = cfx[c], fy = cfy[c], fz = cfz[c];
+        const nx = cnx[c], ny = cny[c], nz = cnz[c];
+        const tx = ny * fz - nz * fy;
+        const ty = nz * fx - nx * fz;
+        const tz = nx * fy - ny * fx;
+        const ki = 1 / (invInertia * rad[i]);
+        wx[i] += tx * ki; wy[i] += ty * ki; wz[i] += tz * ki;
+        if (j >= 0) {
+          const kj = 1 / (invInertia * rad[j]);
+          wx[j] += tx * kj; wy[j] += ty * kj; wz[j] += tz * kj;
+        }
+      }
     }
 
     for (let it = 0; it < iters; it++) {
@@ -2775,6 +2999,7 @@ class Grains {
         const target = gap > 0 ? -gap * invH : cbounce[c];
 
         if (j >= 0) {
+
           // Two unit masses: 1/mi + 1/mj = 2, so the impulse is halved.
           let rx = vx[j] - vx[i], ry = vy[j] - vy[i], rz = vz[j] - vz[i];
           const vn = rx * nx + ry * ny + rz * nz;
@@ -2788,12 +3013,21 @@ class Grains {
           }
 
           rx = vx[j] - vx[i]; ry = vy[j] - vy[i]; rz = vz[j] - vz[i];
+          if (spin) {
+            // Surface velocity, not centre velocity: subtract each body's own
+            // spin at the contact. r_i = +rad_i * n and r_j = -rad_j * n, so
+            // both terms come out with the same sign.
+            const ri = rad[i], rj = rad[j];
+            rx -= rj * (wy[j] * nz - wz[j] * ny) + ri * (wy[i] * nz - wz[i] * ny);
+            ry -= rj * (wz[j] * nx - wx[j] * nz) + ri * (wz[i] * nx - wx[i] * nz);
+            rz -= rj * (wx[j] * ny - wy[j] * nx) + ri * (wx[i] * ny - wy[i] * nx);
+          }
           const vn2 = rx * nx + ry * ny + rz * nz;
           // Impulse that would cancel all remaining sliding, added to what this
           // contact already holds, then clamped as a whole.
-          let fx = cfx[c] + (rx - vn2 * nx) * 0.5;
-          let fy = cfy[c] + (ry - vn2 * ny) * 0.5;
-          let fz = cfz[c] + (rz - vn2 * nz) * 0.5;
+          let fx = cfx[c] + (rx - vn2 * nx) * tanPair;
+          let fy = cfy[c] + (ry - vn2 * ny) * tanPair;
+          let fz = cfz[c] + (rz - vn2 * nz) * tanPair;
           const cap = mu * cjn[c];
           const m2 = fx * fx + fy * fy + fz * fz;
           if (m2 > cap * cap) {
@@ -2804,6 +3038,15 @@ class Grains {
           cfx[c] = fx; cfy[c] = fy; cfz[c] = fz;
           vx[i] += dfx; vy[i] += dfy; vz[i] += dfz;
           vx[j] -= dfx; vy[j] -= dfy; vz[j] -= dfz;
+          if (spin) {
+            const tx = ny * dfz - nz * dfy;
+            const ty = nz * dfx - nx * dfz;
+            const tz = nx * dfy - ny * dfx;
+            const ki = 1 / (invInertia * rad[i]);
+            const kj = 1 / (invInertia * rad[j]);
+            wx[i] += tx * ki; wy[i] += ty * ki; wz[i] += tz * ki;
+            wx[j] += tx * kj; wy[j] += ty * kj; wz[j] += tz * kj;
+          }
         } else {
           // Static wall: infinite mass, zero velocity.
           const vn = -(vx[i] * nx + vy[i] * ny + vz[i] * nz);
@@ -2815,11 +3058,17 @@ class Grains {
             vx[i] -= dj * nx; vy[i] -= dj * ny; vz[i] -= dj * nz;
           }
 
-          const rx = -vx[i], ry = -vy[i], rz = -vz[i];
+          let rx = -vx[i], ry = -vy[i], rz = -vz[i];
+          if (spin) {
+            const ri = rad[i];
+            rx -= ri * (wy[i] * nz - wz[i] * ny);
+            ry -= ri * (wz[i] * nx - wx[i] * nz);
+            rz -= ri * (wx[i] * ny - wy[i] * nx);
+          }
           const vn2 = rx * nx + ry * ny + rz * nz;
-          let fx = cfx[c] + (rx - vn2 * nx);
-          let fy = cfy[c] + (ry - vn2 * ny);
-          let fz = cfz[c] + (rz - vn2 * nz);
+          let fx = cfx[c] + (rx - vn2 * nx) * tanWall;
+          let fy = cfy[c] + (ry - vn2 * ny) * tanWall;
+          let fz = cfz[c] + (rz - vn2 * nz) * tanWall;
           const cap = muWall * cjn[c];
           const m2 = fx * fx + fy * fy + fz * fz;
           if (m2 > cap * cap) {
@@ -2829,6 +3078,13 @@ class Grains {
           const dfx = fx - cfx[c], dfy = fy - cfy[c], dfz = fz - cfz[c];
           cfx[c] = fx; cfy[c] = fy; cfz[c] = fz;
           vx[i] += dfx; vy[i] += dfy; vz[i] += dfz;
+          if (spin) {
+            const tx = ny * dfz - nz * dfy;
+            const ty = nz * dfx - nx * dfz;
+            const tz = nx * dfy - ny * dfx;
+            const ki = 1 / (invInertia * rad[i]);
+            wx[i] += tx * ki; wy[i] += ty * ki; wz[i] += tz * ki;
+          }
         }
       }
     }
@@ -2852,14 +3108,14 @@ class Grains {
     if (cnt === 0) return;
     const { ci, cj, cnx, cny, cnz, cgap, active, vx, vy, vz } = this;
     const invH = 1 / h;
-    const passes = CONFIG.sim.shockIterations;
+    const passes = this.tuning.shockIterations;
     // Only quasi-static contacts get the ground treatment. Treating the
     // supported grain as immovable is what holds a pile up, but it also dumps
     // the incoming momentum of a fast impact into "ground" instead of passing
     // it along the contact chain — so sand slamming into a wall is swallowed
     // rather than spraying back. Above this approach speed the symmetric,
     // momentum-conserving solve is left to handle it alone.
-    const gate = -CONFIG.sim.shockMaxApproach * this.diameter;
+    const gate = -this.tuning.shockMaxApproach * this.diameter;
 
     for (let p = 0; p < passes; p++) {
       for (let a = 0; a < cnt; a++) {
@@ -2892,7 +3148,7 @@ class Grains {
     const { x, y, z, vx, vy, vz } = this;
     // Nothing may cross more than about its own width per substep, or contacts
     // are found only once grains are already deep inside each other.
-    const maxV = (CONFIG.sim.maxTravel * this.diameter) / h;
+    const maxV = (this.tuning.maxTravel * this.diameter) / h;
     const maxV2 = maxV * maxV;
     for (let i = 0; i < n; i++) {
       let ux = vx[i], uy = vy[i], uz = vz[i];
@@ -2905,6 +3161,55 @@ class Grains {
       x[i] += ux * h;
       y[i] += uy * h;
       z[i] += uz * h;
+    }
+    if (this.tuning.rotation) this.integrateSpin(h);
+  }
+
+  /**
+   * Carry each body's orientation forward by its angular velocity.
+   *
+   * The quaternion is what the renderer reads: angular velocity alone would
+   * make a marble roll correctly and still LOOK like it was sliding, because
+   * nothing on its surface would move. dq/dt = 0.5 * w * q, integrated
+   * explicitly and renormalised, which is standard and is accurate enough at
+   * 120Hz that the drift never reaches the eye.
+   *
+   * Angular drag is separate from airDrag and much stronger than it looks it
+   * should be. A sphere on a flat floor rolling without slipping has no
+   * contact-point sliding for friction to resist, so nothing in the solver can
+   * ever slow it down — a marble given a nudge would circle the box forever.
+   * Real ones stop because they deform slightly and lose energy at the
+   * contact, which is rolling resistance; this stands in for it.
+   */
+  integrateSpin(h) {
+    const n = this.n;
+    const { wx, wy, wz, qx, qy, qz, qw } = this;
+    const keep = Math.exp(-this.tuning.angularDrag * h);
+    // Cap the spin the same way linear travel is capped, so one bad contact
+    // cannot hand a marble a rotation the integrator cannot represent.
+    const maxW = this.tuning.maxSpin;
+    const maxW2 = maxW * maxW;
+    for (let i = 0; i < n; i++) {
+      let ax = wx[i] * keep, ay = wy[i] * keep, az = wz[i] * keep;
+      const s2 = ax * ax + ay * ay + az * az;
+      if (s2 > maxW2) {
+        const k = maxW / Math.sqrt(s2);
+        ax *= k; ay *= k; az *= k;
+      }
+      wx[i] = ax; wy[i] = ay; wz[i] = az;
+      if (s2 < 1e-10) continue;
+
+      const bx = qx[i], by = qy[i], bz = qz[i], bw = qw[i];
+      const hh = 0.5 * h;
+      // (0, w) * q
+      const dw = -(ax * bx + ay * by + az * bz);
+      const dx = ay * bz - az * by + ax * bw;
+      const dy = az * bx - ax * bz + ay * bw;
+      const dz = ax * by - ay * bx + az * bw;
+      let nx = bx + dx * hh, ny = by + dy * hh, nz = bz + dz * hh, nw = bw + dw * hh;
+      const m = Math.sqrt(nx * nx + ny * ny + nz * nz + nw * nw) || 1;
+      const inv = 1 / m;
+      qx[i] = nx * inv; qy[i] = ny * inv; qz[i] = nz * inv; qw[i] = nw * inv;
     }
   }
 
@@ -2919,11 +3224,11 @@ class Grains {
   solvePosition() {
     const cnt = this.activeCount;
     const { ci, cj, cnx, cny, cnz, crest, active, x, y, z, rad } = this;
-    const iters = CONFIG.sim.positionIterations;
-    const beta = CONFIG.sim.positionBeta;
+    const iters = this.tuning.positionIterations;
+    const beta = this.tuning.positionBeta;
     const D = this.diameter;
-    const slop = CONFIG.sim.slop * D;
-    const maxFix = CONFIG.sim.maxCorrection * D;
+    const slop = this.tuning.slop * D;
+    const maxFix = this.tuning.maxCorrection * D;
     const B = this.bounds;
     const depth = this.depth;
 
@@ -2977,7 +3282,7 @@ class Grains {
 
   updateShading(dt) {
     const n = this.n;
-    const cfg = CONFIG.sim;
+    const cfg = this.tuning;
     const { light, cover, contacts, litAbove, speed01, airborne, loose, vx, vy, vz } = this;
     const invCover = 1 / cfg.coverNorm;
     const invSpeed = 1 / this.speedNorm;
@@ -4048,7 +4353,28 @@ const MATERIALS = [
     id: 'sand',
     label: 'Sand',
     tint: '#c8a97a',
-    create: () => new Grains(CONFIG.bed.maxGrains),
+    create: () => new Grains(CONFIG.grains.maxGrains, {
+      kind: 'sand',
+      label: 'Sand',
+      tuning: CONFIG.grains,
+      look: CONFIG.sand,
+    }),
+  },
+  {
+    // The granular solver's second material, and the first thing in the box not
+    // drawn as a mass. Same solver, same contacts, a handful of numbers changed
+    // — but its own render pass, which is what makes it read as a different
+    // substance instead of as sand in another colour. See CONFIG.marble.
+    id: 'marbles',
+    label: 'Marbles',
+    tint: '#7fb6d8',
+    create: () => new Grains(CONFIG.marble.maxGrains, {
+      kind: 'marbles',
+      label: 'Marbles',
+      render: 'marbles',
+      tuning: CONFIG.marble,
+      look: CONFIG.marbleLook,
+    }),
   },
   {
     id: 'water',
@@ -4620,6 +4946,197 @@ void main() {
 }
 `;
 
+// ---------------------------------------------------------------- marbles
+//
+// Marbles are the one material NOT drawn as a mass. Sand and the liquids are
+// fields because their particles must not be visible; a marble IS the object,
+// so it gets drawn as itself — one point sprite per marble, shaded as a glass
+// sphere.
+//
+// The sprite is a billboard, and the sphere is entirely in the fragment shader:
+// the normal comes from the sprite's own coordinates, which is exact for a
+// sphere and costs nothing. Three things then do the work of saying "glass":
+// a tight specular highlight, a Fresnel rim that brightens toward the
+// silhouette, and — the one that actually sells it — a bright spot on the side
+// AWAY from the light, because a glass sphere is a lens and focuses what passes
+// through it. Without that last term the same shader reads as a snooker ball.
+//
+// Note it never rotates, and cannot: the solver has no rotational degree of
+// freedom. That is invisible here only because the shading is radially
+// symmetric about the light rather than painted on the surface — the moment a
+// marble gets a swirl or a stripe, the missing spin becomes obvious.
+const MARBLE_VERTEX = `
+precision highp float;
+
+attribute vec3 aPos;    // marble centre, CSS px + depth
+attribute vec4 aData;   // x: size ratio, y: hue, z: speed, w: burial light
+attribute vec4 aSpin;   // orientation quaternion, xyzw
+
+uniform vec2 uViewport;
+uniform float uFocal;
+uniform vec2 uEye;
+uniform float uPointSize;   // marble diameter in device px
+uniform float uDepthRange;
+uniform float uMaxPoint;    // hardware ceiling on gl_PointSize
+
+varying float vHue;
+varying float vDepth;
+varying float vSpeed;
+varying float vLight;
+varying vec4 vSpin;
+
+void main() {
+  float persp = uFocal / (uFocal + aPos.z);
+  vec2 p = uEye + (aPos.xy - uEye) * persp;
+  vec2 unit = p / uViewport;
+  gl_Position = vec4(unit.x * 2.0 - 1.0, 1.0 - unit.y * 2.0, 0.0, 1.0);
+  // Clamped, because a marble sprite is far larger than a speck and drivers
+  // differ on how big a point may be. Past the ceiling the sprite silently
+  // stops growing, which is a wrong size rather than a missing marble.
+  gl_PointSize = min(uPointSize * aData.x * persp, uMaxPoint);
+  vHue = aData.y;
+  vDepth = clamp(aPos.z / uDepthRange, 0.0, 1.0);
+  vSpeed = aData.z;
+  vLight = aData.w;
+  vSpin = aSpin;
+}
+`;
+
+const MARBLE_FRAGMENT = `
+precision highp float;
+
+varying float vHue;
+varying float vDepth;
+varying float vSpeed;
+varying float vLight;
+varying vec4 vSpin;
+
+uniform float uIor;        // ratio n_air / n_glass, so ~0.66
+uniform vec3 uInterior;    // what shows THROUGH: the dark of the box behind
+uniform vec3 uSky;         // reflected environment, above the horizon
+uniform vec3 uGround;      // and below it
+uniform vec2 uUp;          // world up in screen space, from the tilt
+uniform float uPitch;      // how far face-up the device is held
+uniform float uEnvSharp;
+uniform float uLampAt;
+uniform float uLampWidth;
+uniform float uLampGain;
+uniform float uSaturation;
+uniform float uBodyTint;   // colour wash through the whole body
+uniform float uCoreGain;   // brightness of the dense knot at the centre
+uniform float uCore;       // core radius, fraction of the marble
+uniform float uCoreSoft;
+uniform float uVane;
+uniform float uVaneWidth;  // vane disc radius
+uniform float uVaneTint;
+uniform float uSpecular;
+uniform float uSpecPower;
+uniform float uBurial;     // how much a buried marble darkens
+uniform vec3 uFog;
+uniform float uDepthDim;
+uniform float uFogStart;
+
+// Rotate a vector by a quaternion. Used with the CONJUGATE below, to carry the
+// surface normal from the screen back into the marble's own frame — which is
+// what lets a mark stay painted on the glass while the glass turns.
+vec3 qrot(vec4 q, vec3 v) {
+  return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
+}
+
+// Hue to RGB, so one float per marble buys the whole jar of colours.
+vec3 hue2rgb(float h) {
+  vec3 k = vec3(1.0, 2.0 / 3.0, 1.0 / 3.0);
+  vec3 p = abs(fract(vec3(h) + k) * 6.0 - 3.0);
+  return clamp(p - 1.0, 0.0, 1.0);
+}
+
+void main() {
+  vec2 uv = gl_PointCoord * 2.0 - 1.0;
+  float r2 = dot(uv, uv);
+  if (r2 > 1.0) discard;
+  float zc = sqrt(max(1.0 - r2, 0.0));
+  // gl_PointCoord runs DOWN the sprite; negate so +y is up the screen and this
+  // light agrees with every other pass.
+  vec3 nrm = vec3(uv.x, -uv.y, zc);
+  vec3 view = vec3(0.0, 0.0, 1.0);
+  vec3 lightDir = normalize(vec3(-0.40, 0.55, 0.73));
+
+  // Glass is a Fresnel mix of what it REFLECTS and what it TRANSMITS, and
+  // almost none of it is diffuse. Shading a marble with Lambert and an ambient
+  // term is what makes it read as clay: a diffuse ball is the same brightness
+  // whichever way you look at it, where glass is nearly black head-on and a
+  // mirror at the edges. Schlick, with F0 = 0.04 for glass against air.
+  float cosT = clamp(zc, 0.0, 1.0);
+  float fres = 0.04 + 0.96 * pow(1.0 - cosT, 5.0);
+
+  // ---- what it transmits
+  //
+  // The ray bends on the way in, and everything inside is seen ALONG THAT BENT
+  // RAY. That is the whole reason a marble's core looks magnified and swims as
+  // you turn it; a flat disc painted on the sprite cannot do either.
+  vec3 rd = refract(-view, nrm, uIor);
+  vec3 p = nrm;                       // entry point on the unit sphere
+
+  // The core is a real sphere at the centre, so the test is the distance from
+  // the centre to the refracted ray.
+  float tc = -dot(p, rd);
+  float dCore = length(p + rd * tc);
+  float core = 1.0 - smoothstep(uCore - uCoreSoft, uCore + uCoreSoft, dCore);
+
+  vec3 tint = mix(vec3(1.0), hue2rgb(vHue), uSaturation);
+  // The glass BODY carries only a wash of colour — a real cat's eye is mostly
+  // clear, and the colour lives in the vane suspended in the middle of it. The
+  // core is a small denser knot at the centre, not the whole marble: at 0.52 it
+  // swallowed the sphere and every marble came out as a solid coloured ball
+  // with a rim, which is the plastic look again by another route.
+  vec3 transmit = uInterior + tint * uBodyTint;
+  transmit = mix(transmit, tint * uCoreGain, core);
+
+  // The vane is a flat disc through the middle in the marble's OWN frame, and
+  // it is found the same way: carry the refracted ray into object space and
+  // see where it crosses the disc's plane. Being a real disc rather than a
+  // band on the normal is what makes it foreshorten to a slot edge-on and
+  // open out to a circle face-on — which is what actually reads as spin.
+  vec4 conj = vec4(-vSpin.xyz, vSpin.w);
+  vec3 pObj = qrot(conj, p);
+  vec3 rObj = qrot(conj, rd);
+  float denom = abs(rObj.y) < 1e-4 ? 1e-4 : rObj.y;
+  float tv = -pObj.y / denom;
+  vec3 hit = pObj + rObj * tv;
+  float rr = length(hit.xz);
+  float vane = tv > 0.0 ? (1.0 - smoothstep(uVaneWidth * 0.72, uVaneWidth, rr)) : 0.0;
+  vane *= uVane;
+  transmit = mix(transmit, mix(vec3(1.0), hue2rgb(fract(vHue + 0.5)), uVaneTint), vane);
+
+  // ---- what it reflects
+  //
+  // The same room mercury reflects, for the same reason: a reflection has to
+  // stay put while the object moves, or it reads as paint. Anchored to gravity
+  // so tipping the box sweeps the horizon across every marble at once.
+  vec3 refl = reflect(-view, nrm);
+  float tip = clamp(dot(refl.xy, uUp) * uEnvSharp + uPitch, -1.0, 1.0);
+  vec3 env = mix(uGround, uSky, smoothstep(-0.6, 0.6, tip));
+  float d = tip - uLampAt;
+  env += uLampGain * exp(-d * d * uLampWidth);
+
+  vec3 c = mix(transmit, env, fres);
+
+  // One tight highlight, the specular reflection of the lamp itself.
+  vec3 half3 = normalize(lightDir + view);
+  c += pow(max(dot(nrm, half3), 0.0), uSpecPower) * uSpecular;
+
+  // A marble buried in the pile gets less light, exactly as a grain of sand
+  // does — the solver already works this out per body from how covered it is,
+  // and ignoring it is what makes a heap look like stickers on a page.
+  c *= mix(1.0 - uBurial, 1.0, vLight);
+
+  c = mix(c, uFog, uDepthDim * smoothstep(uFogStart, 1.0, vDepth));
+
+  float a = smoothstep(1.0, 0.965, r2);
+  gl_FragColor = vec4(c, a);
+}
+`;
+
 // ---- src/water-shaders.js ----
 // Water is drawn in two passes, because drawing the particles directly cannot
 // work: a liquid has no visible particles, only a surface. Sprites blended one
@@ -5135,6 +5652,8 @@ const STRIDE = FLOATS_PER_GRAIN * 4;
 const FLOATS_PER_SPECK = 9; // x,y,z | light, tone, size, phase | speed, airborne
 const SPECK_STRIDE = FLOATS_PER_SPECK * 4;
 const FLOATS_PER_DROP = 5; // x, y, z, speed, weight
+const FLOATS_PER_MARBLE = 11; // x, y, z | sizeJitter, hue, speed, light | quat xyzw
+const MARBLE_STRIDE = FLOATS_PER_MARBLE * 4;
 const DROP_STRIDE = FLOATS_PER_DROP * 4;
 
 // Speck layouts are drawn from a fixed table rather than hashed per frame:
@@ -5317,6 +5836,28 @@ class Renderer {
       'uSpeckRelief', 'uSpeckRound', 'uGlint', 'uGlintRate', 'uTime',
       'uField', 'uInvCanvas', 'uSurface', 'uAirLight',
     ]);
+
+    this.marbleBuffer = gl.createBuffer();
+    this.marbleBufferBytes = 0;
+    this.marbleProgram = buildProgram(gl, MARBLE_VERTEX, MARBLE_FRAGMENT);
+    this.marbleAttrib = {
+      pos: gl.getAttribLocation(this.marbleProgram, 'aPos'),
+      data: gl.getAttribLocation(this.marbleProgram, 'aData'),
+      spin: gl.getAttribLocation(this.marbleProgram, 'aSpin'),
+    };
+    this.marbleUniform = uniforms(gl, this.marbleProgram, [
+      'uViewport', 'uFocal', 'uEye', 'uPointSize', 'uDepthRange', 'uMaxPoint',
+      'uIor', 'uInterior', 'uSky', 'uGround', 'uUp', 'uPitch', 'uEnvSharp',
+      'uLampAt', 'uLampWidth', 'uLampGain', 'uSaturation', 'uBodyTint', 'uCoreGain', 'uCore', 'uCoreSoft',
+      'uVane', 'uVaneWidth', 'uVaneTint', 'uSpecular', 'uSpecPower', 'uBurial',
+      'uFog', 'uDepthDim', 'uFogStart',
+    ]);
+    // How big a point this driver will actually rasterise. A marble sprite is
+    // an order of magnitude wider than a speck, and the guaranteed minimum in
+    // the spec is 1px — so this is read rather than assumed, and the shader
+    // clamps to it.
+    const range = gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE);
+    this.maxPointSize = (range && range[1]) || 64;
   }
 
   setupWaterPrograms() {
@@ -5550,7 +6091,144 @@ class Renderer {
     // Switch on the pass a material asks for, not on which material it is:
     // every liquid takes the same one and differs only in its `look`.
     if (material.render === 'fluid') this.drawFluid(material, focal);
+    else if (material.render === 'marbles') this.drawMarbles(material, focal);
     else this.drawSand(material, focal);
+  }
+
+  // --------------------------------------------------------------- marbles
+
+  /**
+   * Marbles, packed FAR TO NEAR.
+   *
+   * This is the one pass that has to sort. Everything else in the app either
+   * accumulates additively (the fields, where order cannot matter) or draws a
+   * single full-screen triangle. Marbles are discrete alpha-blended sprites
+   * that genuinely overlap, and the context is created with `depth: false` —
+   * there is no depth buffer to sort them for us, and adding one would cost a
+   * buffer for the sake of a couple of hundred sprites. Sorting an index array
+   * is cheaper and exact: painter's algorithm, back of the box first.
+   *
+   * Insertion sort, because the order is almost always already correct — the
+   * marbles moved a few pixels since last frame — and it is linear on nearly
+   * sorted input where a comparison sort is not.
+   */
+  packMarbles(m) {
+    const n = Math.min(m.n, this.capacity);
+    const need = n * FLOATS_PER_MARBLE * 4;
+    if (this.marbleCpu === undefined || this.marbleCpu.length < n * FLOATS_PER_MARBLE) {
+      this.marbleCpu = new Float32Array(n * FLOATS_PER_MARBLE + 256 * FLOATS_PER_MARBLE);
+    }
+    if (this.marbleOrder === undefined || this.marbleOrder.length < n) {
+      this.marbleOrder = new Int32Array(n + 256);
+      this.marbleOrderCount = 0;
+    }
+    const order = this.marbleOrder;
+    // Rebuild the index list if the count changed, then re-sort by depth.
+    if (this.marbleOrderCount !== n) {
+      for (let i = 0; i < n; i++) order[i] = i;
+      this.marbleOrderCount = n;
+    }
+    const z = m.z;
+    for (let a = 1; a < n; a++) {
+      const v = order[a];
+      const key = z[v];
+      let b = a - 1;
+      while (b >= 0 && z[order[b]] < key) { order[b + 1] = order[b]; b--; }
+      order[b + 1] = v;
+    }
+
+    const cpu = this.marbleCpu;
+    const { x, y, sizeJitter, hueJitter, speed01, light, qx, qy, qz, qw } = m;
+    let o = 0;
+    for (let a = 0; a < n; a++) {
+      const i = order[a];
+      cpu[o] = x[i];
+      cpu[o + 1] = y[i];
+      cpu[o + 2] = z[i];
+      cpu[o + 3] = sizeJitter[i];
+      cpu[o + 4] = hueJitter[i];
+      cpu[o + 5] = speed01[i];
+      // How lit this body is where it sits — the solver already derives it from
+      // how buried the body is, and a pile without it reads as flat stickers.
+      cpu[o + 6] = light[i];
+      // Orientation, which is the entire reason the roll is visible: without a
+      // mark that turns with the body a rolling sphere and a sliding one draw
+      // the same pixels.
+      cpu[o + 7] = qx[i];
+      cpu[o + 8] = qy[i];
+      cpu[o + 9] = qz[i];
+      cpu[o + 10] = qw[i];
+      o += FLOATS_PER_MARBLE;
+    }
+    return n;
+  }
+
+  drawMarbles(marbles, focal) {
+    const gl = this.gl;
+    const s = marbles.look || CONFIG.marbleLook;
+    const n = this.packMarbles(marbles);
+    if (n === 0) return;
+
+    // Straight alpha, drawn far to near: these are solid objects that hide
+    // each other, not light being added together like the fields.
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.useProgram(this.marbleProgram);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.marbleBuffer);
+    const bytes = n * MARBLE_STRIDE;
+    if (bytes > this.marbleBufferBytes) {
+      gl.bufferData(gl.ARRAY_BUFFER, this.marbleCpu.byteLength, gl.DYNAMIC_DRAW);
+      this.marbleBufferBytes = this.marbleCpu.byteLength;
+    }
+    if (this.isWebGL2) {
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.marbleCpu, 0, n * FLOATS_PER_MARBLE);
+    } else {
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.marbleCpu.subarray(0, n * FLOATS_PER_MARBLE));
+    }
+    const ma = this.marbleAttrib;
+    gl.enableVertexAttribArray(ma.pos);
+    gl.vertexAttribPointer(ma.pos, 3, gl.FLOAT, false, MARBLE_STRIDE, 0);
+    gl.enableVertexAttribArray(ma.data);
+    gl.vertexAttribPointer(ma.data, 4, gl.FLOAT, false, MARBLE_STRIDE, 12);
+    gl.enableVertexAttribArray(ma.spin);
+    gl.vertexAttribPointer(ma.spin, 4, gl.FLOAT, false, MARBLE_STRIDE, 28);
+
+    const mu = this.marbleUniform;
+    const r = CONFIG.render;
+    gl.uniform2f(mu.uViewport, this.width, this.height);
+    gl.uniform1f(mu.uFocal, focal);
+    gl.uniform2f(mu.uEye, this.width * 0.5 + this.eyeX, this.height * 0.5 + this.eyeY);
+    gl.uniform1f(mu.uPointSize, marbles.diameter * this.dpr);
+    gl.uniform1f(mu.uDepthRange, marbles.depth);
+    gl.uniform1f(mu.uMaxPoint, this.maxPointSize);
+    gl.uniform1f(mu.uIor, s.ior);
+    gl.uniform3fv(mu.uInterior, s.interior);
+    gl.uniform3fv(mu.uSky, s.sky);
+    gl.uniform3fv(mu.uGround, s.ground);
+    gl.uniform2f(mu.uUp, this.tiltUp[0], this.tiltUp[1]);
+    gl.uniform1f(mu.uPitch, this.tiltPitch * s.pitchGain);
+    gl.uniform1f(mu.uEnvSharp, s.envSharp);
+    gl.uniform1f(mu.uLampAt, s.lampAt);
+    gl.uniform1f(mu.uLampWidth, s.lampWidth);
+    gl.uniform1f(mu.uLampGain, s.lampGain);
+    gl.uniform1f(mu.uSaturation, s.saturation);
+    gl.uniform1f(mu.uBodyTint, s.bodyTint);
+    gl.uniform1f(mu.uCoreGain, s.coreGain);
+    gl.uniform1f(mu.uCore, s.core);
+    gl.uniform1f(mu.uCoreSoft, s.coreSoft);
+    gl.uniform1f(mu.uVane, s.vane);
+    gl.uniform1f(mu.uVaneWidth, s.vaneWidth);
+    gl.uniform1f(mu.uVaneTint, s.vaneTint);
+    gl.uniform1f(mu.uSpecular, s.specular);
+    gl.uniform1f(mu.uSpecPower, s.specPower);
+    gl.uniform1f(mu.uBurial, s.burial);
+    gl.uniform3fv(mu.uFog, r.fog);
+    gl.uniform1f(mu.uDepthDim, r.depthDim);
+    gl.uniform1f(mu.uFogStart, r.fogStart);
+
+    gl.drawArrays(gl.POINTS, 0, n);
+    gl.disableVertexAttribArray(ma.pos);
+    gl.disableVertexAttribArray(ma.data);
+    gl.disableVertexAttribArray(ma.spin);
   }
 
   // ------------------------------------------------------------------ sand
@@ -5597,12 +6275,14 @@ class Renderer {
    * right one to give up — fewer specks read as slightly smoother sand, where
    * fewer grains read as less sand.
    */
-  speckCountFor(radius) {
-    const s = CONFIG.sand;
+  speckCountFor(radius, look = CONFIG.sand) {
+    const s = look;
     const speckArea = (s.speckPx * 0.5) ** 2;
     const coverage = s.speckCoverage * Math.min(1, Math.max(s.speckMinQuality, this.quality));
     const want = coverage * (radius * radius) / Math.max(speckArea, 1e-3);
-    return Math.max(1, Math.min(s.speckMax, Math.round(want)));
+    // The speck table is built once, with CONFIG.sand.speckMax rows per seed, so
+    // a material asking for more than that would index past the end of it.
+    return Math.max(1, Math.min(s.speckMax, CONFIG.sand.speckMax, Math.round(want)));
   }
 
   /**
@@ -5611,9 +6291,9 @@ class Renderer {
    * layout for a grain comes from the table row picked by its own random.
    */
   packSpecks(sand) {
-    const s = CONFIG.sand;
+    const s = sand.look || CONFIG.sand;
     const n = Math.min(sand.n, this.capacity);
-    const per = this.speckCountFor(sand.radius);
+    const per = this.speckCountFor(sand.radius, s);
     this.specksPerGrain = per;
     // Sand in flight is drawn by its specks alone, so it gets more of them —
     // a splash wants to read as spray, and a handful of specks spread over a
@@ -5676,8 +6356,15 @@ class Renderer {
 
   drawSand(sand, focal) {
     const gl = this.gl;
-    const s = CONFIG.sand;
+    // The material's own palette. Every granular material takes this same pass;
+    // what separates them is this object and the solver tuning beside it.
+    const s = sand.look || CONFIG.sand;
     const r = CONFIG.render;
+    // deep/mid/lit have always lived in CONFIG.render, which made the bed's
+    // colour a property of the renderer rather than of what is in the box. A
+    // look may now carry its own; one that does not falls through to the
+    // original, so sand is untouched.
+    const pal = s.deep ? s : r;
     const deviceW = this.canvas.width;
     const deviceH = this.canvas.height;
     const eyeX = this.width * 0.5 + this.eyeX;
@@ -5749,9 +6436,9 @@ class Renderer {
     gl.uniform1i(cu.uField, 0);
     gl.uniform2f(cu.uTexel, 1 / this.fieldW, 1 / this.fieldH);
     gl.uniform1f(cu.uDpr, this.dpr);
-    gl.uniform3fv(cu.uDeep, r.deep);
-    gl.uniform3fv(cu.uMid, r.mid);
-    gl.uniform3fv(cu.uLit, r.lit);
+    gl.uniform3fv(cu.uDeep, pal.deep);
+    gl.uniform3fv(cu.uMid, pal.mid);
+    gl.uniform3fv(cu.uLit, pal.lit);
     gl.uniform1f(cu.uSurface, s.surface);
     gl.uniform1f(cu.uSoft, s.soft);
     gl.uniform1f(cu.uDither, s.dither);
@@ -5809,9 +6496,9 @@ class Renderer {
     gl.uniform2f(su.uEye, eyeX, eyeY);
     gl.uniform1f(su.uPointSize, s.speckPx * this.dpr);
     gl.uniform1f(su.uDepthRange, sand.depth);
-    gl.uniform3fv(su.uDeep, r.deep);
-    gl.uniform3fv(su.uMid, r.mid);
-    gl.uniform3fv(su.uLit, r.lit);
+    gl.uniform3fv(su.uDeep, pal.deep);
+    gl.uniform3fv(su.uMid, pal.mid);
+    gl.uniform3fv(su.uLit, pal.lit);
     gl.uniform1f(su.uAlpha, s.speckAlpha);
     gl.uniform1f(su.uDepthFade, s.speckDepthFade);
     gl.uniform3fv(su.uFog, r.fog);

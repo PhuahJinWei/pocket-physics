@@ -54,7 +54,28 @@ export const MATERIALS = [
     id: 'sand',
     label: 'Sand',
     tint: '#c8a97a',
-    create: () => new Grains(CONFIG.bed.maxGrains),
+    create: () => new Grains(CONFIG.grains.maxGrains, {
+      kind: 'sand',
+      label: 'Sand',
+      tuning: CONFIG.grains,
+      look: CONFIG.sand,
+    }),
+  },
+  {
+    // The granular solver's second material, and the first thing in the box not
+    // drawn as a mass. Same solver, same contacts, a handful of numbers changed
+    // — but its own render pass, which is what makes it read as a different
+    // substance instead of as sand in another colour. See CONFIG.marble.
+    id: 'marbles',
+    label: 'Marbles',
+    tint: '#7fb6d8',
+    create: () => new Grains(CONFIG.marble.maxGrains, {
+      kind: 'marbles',
+      label: 'Marbles',
+      render: 'marbles',
+      tuning: CONFIG.marble,
+      look: CONFIG.marbleLook,
+    }),
   },
   {
     id: 'water',
