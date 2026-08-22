@@ -134,6 +134,9 @@ export class DevMode {
     } catch {
       /* storage blocked - the mode just will not be remembered */
     }
+    // The readout is deliberately short for a normal run; the rig wants every
+    // row it has.
+    if (this.hud && this.hud.setVerbose) this.hud.setVerbose(next);
     if (next) {
       this.build();
       this.el.hidden = false;
@@ -145,6 +148,9 @@ export class DevMode {
       this.speed = 1;
       this.region = null;
       this.gravity.pose = null;
+      // A lifted box that outlived the panel would silently become the shipped
+      // look, which is the one thing this toggle must not do.
+      if (this.config) this.config.render.wallLift = 1;
       if (this.el) this.el.hidden = true;
       if (this.loupeWin) this.loupeWin.hidden = true;
     }
@@ -358,6 +364,19 @@ export class DevMode {
         this.sync();
       });
       body.append(this._clipBtn);
+
+      // --- box: the walls are deliberately below the threshold where they can
+      // be looked at, which is right with a full box and arguably wrong with an
+      // empty one. This is the A/B for that call, and it has to be made on a
+      // phone: the walls sit at 2-7x the background, a ratio a desktop panel
+      // shows and a phone in a lit room does not.
+      body.append(el('div', 'dev-label', 'Box'));
+      this._wallBtn = button('dev-btn dev-wide', 'Lift box walls', () => {
+        const R = this.config.render;
+        R.wallLift = R.wallLift > 1 ? 1 : R.wallLiftHigh;
+        this.sync();
+      });
+      body.append(this._wallBtn);
     }
 
     document.getElementById('ui').append(panel);
@@ -445,6 +464,11 @@ export class DevMode {
     this._pickBtn.classList.toggle('on', this._picking);
     if (this._axisBtn) this._axisBtn.firstChild.textContent = this.axis === 'x' ? '↔' : '↕';
     if (this._clipBtn) this._clipBtn.classList.toggle('on', !!this.config.render.clipReal);
+    if (this._wallBtn) {
+      const lift = this.config.render.wallLift;
+      this._wallBtn.classList.toggle('on', lift > 1);
+      this._wallBtn.firstChild.textContent = `Lift box walls ${lift.toFixed(2)}×`;
+    }
   }
 
   // ------------------------------------------------------------- area picker

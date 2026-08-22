@@ -19,6 +19,10 @@ export class Hud {
     this.menuList = root.querySelector('#menu-list');
 
     this.statsVisible = false;
+    // Sixteen rows is a slab that covers a third of a phone's pool. Off, the
+    // readout carries only the five lines that mean something without the
+    // renderer's source open; dev mode turns the rest back on.
+    this.verbose = false;
     this.onStick = null;
     this.onMaterial = null;
     this.onAction = null;
@@ -176,6 +180,14 @@ export class Hud {
     this.gate.classList.remove('visible');
   }
 
+  /** Dev mode owns this: it is the only thing that wants the full instrument. */
+  setVerbose(on) {
+    this.verbose = !!on;
+    // Redraw on the next frame rather than after the throttle expires, so the
+    // rows appear the instant the rig opens.
+    this._statsTimer = 0;
+  }
+
   toggleStats(force) {
     this.statsVisible = force === undefined ? !this.statsVisible : force;
     this.stats.classList.toggle('visible', this.statsVisible);
@@ -238,24 +250,34 @@ export class Hud {
     if (this._statsTimer > 0) return;
     this._statsTimer = 0.25;
 
+    const fluid = info.material === 'Water';
+    // The five anyone can act on: is it smooth, what is in the box, how much of
+    // it, which way is down, and whether the tilt is actually arriving. Their
+    // order never changes when the rest appear, so the lines you read every
+    // time stay where your eye already is.
     const rows = [
       ['fps', info.fps.toFixed(0)],
-      ['work', info.workMs.toFixed(1) + ' ms'],
       ['material', info.material],
-      [info.material === 'Water' ? 'particles' : 'grains', String(info.grains)],
-      [info.material === 'Water' ? 'neighbours' : 'contacts', formatCount(info.contacts)],
-      ['radius', info.radius.toFixed(2) + ' px'],
-      ['depth', Math.round(info.depth) + ' px'],
-      ['solve', `${info.substeps}×${info.iterations}`],
-      ['quality', info.scale.toFixed(2) + '×'],
+      [fluid ? 'particles' : 'grains', String(info.grains)],
       ['gravity', `${info.gx.toFixed(2)}, ${info.gy.toFixed(2)}, ${info.gz.toFixed(2)}`],
       ['source', info.source],
-      ['beta/gamma', `${info.beta.toFixed(0)}° / ${info.gamma.toFixed(0)}°`],
-      ['screen', info.screenAngle + '°' + (info.flipped ? ' flipped' : '')],
-      ['shake', info.shake.toFixed(1)],
-      ['viewport', `${Math.round(info.width)}×${Math.round(info.height)} @${info.dpr}x`],
-      ['backend', info.backend],
     ];
+    if (this.verbose) {
+      rows.push(
+        ['work', info.workMs.toFixed(1) + ' ms'],
+        [fluid ? 'neighbours' : 'contacts', formatCount(info.contacts)],
+        ['radius', info.radius.toFixed(2) + ' px'],
+        ['depth', Math.round(info.depth) + ' px'],
+        ['solve', `${info.substeps}×${info.iterations}`],
+        ['quality', info.scale.toFixed(2) + '×'],
+        ['beta/gamma', `${info.beta.toFixed(0)}° / ${info.gamma.toFixed(0)}°`],
+        ['screen', info.screenAngle + '°' + (info.flipped ? ' flipped' : '')],
+        ['shake', info.shake.toFixed(1)],
+        ['viewport', `${Math.round(info.width)}×${Math.round(info.height)} @${info.dpr}x`],
+        ['backend', info.backend],
+      );
+    }
+    // Always: a failure to read sensors is the one thing worth interrupting for.
     if (info.error) rows.push(['note', info.error]);
 
     this.stats.innerHTML = rows

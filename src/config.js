@@ -291,6 +291,20 @@ export const CONFIG = {
     // panel competing with the sand. Halved, the walls sit at 2-7x the
     // background: enough to place the corners, not enough to look at.
     wallColor: [0.15, 0.125, 0.095],
+    // A multiplier on the above, and a live one - the dev panel toggles it
+    // between 1 and `wallLiftHigh` under Box.
+    //
+    // It exists because the halving that produced wallColor was measured with
+    // a bed of sand in the box, where the walls really were competing. With the
+    // box half empty - which is most poses on a desktop window, and any pose
+    // just after a flip - the same values put the four faces at 2-7x a 5/255
+    // background, i.e. under the threshold where a phone screen shows them at
+    // all, and the empty half reads as flat black rather than as an empty box.
+    // Judge it on a phone with the material at rest and the box mostly empty;
+    // that is the case the shipped value has to serve, and it is not the case a
+    // desktop screenshot shows.
+    wallLift: 1,
+    wallLiftHigh: 1.4,
     // Right was nearly as bright as the floor, which is what made the far wall
     // pop. Pulled closer to the left face, keeping some asymmetry so the box
     // still reads as lit from one side.

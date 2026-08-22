@@ -26,6 +26,10 @@
     inset 1px 1px 0 var(--bevel-lit),
     inset -1px -1px 0 var(--bevel-dark),
     0 6px 18px rgba(0, 0, 0, 0.45);
+  /* The rig stays mono while the shipped chrome went to a grotesk, which is
+     one more way a screenshot says which mode it was taken in - and this panel
+     is nearly all figures anyway. */
+  font-family: var(--mono);
   font-size: 11px;
   -webkit-overflow-scrolling: touch;
 }

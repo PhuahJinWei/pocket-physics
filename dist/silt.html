@@ -26,8 +26,12 @@
       surface with a single light pixel below it, the way etched metal catches. */
 :root {
   --ink: #e8e0d0;
-  --dim: rgba(226, 213, 189, 0.55);
-  --faint: rgba(226, 213, 189, 0.3);
+  /* Idle labels used to sit at 0.55/0.30, which measured about 3:1 on the
+     plates - a mood indoors and unreadable on a phone in daylight. Lifted to
+     roughly 5:1 and 3.5:1; hover and selected still step up from here, so the
+     states stay distinguishable. */
+  --dim: rgba(226, 213, 189, 0.7);
+  --faint: rgba(226, 213, 189, 0.42);
   /* The amber the sim's own glints land on, so a lit control belongs to it. */
   --lit: #f0c274;
   --panel: rgba(24, 20, 15, 0.78);
@@ -37,6 +41,18 @@
   --well: linear-gradient(158deg, rgba(7, 6, 4, 0.9), rgba(21, 17, 12, 0.72));
   --bevel-lit: rgba(246, 228, 190, 0.13);
   --bevel-dark: rgba(0, 0, 0, 0.5);
+
+  /* Two families, split by job: a grotesk engraves the labels, the mono is
+     kept for things that are read as figures - the readout column and the key
+     caps. Mono everywhere made the chrome read as a terminal rather than as an
+     instrument. Both stacks are system fonts; nothing is fetched. */
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  /* The menus and the readout are wells that sit over the canvas rather than
+     over other chrome, so a backdrop blur bought nothing but a compositor pass
+     on four elements at once. They are opaque enough to stand on their own. */
+  --well-panel: linear-gradient(158deg, rgba(9, 7, 5, 0.95), rgba(25, 20, 15, 0.9));
   color-scheme: dark;
 }
 
@@ -74,7 +90,7 @@ html, body {
   overflow: hidden;
   background: #050403;
   color: var(--ink);
-  font: 500 13px/1.45 ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font: 500 13px/1.45 var(--sans);
   overscroll-behavior: none;
   -webkit-user-select: none;
   user-select: none;
@@ -97,21 +113,45 @@ html, body {
   pointer-events: none;
 }
 
-/* Sells the "inside a device" look and hides the hard canvas edge. */
+/* Sells the "inside a device" look and hides the hard canvas edge.
+   Corner falloff and nothing else: this layer multiplies, so darkening is the
+   only thing it can do. The warm top gradient that used to ride along in here
+   was a LIGHTENING colour inside a multiply - an exact no-op that never once
+   reached the screen. */
 #vignette {
   position: absolute;
   inset: 0;
-  background:
-    radial-gradient(125% 85% at 50% 45%, transparent 62%, rgba(0, 0, 0, 0.38) 100%),
-    linear-gradient(to bottom, rgba(255, 226, 170, 0.04), transparent 22%);
+  background: radial-gradient(125% 85% at 50% 45%, transparent 62%, rgba(0, 0, 0, 0.38) 100%);
   mix-blend-mode: multiply;
 }
-#vignette::after {
-  content: "";
+
+/* The pane the sim is behind. The chrome is a housing with plates standing
+   proud of it and wells cut into it, and the stage is simply the largest well
+   there is - so it gets the same cut, at a bigger radius.
+
+   One light, from the upper left, so the bezel occludes the top-left inner
+   edge and the bottom-right edge catches: a broad shadow thrown down and in
+   from the top and left, the crisp dark line of the cut itself, and a thin lit
+   lip opposite. That is the `.well` recipe verbatim, only larger.
+
+   A SIBLING of #vignette rather than a child of it, and deliberately so. An
+   element carrying mix-blend-mode forms an isolation group, so a lit edge
+   nested inside the vignette gets composited into that group and multiplied
+   down with it - which is why the 1px screen-blended hairline that used to
+   live on #vignette::after measured as literally zero change against the
+   5/255 background. Sitting outside, this blends normally and can add light. */
+#rim {
   position: absolute;
   inset: 0;
-  box-shadow: inset 0 0 1px rgba(230, 205, 160, 0.2);
-  mix-blend-mode: screen;
+  box-shadow:
+    /* the lit lip, listed first so the broad shadows never bury it */
+    inset -1px -1px 0 rgba(246, 228, 190, 0.11),
+    inset 0 -16px 30px -18px rgba(255, 226, 170, 0.07),
+    /* the cut edge */
+    inset 2px 2px 3px rgba(0, 0, 0, 0.75),
+    /* and the bezel's own shadow, thrown onto the glass from above and left */
+    inset 0 18px 32px -18px rgba(0, 0, 0, 0.8),
+    inset 18px 0 32px -20px rgba(0, 0, 0, 0.6);
 }
 
 /* Material picker. Sits opposite the stats panel and stays put — this is the
@@ -151,24 +191,34 @@ html, body {
   text-shadow: 0 1px 0 rgba(255, 232, 190, 0.07);
   font: inherit;
   font-size: 12px;
+  font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
   transition: color 160ms ease, box-shadow 160ms ease;
 }
-/* Caret, so the plate reads as something that opens rather than a label. */
+/* Caret, so the plate reads as something that opens rather than a label. Drawn
+   as a stroked chevron from two borders - the same construction as the tick in
+   the list below, so the only two marks the picker owns are one shape. A solid
+   triangle was the last filled glyph in a chrome that is otherwise all
+   strokes. */
 #material::after {
   content: "";
-  width: 0;
-  height: 0;
-  border-left: 4px solid transparent;
-  border-right: 4px solid transparent;
-  border-top: 5px solid currentColor;
-  opacity: 0.55;
-  transition: transform 200ms ease, opacity 160ms ease;
+  width: 6px;
+  height: 6px;
+  margin-bottom: 3px;
+  border: solid currentColor;
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg);
+  opacity: 0.6;
+  transition: transform 200ms ease, margin 200ms ease, opacity 160ms ease;
 }
-#material[aria-expanded="true"]::after { transform: rotate(180deg); opacity: 0.9; }
+#material[aria-expanded="true"]::after {
+  transform: rotate(-135deg);
+  margin-bottom: -3px;
+  opacity: 0.95;
+}
 #material:hover,
 #material:focus-visible,
 #material[aria-expanded="true"] {
@@ -194,8 +244,7 @@ html, body {
   padding: 5px;
   border: 1px solid rgba(0, 0, 0, 0.5);
   border-radius: 12px;
-  background: var(--well);
-  backdrop-filter: blur(10px);
+  background: var(--well-panel);
   box-shadow:
     inset 1px 2px 3px rgba(0, 0, 0, 0.66),
     inset -1px -1px 0 rgba(246, 228, 190, 0.05);
@@ -328,8 +377,7 @@ html, body {
   padding: 5px;
   border: 1px solid rgba(0, 0, 0, 0.5);
   border-radius: 12px;
-  background: var(--well);
-  backdrop-filter: blur(10px);
+  background: var(--well-panel);
   box-shadow:
     inset 1px 2px 3px rgba(0, 0, 0, 0.66),
     inset -1px -1px 0 rgba(246, 228, 190, 0.05);
@@ -396,6 +444,7 @@ html, body {
     inset -1px -1px 0 rgba(0, 0, 0, 0.4);
   color: var(--faint);
   font: inherit;
+  font-family: var(--mono);
   font-size: 10px;
   letter-spacing: 0.04em;
   text-align: center;
@@ -416,8 +465,7 @@ html, body {
   padding: 11px 13px;
   border: 1px solid rgba(0, 0, 0, 0.5);
   border-radius: 12px;
-  background: var(--well);
-  backdrop-filter: blur(10px);
+  background: var(--well-panel);
   box-shadow:
     inset 1px 2px 3px rgba(0, 0, 0, 0.66),
     inset -1px -1px 0 rgba(246, 228, 190, 0.05);
@@ -425,6 +473,9 @@ html, body {
   line-height: 1.55;
 }
 #stats.visible { display: grid; }
+/* Engraved caption on the left, figures on the right. The captions are labels
+   and take the grotesk; the values are read as numbers and stay mono, which is
+   also what keeps the right column from twitching as digits change. */
 #stats .k {
   color: var(--faint);
   letter-spacing: 0.09em;
@@ -433,6 +484,7 @@ html, body {
 }
 #stats .v {
   color: var(--ink);
+  font-family: var(--mono);
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
@@ -451,17 +503,45 @@ html, body {
 }
 #gate.visible { display: flex; }
 
+/* The one plate you are asked to press, so it is a plate: same bevel, same
+   light, just larger and lettered in the sim's amber. It used to be a glowing
+   pill - the only rounded-pill and the only large bloom in the whole chrome,
+   which read as a button borrowed from somewhere else. */
 #gate-button {
-  padding: 14px 26px;
-  border: 1px solid rgba(224, 194, 140, 0.4);
-  border-radius: 999px;
-  background: linear-gradient(180deg, rgba(160, 120, 60, 0.55), rgba(80, 58, 28, 0.55));
-  color: #f6eedd;
+  min-height: 48px;
+  padding: 0 28px;
+  border: 1px solid rgba(0, 0, 0, 0.55);
+  border-radius: 12px;
+  background: var(--face);
+  box-shadow:
+    inset 1px 1px 0 rgba(246, 228, 190, 0.18),
+    inset -1px -1px 0 var(--bevel-dark),
+    0 6px 18px rgba(0, 0, 0, 0.5),
+    0 0 20px rgba(240, 194, 116, 0.1);
+  color: var(--lit);
   font: inherit;
-  font-size: 15px;
-  letter-spacing: 0.03em;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.5);
   cursor: pointer;
-  box-shadow: 0 0 32px rgba(220, 170, 90, 0.22);
+  transition: box-shadow 160ms ease, color 160ms ease;
+}
+#gate-button:hover,
+#gate-button:focus-visible {
+  outline: none;
+  color: #ffd9a4;
+  box-shadow:
+    inset 1px 1px 0 rgba(246, 228, 190, 0.26),
+    inset -1px -1px 0 var(--bevel-dark),
+    0 6px 18px rgba(0, 0, 0, 0.5),
+    0 0 26px rgba(240, 194, 116, 0.16);
+}
+#gate-button:active {
+  box-shadow:
+    inset 1px 2px 3px rgba(0, 0, 0, 0.6),
+    inset -1px -1px 0 rgba(246, 228, 190, 0.05);
 }
 #gate-button:disabled { opacity: 0.5; }
 #gate-note {
@@ -481,9 +561,16 @@ html, body {
   height: 108px;
   margin-left: -54px;
   display: none;
-  border: 1px solid var(--edge);
+  /* A round well cut into the housing, with a milled cap sitting in it. The
+     old pair - a hairline ring around a glossy amber bead - was the most
+     dated object on screen and the only one lit from its own direction. */
+  border: 1px solid rgba(0, 0, 0, 0.55);
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(66, 52, 32, 0.5), rgba(20, 16, 10, 0.35));
+  background: var(--well);
+  box-shadow:
+    inset 1px 2px 4px rgba(0, 0, 0, 0.7),
+    inset -1px -1px 0 rgba(246, 228, 190, 0.05),
+    0 6px 18px rgba(0, 0, 0, 0.4);
   pointer-events: auto;
   touch-action: none;
 }
@@ -495,20 +582,47 @@ html, body {
   width: 42px;
   height: 42px;
   margin: -21px 0 0 -21px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(0, 0, 0, 0.55);
   border-radius: 50%;
-  background: radial-gradient(circle at 35% 30%, #f2e3c2, #b98a45 60%, #5e421e);
-  box-shadow: 0 0 18px rgba(230, 180, 100, 0.45);
+  background: var(--face);
+  box-shadow:
+    inset 1px 1px 0 rgba(246, 228, 190, 0.22),
+    inset -1px -1px 0 var(--bevel-dark),
+    0 3px 9px rgba(0, 0, 0, 0.55);
   transition: transform 80ms ease-out;
+}
+/* One lit dimple in the cap: the only emitting part, so the eye tracks the
+   knob and not the ring while it is being pushed around. */
+#knob::after {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--lit);
+  opacity: 0.55;
+  box-shadow: 0 0 8px rgba(240, 194, 116, 0.5);
 }
 
 #fatal {
   position: absolute;
   inset: auto 16px 50% 16px;
+  /* Bounded and centred: stretched to the full width it read as a system
+     banner rather than as one more plate in the housing. */
+  max-width: 420px;
+  margin: 0 auto;
   display: none;
   padding: 16px;
-  border: 1px solid rgba(255, 120, 120, 0.4);
-  border-radius: 10px;
-  background: rgba(40, 10, 14, 0.85);
+  /* Same bevel as every other plate, tinted rather than outlined - a flat box
+     with a red hairline was the one piece of chrome from another century. */
+  border: 1px solid rgba(0, 0, 0, 0.55);
+  border-radius: 12px;
+  background: linear-gradient(158deg, rgba(78, 30, 28, 0.92), rgba(28, 12, 12, 0.94));
+  box-shadow:
+    inset 1px 1px 0 rgba(255, 196, 186, 0.16),
+    inset -1px -1px 0 var(--bevel-dark),
+    0 6px 18px rgba(0, 0, 0, 0.5);
   color: #ffd8d8;
   font-size: 13px;
   text-align: center;
@@ -520,6 +634,7 @@ html, body {
   #material,
   #material::after,
   #menu,
+  #gate-button,
   .menu-item,
   .material-option { transition: none; }
 }
@@ -554,6 +669,10 @@ html, body {
     inset 1px 1px 0 var(--bevel-lit),
     inset -1px -1px 0 var(--bevel-dark),
     0 6px 18px rgba(0, 0, 0, 0.45);
+  /* The rig stays mono while the shipped chrome went to a grotesk, which is
+     one more way a screenshot says which mode it was taken in - and this panel
+     is nearly all figures anyway. */
+  font-family: var(--mono);
   font-size: 11px;
   -webkit-overflow-scrolling: touch;
 }
@@ -845,6 +964,7 @@ body.dev-picking #stage { cursor: crosshair; }
 
 <div id="ui">
   <div id="vignette"></div>
+  <div id="rim"></div>
   <div id="material-picker">
     <button id="material" type="button" aria-haspopup="listbox" aria-expanded="false"
             aria-label="Material">Sand</button>
@@ -859,7 +979,10 @@ body.dev-picking #stage { cursor: crosshair; }
        , . for grain size) stay keyboard-only on purpose. -->
   <div id="menu-panel">
     <button id="menu" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="Menu">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M3 7h18M3 12h18M3 17h18"/>
+        <path d="M9 4.5v5M14.5 9.5v5M11 14.5v5"/>
+      </svg>
     </button>
     <div id="menu-list" role="menu" aria-label="Actions" hidden>
       <button class="menu-item" type="button" role="menuitem" data-act="splash">
@@ -1187,6 +1310,20 @@ const CONFIG = {
     // panel competing with the sand. Halved, the walls sit at 2-7x the
     // background: enough to place the corners, not enough to look at.
     wallColor: [0.15, 0.125, 0.095],
+    // A multiplier on the above, and a live one - the dev panel toggles it
+    // between 1 and `wallLiftHigh` under Box.
+    //
+    // It exists because the halving that produced wallColor was measured with
+    // a bed of sand in the box, where the walls really were competing. With the
+    // box half empty - which is most poses on a desktop window, and any pose
+    // just after a flip - the same values put the four faces at 2-7x a 5/255
+    // background, i.e. under the threshold where a phone screen shows them at
+    // all, and the empty half reads as flat black rather than as an empty box.
+    // Judge it on a phone with the material at rest and the box mostly empty;
+    // that is the case the shipped value has to serve, and it is not the case a
+    // desktop screenshot shows.
+    wallLift: 1,
+    wallLiftHigh: 1.4,
     // Right was nearly as bright as the floor, which is what made the far wall
     // pop. Pulled closer to the left face, keeping some asymmetry so the box
     // still reads as lit from one side.
@@ -5770,6 +5907,9 @@ class Renderer {
       eye: gl.getUniformLocation(this.wallProgram, 'uEye'),
       color: gl.getUniformLocation(this.wallProgram, 'uWallColor'),
     };
+    // Scratch for the lifted wall colour, so the per-frame multiply does not
+    // allocate and CONFIG.render.wallColor is never written through.
+    this._wallRgb = new Float32Array(3);
     this.wallBuffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, this.wallBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, this.wallData.byteLength, gl.DYNAMIC_DRAW);
@@ -6049,7 +6189,12 @@ class Renderer {
     gl.uniform2f(this.wallUniform.viewport, this.width, this.height);
     gl.uniform1f(this.wallUniform.focal, focal);
     gl.uniform2f(this.wallUniform.eye, this.width * 0.5 + eyeX, this.height * 0.5 + eyeY);
-    gl.uniform3fv(this.wallUniform.color, CONFIG.render.wallColor);
+    const wc = CONFIG.render.wallColor;
+    const lift = CONFIG.render.wallLift;
+    this._wallRgb[0] = wc[0] * lift;
+    this._wallRgb[1] = wc[1] * lift;
+    this._wallRgb[2] = wc[2] * lift;
+    gl.uniform3fv(this.wallUniform.color, this._wallRgb);
     gl.drawArrays(gl.TRIANGLES, 0, 30);
 
     // Leave nothing enabled behind us. Attribute arrays are global state in
@@ -7353,6 +7498,10 @@ class Hud {
     this.menuList = root.querySelector('#menu-list');
 
     this.statsVisible = false;
+    // Sixteen rows is a slab that covers a third of a phone's pool. Off, the
+    // readout carries only the five lines that mean something without the
+    // renderer's source open; dev mode turns the rest back on.
+    this.verbose = false;
     this.onStick = null;
     this.onMaterial = null;
     this.onAction = null;
@@ -7510,6 +7659,14 @@ class Hud {
     this.gate.classList.remove('visible');
   }
 
+  /** Dev mode owns this: it is the only thing that wants the full instrument. */
+  setVerbose(on) {
+    this.verbose = !!on;
+    // Redraw on the next frame rather than after the throttle expires, so the
+    // rows appear the instant the rig opens.
+    this._statsTimer = 0;
+  }
+
   toggleStats(force) {
     this.statsVisible = force === undefined ? !this.statsVisible : force;
     this.stats.classList.toggle('visible', this.statsVisible);
@@ -7572,24 +7729,34 @@ class Hud {
     if (this._statsTimer > 0) return;
     this._statsTimer = 0.25;
 
+    const fluid = info.material === 'Water';
+    // The five anyone can act on: is it smooth, what is in the box, how much of
+    // it, which way is down, and whether the tilt is actually arriving. Their
+    // order never changes when the rest appear, so the lines you read every
+    // time stay where your eye already is.
     const rows = [
       ['fps', info.fps.toFixed(0)],
-      ['work', info.workMs.toFixed(1) + ' ms'],
       ['material', info.material],
-      [info.material === 'Water' ? 'particles' : 'grains', String(info.grains)],
-      [info.material === 'Water' ? 'neighbours' : 'contacts', formatCount(info.contacts)],
-      ['radius', info.radius.toFixed(2) + ' px'],
-      ['depth', Math.round(info.depth) + ' px'],
-      ['solve', `${info.substeps}×${info.iterations}`],
-      ['quality', info.scale.toFixed(2) + '×'],
+      [fluid ? 'particles' : 'grains', String(info.grains)],
       ['gravity', `${info.gx.toFixed(2)}, ${info.gy.toFixed(2)}, ${info.gz.toFixed(2)}`],
       ['source', info.source],
-      ['beta/gamma', `${info.beta.toFixed(0)}° / ${info.gamma.toFixed(0)}°`],
-      ['screen', info.screenAngle + '°' + (info.flipped ? ' flipped' : '')],
-      ['shake', info.shake.toFixed(1)],
-      ['viewport', `${Math.round(info.width)}×${Math.round(info.height)} @${info.dpr}x`],
-      ['backend', info.backend],
     ];
+    if (this.verbose) {
+      rows.push(
+        ['work', info.workMs.toFixed(1) + ' ms'],
+        [fluid ? 'neighbours' : 'contacts', formatCount(info.contacts)],
+        ['radius', info.radius.toFixed(2) + ' px'],
+        ['depth', Math.round(info.depth) + ' px'],
+        ['solve', `${info.substeps}×${info.iterations}`],
+        ['quality', info.scale.toFixed(2) + '×'],
+        ['beta/gamma', `${info.beta.toFixed(0)}° / ${info.gamma.toFixed(0)}°`],
+        ['screen', info.screenAngle + '°' + (info.flipped ? ' flipped' : '')],
+        ['shake', info.shake.toFixed(1)],
+        ['viewport', `${Math.round(info.width)}×${Math.round(info.height)} @${info.dpr}x`],
+        ['backend', info.backend],
+      );
+    }
+    // Always: a failure to read sensors is the one thing worth interrupting for.
     if (info.error) rows.push(['note', info.error]);
 
     this.stats.innerHTML = rows
@@ -7745,6 +7912,9 @@ class DevMode {
     } catch {
       /* storage blocked - the mode just will not be remembered */
     }
+    // The readout is deliberately short for a normal run; the rig wants every
+    // row it has.
+    if (this.hud && this.hud.setVerbose) this.hud.setVerbose(next);
     if (next) {
       this.build();
       this.el.hidden = false;
@@ -7756,6 +7926,9 @@ class DevMode {
       this.speed = 1;
       this.region = null;
       this.gravity.pose = null;
+      // A lifted box that outlived the panel would silently become the shipped
+      // look, which is the one thing this toggle must not do.
+      if (this.config) this.config.render.wallLift = 1;
       if (this.el) this.el.hidden = true;
       if (this.loupeWin) this.loupeWin.hidden = true;
     }
@@ -7969,6 +8142,19 @@ class DevMode {
         this.sync();
       });
       body.append(this._clipBtn);
+
+      // --- box: the walls are deliberately below the threshold where they can
+      // be looked at, which is right with a full box and arguably wrong with an
+      // empty one. This is the A/B for that call, and it has to be made on a
+      // phone: the walls sit at 2-7x the background, a ratio a desktop panel
+      // shows and a phone in a lit room does not.
+      body.append(el('div', 'dev-label', 'Box'));
+      this._wallBtn = button('dev-btn dev-wide', 'Lift box walls', () => {
+        const R = this.config.render;
+        R.wallLift = R.wallLift > 1 ? 1 : R.wallLiftHigh;
+        this.sync();
+      });
+      body.append(this._wallBtn);
     }
 
     document.getElementById('ui').append(panel);
@@ -8056,6 +8242,11 @@ class DevMode {
     this._pickBtn.classList.toggle('on', this._picking);
     if (this._axisBtn) this._axisBtn.firstChild.textContent = this.axis === 'x' ? '↔' : '↕';
     if (this._clipBtn) this._clipBtn.classList.toggle('on', !!this.config.render.clipReal);
+    if (this._wallBtn) {
+      const lift = this.config.render.wallLift;
+      this._wallBtn.classList.toggle('on', lift > 1);
+      this._wallBtn.firstChild.textContent = `Lift box walls ${lift.toFixed(2)}×`;
+    }
   }
 
   // ------------------------------------------------------------- area picker

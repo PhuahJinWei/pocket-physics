@@ -138,6 +138,9 @@ export class Renderer {
       eye: gl.getUniformLocation(this.wallProgram, 'uEye'),
       color: gl.getUniformLocation(this.wallProgram, 'uWallColor'),
     };
+    // Scratch for the lifted wall colour, so the per-frame multiply does not
+    // allocate and CONFIG.render.wallColor is never written through.
+    this._wallRgb = new Float32Array(3);
     this.wallBuffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, this.wallBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, this.wallData.byteLength, gl.DYNAMIC_DRAW);
@@ -417,7 +420,12 @@ export class Renderer {
     gl.uniform2f(this.wallUniform.viewport, this.width, this.height);
     gl.uniform1f(this.wallUniform.focal, focal);
     gl.uniform2f(this.wallUniform.eye, this.width * 0.5 + eyeX, this.height * 0.5 + eyeY);
-    gl.uniform3fv(this.wallUniform.color, CONFIG.render.wallColor);
+    const wc = CONFIG.render.wallColor;
+    const lift = CONFIG.render.wallLift;
+    this._wallRgb[0] = wc[0] * lift;
+    this._wallRgb[1] = wc[1] * lift;
+    this._wallRgb[2] = wc[2] * lift;
+    gl.uniform3fv(this.wallUniform.color, this._wallRgb);
     gl.drawArrays(gl.TRIANGLES, 0, 30);
 
     // Leave nothing enabled behind us. Attribute arrays are global state in

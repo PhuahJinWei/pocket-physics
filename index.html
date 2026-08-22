@@ -16,6 +16,7 @@
 
 <div id="ui">
   <div id="vignette"></div>
+  <div id="rim"></div>
   <div id="material-picker">
     <button id="material" type="button" aria-haspopup="listbox" aria-expanded="false"
             aria-label="Material">Sand</button>
@@ -30,7 +31,10 @@
        , . for grain size) stay keyboard-only on purpose. -->
   <div id="menu-panel">
     <button id="menu" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="Menu">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M3 7h18M3 12h18M3 17h18"/>
+        <path d="M9 4.5v5M14.5 9.5v5M11 14.5v5"/>
+      </svg>
     </button>
     <div id="menu-list" role="menu" aria-label="Actions" hidden>
       <button class="menu-item" type="button" role="menuitem" data-act="splash">
